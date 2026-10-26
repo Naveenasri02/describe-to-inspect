@@ -1,0 +1,70 @@
+import numpy as np
+
+from d2i.meta_api import MetaError, SamObject
+from d2i.pockets import Layout, find_layout, grid
+from tests.conftest import STRIP_BOX, make_strip, pocket_box
+
+CL = {"rows": 2, "per_row": 5, "count": 10}
+
+
+class FakeSam:
+    def __init__(self, strips, pockets):
+        self.answers = {"blister strip": strips, "blister pocket": pockets}
+        self.prompts = []
+
+    def sam_image(self, image, prompt):
+        self.prompts.append(prompt)
+        return [SamObject(i, box, score, None) for i, (box, score) in enumerate(self.answers[prompt])]
+
+
+class BrokenSam:
+    def sam_image(self, image, prompt):
+        raise MetaError("Meta API 503: busy")
+
+
+def test_grid_count_and_order():
+    boxes = grid((0, 0, 500, 200), 2, 5)
+    assert len(boxes) == 10
+    assert boxes[0][0] < 100 and boxes[0][1] < 100       # first is top-left
+    assert boxes[5][0] < 100 and boxes[5][1] >= 100      # sixth starts the bottom row
+    assert boxes[1][0] > boxes[0][0]
+
+
+def test_fallback_finds_strip_on_synthetic():
+    img = make_strip()
+    lay = find_layout(img, CL)
+    assert isinstance(lay, Layout) and lay.source == "grid" and lay.ok and len(lay.pockets) == 10
+    x0, y0, x1, y1 = lay.strip_box
+    assert 0 <= x0 < x1 <= 640 and 0 <= y0 < y1 <= 360
+    assert (x1 - x0) * (y1 - y0) >= 0.3 * 640 * 360
+    assert abs(x0 - STRIP_BOX[0]) <= 3 and abs(y1 - STRIP_BOX[3]) <= 3
+
+
+def test_sam_layout_sorted_row_major():
+    shuffled = [7, 2, 9, 0, 5, 1, 8, 3, 6, 4]
+    sam = FakeSam([((STRIP_BOX), 0.95)], [(pocket_box(i), 0.9) for i in shuffled])
+    lay = find_layout(make_strip(), CL, sam)
+    assert lay.source == "sam" and lay.ok and lay.strip_box == STRIP_BOX
+    assert lay.pockets == [pocket_box(i) for i in range(10)]
+
+
+def test_sam_count_mismatch_not_ok():
+    sam = FakeSam([(STRIP_BOX, 0.95)], [(pocket_box(i), 0.9) for i in range(9)])
+    lay = find_layout(make_strip(), CL, sam)
+    assert lay.ok is False and "9" in lay.note and lay.source == "sam"
+
+
+def test_sam_drops_low_score_and_outside_pockets():
+    pockets = [(pocket_box(i), 0.9) for i in range(10)] + [((5, 5, 40, 40), 0.9), (pocket_box(3), 0.3)]
+    lay = find_layout(make_strip(), CL, FakeSam([(STRIP_BOX, 0.95)], pockets))
+    assert lay.ok and len(lay.pockets) == 10
+
+
+def test_empty_frame_not_ok():
+    lay = find_layout(np.full((360, 640, 3), 128, np.uint8), CL)
+    assert lay.ok is False and lay.note == "no strip"
+
+
+def test_meta_error_falls_back_to_grid():
+    lay = find_layout(make_strip(), CL, BrokenSam())
+    assert lay.source == "grid" and lay.ok
