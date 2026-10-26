@@ -1,0 +1,41 @@
+import numpy as np
+import pytest
+
+from d2i.checklist import CHECKS
+from d2i.defects import paint
+from tests.conftest import STRIP_BOX, make_strip, pocket_box
+
+
+def padded(box, pad, shape):
+    x0, y0, x1, y1 = box
+    dx, dy = (x1 - x0) * pad, (y1 - y0) * pad
+    return (max(0, int(x0 - dx)), max(0, int(y0 - dy)), min(shape[1], int(x1 + dx)), min(shape[0], int(y1 + dy)))
+
+
+@pytest.mark.parametrize("kind", CHECKS)
+@pytest.mark.parametrize("pocket", [0, 7])  # an edge pocket in each row
+def test_each_kind_changes_only_near_pocket(kind, pocket):
+    img = make_strip()
+    box = pocket_box(pocket)
+    out = paint(img, box, kind, STRIP_BOX, np.random.default_rng(1))
+    diff = np.abs(out.astype(int) - img.astype(int)).max(axis=2)
+    x0, y0, x1, y1 = padded(box, 0.3, img.shape)
+    near = np.zeros(diff.shape, bool)
+    near[y0:y1, x0:x1] = True
+    assert (diff[near] > 20).sum() >= 300, "the defect must be clearly visible"
+    assert (diff[~near] > 20).sum() == 0 and diff[~near].mean() < 0.5, "nothing changes away from the pocket"
+
+
+def test_empty_pocket_looks_like_foil():
+    img = make_strip()
+    x0, y0, x1, y1 = box = pocket_box(3)
+    out = paint(img, box, "empty_pocket", STRIP_BOX, np.random.default_rng(2))
+    assert abs(out[y0:y1, x0:x1].mean() - 170) < 15
+    assert (out[y0:y1, x0:x1] > 220).mean() < 0.01  # no white tablet left
+
+
+def test_paint_is_seeded():
+    img = make_strip()
+    a = paint(img, pocket_box(5), "broken_tablet", STRIP_BOX, np.random.default_rng(7))
+    b = paint(img, pocket_box(5), "broken_tablet", STRIP_BOX, np.random.default_rng(7))
+    assert np.array_equal(a, b) and not np.array_equal(a, img)

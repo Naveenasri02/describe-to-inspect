@@ -47,6 +47,18 @@ def responses_body(text, prompt_tokens=10, output_tokens=5):
             "usage": {"input_tokens": prompt_tokens, "output_tokens": output_tokens}}
 
 
+STRIP_BOX = (80, 70, 560, 290)  # make_strip() strip outline with shift=(0, 0)
+
+
+def pocket_box(i, rows=2, per_row=5, margin=0.06, strip=STRIP_BOX):
+    """Pocket i (row-major) of make_strip(), as a grid cell shrunk by `margin` on each side."""
+    x0, y0, x1, y1 = strip
+    cw, ch = (x1 - x0) / per_row, (y1 - y0) / rows
+    row, col = divmod(i, per_row)
+    return (round(x0 + (col + margin) * cw), round(y0 + (row + margin) * ch),
+            round(x0 + (col + 1 - margin) * cw), round(y0 + (row + 1 - margin) * ch))
+
+
 def make_strip(rows=2, per_row=5, missing=(), cracked=(), torn=False, shift=(0, 0), seed=0):
     """Synthetic 640x360 blister strip: dark table, silver foil, white tablets in a grid."""
     rng = np.random.default_rng(seed)
