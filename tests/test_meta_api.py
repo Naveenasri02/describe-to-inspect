@@ -1,0 +1,132 @@
+import io
+import json
+import wave
+
+import cv2
+import numpy as np
+import pytest
+
+from d2i.meta_api import (CREDIT_END_UTC, Budget, BudgetExceeded, MetaClient, MetaError, SamObject)
+from tests.conftest import FakeHTTP, responses_body, sam_text
+
+BEFORE_END = CREDIT_END_UTC - 3600
+
+
+def budget(tmp_path, limit=50.0):
+    return Budget(tmp_path / "spend.json", limit=limit, clock=lambda: BEFORE_END)
+
+
+def chat_body(content, prompt_tokens=100, completion_tokens=10):
+    return {"choices": [{"message": {"content": content}}],
+            "usage": {"prompt_tokens": prompt_tokens, "completion_tokens": completion_tokens}}
+
+
+def wav_bytes(seconds=1.0, rate=16000):
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(rate)
+        w.writeframes(b"\x00\x00" * int(seconds * rate))
+    return buf.getvalue()
+
+
+def test_budget_refuses_past_limit(tmp_path):
+    b = budget(tmp_path, limit=1.0)
+    b.reserve(0.6)
+    with pytest.raises(BudgetExceeded):
+        b.reserve(0.6)
+    assert Budget(tmp_path / "spend.json", limit=1.0).spent == pytest.approx(0.6)
+
+
+def test_budget_refuses_after_credit_window(tmp_path, monkeypatch):
+    monkeypatch.delenv("D2I_ALLOW_PAID", raising=False)
+    b = Budget(tmp_path / "spend.json", clock=lambda: CREDIT_END_UTC + 1)
+    with pytest.raises(BudgetExceeded, match="window"):
+        b.reserve(0.01)
+    monkeypatch.setenv("D2I_ALLOW_PAID", "1")
+    b.reserve(0.01)
+    assert b.spent == pytest.approx(0.01)
+
+
+def test_spark_json_sends_schema_and_settles(tmp_path):
+    http = FakeHTTP([chat_body('{"a": 1}')])
+    client = MetaClient(budget(tmp_path), key="k", http=http)
+    schema = {"type": "object", "properties": {"a": {"type": "integer"}}, "required": ["a"]}
+    assert client.spark_json("sys", "user", schema) == {"a": 1}
+    call = http.calls[0]
+    assert call["url"].endswith("/chat/completions")
+    assert call["json"]["response_format"]["type"] == "json_schema"
+    assert call["json"]["response_format"]["json_schema"]["strict"] is True
+    assert client.budget.spent == pytest.approx(100 * 1.25e-6 + 10 * 4.25e-6)
+
+
+def test_spark_json_missing_required_key_raises(tmp_path):
+    http = FakeHTTP([chat_body('{"b": 1}')])
+    client = MetaClient(budget(tmp_path), key="k", http=http)
+    schema = {"type": "object", "properties": {"a": {"type": "integer"}}, "required": ["a"]}
+    with pytest.raises(MetaError, match="a"):
+        client.spark_json("sys", "user", schema)
+
+
+def test_meta_error_keeps_reservation(tmp_path):
+    http = FakeHTTP([(403, {"error": "forbidden"})])
+    client = MetaClient(budget(tmp_path), key="k", http=http)
+    with pytest.raises(MetaError, match="403"):
+        client.spark_json("sys", "user", {"type": "object", "properties": {}, "required": []})
+    assert client.budget.spent > 0
+
+
+def test_no_key_raises_with_key_file_hint(tmp_path, monkeypatch):
+    monkeypatch.delenv("MODEL_API_KEY", raising=False)
+    monkeypatch.setattr("d2i.meta_api.KEY_FILE", tmp_path / "missing.txt")
+    client = MetaClient(budget(tmp_path), http=FakeHTTP([]))
+    with pytest.raises(MetaError, match="missing.txt"):
+        client.spark_json("sys", "user", {"type": "object", "properties": {}, "required": []})
+
+
+def test_sam_image_parses_boxes(tmp_path):
+    http = FakeHTTP([responses_body(sam_text([(0, (10, 20, 30, 40), 0.9)]))])
+    client = MetaClient(budget(tmp_path), key="k", http=http)
+    objs = client.sam_image(np.zeros((360, 640, 3), np.uint8), "blister pocket")
+    assert len(objs) == 1
+    o = objs[0]
+    assert isinstance(o, SamObject) and o.id == 0 and o.box == (10, 20, 30, 40)
+    assert o.score == pytest.approx(0.9)
+    assert o.mask.shape == (360, 640) and o.mask[25, 15] and not o.mask[5, 5]
+    body = http.calls[0]["json"]
+    assert http.calls[0]["url"].endswith("/responses") and body["model"] == "sam-3.1"
+    assert client.budget.spent == pytest.approx(0.0025)
+
+
+def test_sam_boxes_scaled_to_image_size(tmp_path):
+    http = FakeHTTP([responses_body(sam_text([(3, (20, 40, 60, 80), 0.8)], size=(1280, 720)))])
+    client = MetaClient(budget(tmp_path), key="k", http=http)
+    (o,) = client.sam_image(np.zeros((360, 640, 3), np.uint8), "blister strip")
+    assert o.box == (10, 20, 30, 40) and o.mask.shape == (360, 640)
+
+
+def test_sam_video_parses_frames(tmp_path):
+    path = tmp_path / "clip.mp4"
+    vw = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"mp4v"), 15, (64, 48))
+    for _ in range(3):
+        vw.write(np.zeros((48, 64, 3), np.uint8))
+    vw.release()
+    text = sam_text([(1, (2, 2, 10, 10), 0.7)], frame=0, size=(64, 48)) + "\n" + \
+        sam_text([(1, (4, 2, 12, 10), 0.8)], frame=2, size=(64, 48))
+    http = FakeHTTP([responses_body(text)])
+    client = MetaClient(budget(tmp_path), key="k", http=http)
+    pts = client.sam_video(path.read_bytes(), "blister strip")
+    assert [(p.id, p.frame, p.box) for p in pts] == [(1, 0, (2, 2, 10, 10)), (1, 2, (4, 2, 12, 10))]
+    assert client.budget.spent == pytest.approx(50 * 0.0002)  # billed at the 50-frame minimum
+
+
+def test_transcribe_multipart(tmp_path):
+    http = FakeHTTP([{"transcript": "பத்து மாத்திரைகள்"}, {"transcript": "ten tablets"}])
+    client = MetaClient(budget(tmp_path), key="k", http=http)
+    assert client.transcribe(wav_bytes(), languages=["Tamil", "English"]) == "பத்து மாத்திரைகள்"
+    req = json.loads(http.calls[0]["files"]["request"][1])
+    assert req["audioEncoding"] == "WAV" and req["languageBias"] == ["Tamil", "English"]
+    assert http.calls[0]["url"].endswith("/asr/transcribe")
+    client.transcribe(wav_bytes())
+    assert "languageBias" not in json.loads(http.calls[1]["files"]["request"][1])

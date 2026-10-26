@@ -1,0 +1,7 @@
+meta_spend.json
+data/
+photos/
+*.mp4
+*.wav
+__pycache__/
+.pytest_cache/
