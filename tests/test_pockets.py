@@ -1,7 +1,7 @@
 import numpy as np
 
 from d2i.meta_api import MetaError, SamObject
-from d2i.pockets import Layout, find_layout, grid
+from d2i.pockets import Layout, find_layout, grid, template_from
 from tests.conftest import STRIP_BOX, make_strip, pocket_box
 
 CL = {"rows": 2, "per_row": 5, "count": 10}
@@ -9,7 +9,7 @@ CL = {"rows": 2, "per_row": 5, "count": 10}
 
 class FakeSam:
     def __init__(self, strips, pockets):
-        self.answers = {"blister strip": strips, "blister pocket": pockets}
+        self.answers = {"blister strip": strips, "pill": pockets}
         self.prompts = []
 
     def sam_image(self, image, prompt):
@@ -68,3 +68,40 @@ def test_empty_frame_not_ok():
 def test_meta_error_falls_back_to_grid():
     lay = find_layout(make_strip(), CL, BrokenSam())
     assert lay.source == "grid" and lay.ok
+
+
+def _pills(idx, strip=STRIP_BOX):
+    return [(pocket_box(i, strip=strip), 0.9) for i in idx]
+
+
+def test_teach_layout_uses_pills():
+    lay = find_layout(make_strip(), CL, FakeSam([(STRIP_BOX, 0.95)], _pills([7, 2, 9, 0, 5, 1, 8, 3, 6, 4])))
+    assert lay.ok and lay.pockets == [pocket_box(i) for i in range(10)]
+
+
+def test_teach_layout_wrong_pill_count_not_ok():
+    lay = find_layout(make_strip(), CL, FakeSam([(STRIP_BOX, 0.95)], _pills(range(9))))
+    assert lay.ok is False and "9" in lay.note
+
+
+def _template():
+    return template_from([find_layout(make_strip(), CL, FakeSam([(STRIP_BOX, 0.95)], _pills(range(10))))])
+
+
+def test_template_maps_pockets_onto_new_strip():
+    moved = (110, 70, 590, 290)
+    lay = find_layout(make_strip(shift=(30, 0)), CL, FakeSam([(moved, 0.95)], _pills(range(10), moved)), _template())
+    assert lay.ok and len(lay.pockets) == 10
+    for got, want in zip(lay.pockets, [pocket_box(i) for i in range(10)]):
+        assert all(abs(g - (w + (30 if k % 2 == 0 else 0))) <= 2 for k, (g, w) in enumerate(zip(got, want)))
+
+
+def test_empty_pocket_with_template_stays_ok():
+    lay = find_layout(make_strip(), CL, FakeSam([(STRIP_BOX, 0.95)], _pills([i for i in range(10) if i != 6])), _template())
+    assert lay.ok and len(lay.pockets) == 10
+
+
+def test_extra_object_outside_pattern_holds():
+    stray = ((267, 130, 277, 140), 0.9)  # between pocket columns
+    lay = find_layout(make_strip(), CL, FakeSam([(STRIP_BOX, 0.95)], _pills(range(9)) + [stray]), _template())
+    assert lay.ok is False and lay.note == "object outside the pocket pattern"

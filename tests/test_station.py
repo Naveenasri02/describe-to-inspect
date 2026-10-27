@@ -7,6 +7,7 @@ import pytest
 from d2i.checklist import approve
 from d2i.judge import Judge
 from d2i.meta_api import SamObject
+from d2i.pockets import _strip_by_contour
 from d2i.station import Station, Verdict
 from tests.conftest import STRIP_BOX, make_strip, pocket_box
 
@@ -92,18 +93,18 @@ def test_blank_frame_no_strip(station):
     assert st.inspect(np.full((360, 640, 3), 128, np.uint8)).status == "NO_STRIP"
 
 
-class NinePockets:
+class ElevenPills:
     def sam_image(self, image, prompt):
-        boxes = [STRIP_BOX] if prompt == "blister strip" else [pocket_box(i) for i in range(9)]
+        boxes = [STRIP_BOX] if prompt == "blister strip" else [pocket_box(i) for i in [*range(10), 0]]
         return [SamObject(i, b, 0.9, None) for i, b in enumerate(boxes)]
 
 
 def test_count_mismatch_holds(station):
     st, _ = station
     st.self_test(make_strip(seed=12), rng_seed=5)
-    st.client = NinePockets()
+    st.client = ElevenPills()
     v = st.inspect(make_strip(seed=16))
-    assert v.status == "HOLD" and v.reasons[0]["rule"] == 1 and "9" in v.reasons[0]["text"]
+    assert v.status == "HOLD" and v.reasons[0]["rule"] == 1 and "11 pills" in v.reasons[0]["text"]
 
 
 def test_unlisted_defect_is_held_not_passed(station):
@@ -129,3 +130,28 @@ def test_shift_expiry_locks(station):
     assert st.locked is False
     clock.t += 9 * 3600
     assert st.locked is True and "8" in st.lock_reason
+
+
+class ContourSam:
+    """Fake SAM: strip from the contour finder, a pill in every pocket except `skip`."""
+
+    def __init__(self, skip=()):
+        self.skip = skip
+
+    def sam_image(self, image, prompt):
+        strip = _strip_by_contour(image)
+        if prompt == "blister strip":
+            return [SamObject(0, strip, 0.95, None)]
+        return [SamObject(i, pocket_box(i, strip=strip), 0.9, None) for i in range(10) if i not in self.skip]
+
+
+def test_station_inspect_uses_saved_template(tmp_path):
+    approve(CHECKLIST, "Priya", tmp_path / "checklists.jsonl")
+    st = Station(tmp_path, client=ContourSam(), clock=lambda: T0)
+    st.teach([make_strip(seed=i, shift=(i, 0)) for i in range(6)])
+    assert len(st.template) == 10 and len(Station(tmp_path, clock=lambda: T0).template) == 10
+    assert st.self_test(make_strip(seed=12), rng_seed=5)["passed"]
+    st.client = ContourSam(skip=(6,))
+    v = st.inspect(make_strip(seed=13, missing=(6,)))
+    assert v.status == "REJECT"
+    assert any(r["text"] == "Rule 2 failed: pocket 7 is empty" for r in v.reasons), v.reasons

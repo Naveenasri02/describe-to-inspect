@@ -7,6 +7,7 @@ import numpy as np
 from d2i.meta_api import BudgetExceeded, MetaError
 
 MIN_SCORE = 0.5
+POCKET_PROMPT = "pill"  # SAM finds pills on real photos; "blister pocket" and "tablet" find nothing
 
 
 @dataclass
@@ -70,19 +71,51 @@ def _strip_by_contour(image):
     return best[1]
 
 
-def find_layout(image: np.ndarray, cl: dict, client=None) -> Layout:
+def template_from(layouts: list[Layout]) -> list[tuple]:
+    """Per-pocket median of each pocket box as fractions of its strip box (ok layouts, same pocket count)."""
+    good = [l for l in layouts if l.ok]
+    if not good or len({len(l.pockets) for l in good}) != 1:
+        raise ValueError("Need ok layouts with the same number of pockets to build a template.")
+    fr = []
+    for l in good:
+        x0, y0, x1, y1 = l.strip_box
+        w, h = x1 - x0, y1 - y0
+        fr.append([((b[0] - x0) / w, (b[1] - y0) / h, (b[2] - x0) / w, (b[3] - y0) / h) for b in l.pockets])
+    return [tuple(float(v) for v in m) for m in np.median(np.array(fr), axis=0)]
+
+
+def _from_template(strip, template):
+    x0, y0, x1, y1 = strip
+    w, h = x1 - x0, y1 - y0
+    return [(round(x0 + t[0] * w), round(y0 + t[1] * h), round(x0 + t[2] * w), round(y0 + t[3] * h))
+            for t in template]
+
+
+def find_layout(image: np.ndarray, cl: dict, client=None, template=None) -> Layout:
     if client is not None:
         try:
             strips = client.sam_image(image, "blister strip")
             if not strips:
                 return Layout((0, 0, 0, 0), [], "sam", False, "no strip")
-            strip = max(strips, key=lambda o: (o.box[2] - o.box[0]) * (o.box[3] - o.box[1])).box
-            found = client.sam_image(image, "blister pocket")
-            pockets = _row_major([o.box for o in found
-                                  if (o.score is None or o.score >= MIN_SCORE) and _inside(o.box, strip)])
-            ok = len(pockets) == cl["count"]
-            note = "" if ok else f"found {len(pockets)} pockets, checklist says {cl['count']}"
-            return Layout(tuple(strip), pockets, "sam", ok, note)
+            strip = tuple(max(strips, key=lambda o: (o.box[2] - o.box[0]) * (o.box[3] - o.box[1])).box)
+            found = client.sam_image(image, POCKET_PROMPT)
+            pills = [o.box for o in found if o.score is None or o.score >= MIN_SCORE]
+            centres = [((b[0] + b[2]) / 2, (b[1] + b[3]) / 2) for b in pills]
+            pills = [b for b, (cx, cy) in zip(pills, centres)
+                     if strip[0] <= cx <= strip[2] and strip[1] <= cy <= strip[3]]
+            if template is None:
+                pockets = _row_major(pills)
+                ok = len(pockets) == cl["count"]
+                note = "" if ok else f"found {len(pockets)} pills, checklist says {cl['count']}"
+                return Layout(strip, pockets, "sam", ok, note)
+            pockets = _from_template(strip, template)
+            note = ""
+            if len(pills) > len(pockets):
+                note = f"{len(pills)} pills found, only {len(pockets)} pockets"
+            elif any(not any(p[0] <= (b[0] + b[2]) / 2 <= p[2] and p[1] <= (b[1] + b[3]) / 2 <= p[3]
+                             for p in pockets) for b in pills):
+                note = "object outside the pocket pattern"
+            return Layout(strip, pockets, "sam", not note, note)
         except (MetaError, BudgetExceeded):
             pass  # keep inspecting offline with the checklist grid
     strip = _strip_by_contour(image)

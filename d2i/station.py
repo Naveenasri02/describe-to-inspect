@@ -12,7 +12,7 @@ import torch.nn.functional as F
 from d2i.checklist import current, rule_number
 from d2i.defects import paint
 from d2i.judge import Judge
-from d2i.pockets import find_layout
+from d2i.pockets import find_layout, template_from
 
 POCKET_KINDS = ("empty_pocket", "broken_tablet")  # foil damage is caught on the border, not per pocket
 TEXT = {
@@ -45,6 +45,8 @@ class Station:
         state = torch.load(model, map_location="cpu") if model.exists() else {}
         self.judge = judge or (Judge.load(model) if state else Judge())
         self.prototypes, self.taught_at = state.get("prototypes", {}), state.get("taught_at")
+        t = state.get("template")
+        self.template = [tuple(b) for b in t] if t else None
 
     def _now(self) -> str:
         return datetime.fromtimestamp(self.clock()).isoformat(timespec="seconds")
@@ -75,7 +77,8 @@ class Station:
         if not self.checklist:
             raise ValueError("Approve a checklist before teaching.")
         layouts = [find_layout(im, self.checklist, self.client) for im in images]
-        info = self.judge.teach(images, layouts)
+        info = self.judge.teach(images, layouts)  # refuses photos whose layout is not ok
+        template = template_from(layouts)
         protos = {}
         for kind in POCKET_KINDS:
             embs = []
@@ -90,9 +93,9 @@ class Station:
         self.judge.save(self.dir / "model.pt")
         self.taught_at = self.clock()
         state = torch.load(self.dir / "model.pt", map_location="cpu")
-        state.update(prototypes=protos, taught_at=self.taught_at)
+        state.update(prototypes=protos, taught_at=self.taught_at, template=[list(b) for b in template])
         torch.save(state, self.dir / "model.pt")
-        self.prototypes = protos
+        self.prototypes, self.template = protos, template
         return info
 
     def _reason(self, check, pocket=None):
@@ -116,14 +119,13 @@ class Station:
     def _judge(self, image, strip_id, image_name) -> Verdict:
         cl = self.checklist
         v = Verdict("PASS", strip_id=strip_id, image_name=image_name, at=self._now())
-        lay = find_layout(image, cl, self.client)
+        lay = find_layout(image, cl, self.client, self.template)
         if lay.note == "no strip":
             v.status = "NO_STRIP"
             return v
         if not lay.ok:
-            text = (f"Rule 1 failed: found {len(lay.pockets)} pockets, expected {cl['count']}"
-                    if lay.pockets else f"Rule 1 failed: {lay.note}")
-            v.status, v.reasons = "HOLD", [{"rule": 1, "check": "count", "pocket": None, "text": text}]
+            v.status, v.reasons = "HOLD", [{"rule": 1, "check": "count", "pocket": None,
+                                            "text": f"Rule 1 failed: {lay.note}"}]
             return v
         v.pocket_scores = self.judge.score_pockets(image, lay)
         failing = [i for i, s in enumerate(v.pocket_scores) if s > self.judge.pocket_threshold]
@@ -151,7 +153,7 @@ class Station:
     def self_test(self, good_image, rng_seed: int | None = None) -> dict:
         cl = self.checklist
         rng = np.random.default_rng(rng_seed)
-        lay = find_layout(good_image, cl, self.client)
+        lay = find_layout(good_image, cl, self.client, self.template)
         results = []
         if lay.ok:
             per = cl["per_row"]
