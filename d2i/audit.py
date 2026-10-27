@@ -116,8 +116,13 @@ def quarantine_list(product_dir: Path, audit: AuditLog | None = None) -> dict:
     if audit is None:
         failed = [tests[-1]] if tests and not tests[-1]["passed"] else []
     else:
-        releases = [e for e in audit.entries() if e.get("action") == "release_quarantine"]
-        released = datetime.fromisoformat(releases[-1]["at"]).timestamp() if releases else None
+        released = None
+        for e in audit.entries():
+            if e.get("action") == "release_quarantine":
+                try:
+                    released = datetime.fromisoformat(e["at"]).timestamp()
+                except (KeyError, TypeError, ValueError):
+                    pass  # an unreadable release never closes the window; verify() reports the damage
         failed = [t for t in tests if not t["passed"] and (released is None or released < t["time"])]
     if not failed:
         return {"since": None, "failed_at": None, "strips": []}

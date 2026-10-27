@@ -105,8 +105,8 @@ def _config_section(product_dir: Path) -> str:
     return "<h2>Configuration</h2>" + _table(["Item", "Value"], [[k, "" if v is None else v] for k, v in h.items()])
 
 
-def _quarantine_section(product_dir: Path) -> str:
-    q = quarantine_list(product_dir)
+def _quarantine_section(product_dir: Path, audit: AuditLog | None = None) -> str:
+    q = quarantine_list(product_dir, audit)
     if not q["strips"]:
         return ""
     rows = [[v["at"], v["strip_id"] if v["strip_id"] is not None else "", v["status"]] for v in q["strips"]]
@@ -148,7 +148,7 @@ def shift_record(product_dir: Path, since: float, until: float, batch: str, oper
         f"<p>Product: {e(str(cl.get('product', '')))}<br>Batch: {e(batch)}<br>Operator: {e(operator)}<br>Time range: {e(span)}</p>",
         _checklist_section(cl), _selftest_section(tests), _totals_section(verdicts),
         _rejects_section(verdicts), _held_section(verdicts),
-        _config_section(product_dir), _quarantine_section(product_dir), _audit_sections(audit, since, until),
+        _config_section(product_dir), _quarantine_section(product_dir, audit), _audit_sections(audit, since, until),
         f"<h2>Shift summary (written by Muse Spark — check before signing)</h2><p>{e(_summary(product_dir, verdicts, tests, client))}</p>",
         f"<p>{e(FOOTER)}</p>",
         "<div class='sig'><p>QA name: ______________________</p><p>Signature: ______________________</p>"

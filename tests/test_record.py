@@ -124,3 +124,30 @@ def test_record_renders_broken_chain_with_stripped_keys(product):
     (product / "audit.jsonl").write_text("\n".join(json.dumps(r) for r in rows) + "\n")
     html = shift_record(product, 0, T0 + 100, "B", "A", audit=audit)
     assert "Audit chain: BROKEN at entry 2" in html
+
+
+def test_record_quarantine_open_until_qa_release(product):
+    import time
+    from d2i.audit import Users, release_quarantine
+    now = time.time()  # the release entry carries real time, so the self-tests must too
+
+    def test(t, passed):
+        return {"passed": passed, "results": [], "good_passed": passed, "failed": [] if passed else ["empty_pocket"],
+                "time": t, "at": _at(t), "checklist_version": 1, "taught_at": T0}
+    tests = [test(now - 100, True), test(now - 50, False), test(now - 10, True)]  # failed, then passed again
+    strips = [dict(_verdict(i, "PASS"), at=_at(now - 40 + i)) for i in range(3)]
+    (product / "selftests.jsonl").write_text("\n".join(json.dumps(r) for r in tests) + "\n")
+    (product / "log.jsonl").write_text("\n".join(json.dumps(r) for r in strips) + "\n")
+    audit, users = AuditLog(product / "audit.jsonl"), Users(product / "users.json")
+    users.add("qa1", "qa", "pw")
+    quarantine = "<h2>Quarantine</h2>"
+    assert quarantine not in shift_record(product, 0, now + 100, "B", "A")  # no audit: the old rule
+    html = shift_record(product, 0, now + 100, "B", "A", audit=audit)
+    assert quarantine in html and _at(now - 50) in html.split(quarantine)[1]
+    release_quarantine(product, audit, users, "qa1", "pw", "re-checked by hand")
+    assert quarantine not in shift_record(product, 0, now + 100, "B", "A", audit=audit)
+    rows = (product / "audit.jsonl").read_text().splitlines()
+    rows[-1] = json.dumps(dict(json.loads(rows[-1]), at="garbage"))  # an unreadable release does not close it
+    (product / "audit.jsonl").write_text("\n".join(rows) + "\n")
+    html = shift_record(product, 0, now + 100, "B", "A", audit=audit)
+    assert "Audit chain: BROKEN at entry 1" in html and quarantine in html
