@@ -26,11 +26,17 @@ class FakeClient:
 
 class FakeStation:
     def __init__(self):
-        self.crops = []
+        self.crops, self.logged = [], []
 
-    def inspect(self, image, strip_id=None, image_name=None):
+    def inspect(self, image, strip_id=None, image_name=None, held=False):
         self.crops.append(image)
-        return Verdict(status="PASS", strip_id=strip_id)
+        return self.log(Verdict(status="PASS", strip_id=strip_id), held)
+
+    def log(self, v, held=False):
+        if held and v.status == "PASS":
+            v.status = "HOLD"
+        self.logged.append(v)
+        return v
 
 
 def test_record_clip_pads_to_50_frames_and_inspect(tmp_path):
@@ -51,6 +57,9 @@ def test_record_clip_pads_to_50_frames_and_inspect(tmp_path):
     assert [(v.strip_id, v.status) for v in out] == [(1, "PASS"), (2, "HOLD")]
     assert station.crops[0].shape[:2] == (58, 46)       # +8 % pad, clipped to frame
     assert "by hand" in out[1].reasons[0]["text"]
+    assert station.logged == out  # the per-strip HOLD is logged too
+    client.prompts = []
+    assert [v.status for v in inspect_clip(path, FakeStation(), client, held=True)] == ["HOLD", "HOLD"]
 
 
 def test_low_confidence_track_is_held(tmp_path):
@@ -84,9 +93,11 @@ def test_api_error_gives_single_hold(tmp_path):
             raise self.exc
 
     for exc in (MetaError("http 503"), BudgetExceeded("limit")):
-        (v,) = inspect_clip(_clip(tmp_path), FakeStation(), Boom(exc))
+        station = FakeStation()
+        (v,) = inspect_clip(_clip(tmp_path), station, Boom(exc))
         text = v.reasons[0]["text"]
         assert v.status == "HOLD" and "tray clip not checked (" in text and "check by hand" in text
+        assert station.logged == [v]  # the clip-level HOLD is logged
 
 
 def test_no_tracks_for_any_prompt_gives_one_hold(tmp_path):

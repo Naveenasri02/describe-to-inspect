@@ -45,11 +45,12 @@ def best_frames(points, frame_size, min_score: float = 0.6) -> dict[int, int]:
     return {i: f for i, (_, f) in best.items()}
 
 
-def _hold(strip_id, check, text) -> Verdict:
-    return Verdict(status="HOLD", strip_id=strip_id, reasons=[{"rule": None, "check": check, "pocket": None, "text": text}])
+def inspect_clip(path: Path, station, client, held: bool = False) -> list[Verdict]:
+    """Every verdict returned is already in log.jsonl; held: the line is held, so no strip comes back PASS."""
+    def _hold(strip_id, check, text) -> Verdict:
+        return station.log(Verdict(status="HOLD", strip_id=strip_id,
+                                   reasons=[{"rule": None, "check": check, "pocket": None, "text": text}]))
 
-
-def inspect_clip(path: Path, station, client) -> list[Verdict]:
     points = []
     try:
         mp4 = Path(path).read_bytes()
@@ -78,7 +79,7 @@ def inspect_clip(path: Path, station, client) -> list[Verdict]:
             if crop is None or crop.size == 0:
                 verdicts.append(_hold(tid, "frame_unreadable", f"strip {tid} frame unreadable — check by hand"))
                 continue
-            verdicts.append(station.inspect(crop, strip_id=tid))
+            verdicts.append(station.inspect(crop, strip_id=tid, held=held))
         return verdicts
     finally:
         cap.release()

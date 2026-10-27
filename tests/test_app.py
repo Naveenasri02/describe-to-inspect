@@ -12,6 +12,8 @@ import app as app_mod
 import d2i.meta_api as meta_api
 from d2i.audit import Users
 from d2i.checklist import approve
+from d2i.meta_api import SamTrackPoint
+from d2i.record import _lines
 from d2i.plc import Plc
 from tests.conftest import make_strip
 from tests.test_station import CHECKLIST
@@ -127,7 +129,7 @@ class ScriptChat:
         return self.replies.pop(0)
 
 
-def bench(tmp_path, chat=None, client=None, plc=None):
+def bench(tmp_path, chat=None, client=None, plc=None, source=None):
     """Taught, self-tested bench in tmp_path/p with a QA user (qa1/pw-qa) and an operator (op/pw-op)."""
     p = tmp_path / "p"
     approve(CHECKLIST, "Priya", p / "checklists.jsonl")
@@ -137,7 +139,7 @@ def bench(tmp_path, chat=None, client=None, plc=None):
     users = Users(tmp_path / "users.json")
     users.add("qa1", "qa", "pw-qa")
     users.add("op", "operator", "pw-op")
-    c = TestClient(app_mod.create_app(p, None, chat=chat, client=client, plc=plc))
+    c = TestClient(app_mod.create_app(p, source, chat=chat, client=client, plc=plc))
     login(c, "qa1", "pw-qa")  # QA teaches
     assert c.post("/teach", json={}).json().get("error") is None
     c.post("/selftest", files={"image": ("a.jpg", jpg(make_strip(seed=12)), "image/jpeg")})
@@ -415,3 +417,43 @@ def test_agent_runs_when_offline_finder_cannot_see_teaching_photos(tmp_path):
     old.app.state.station.strip_box = None  # taught before the strip box was saved: the full-frame box
     assert old.post("/investigate", json={}).json().get("error") is None
     assert wait_done(old)["result"]["conclusion"] == "Old model."
+
+
+class TrayClient(FakeClient):
+    def sam_video(self, mp4, prompt):
+        return [SamTrackPoint(1, 0, (70, 60, 570, 300), 0.9), SamTrackPoint(2, 0, (300, 100, 400, 200), 0.3)]
+
+
+def test_tray_clip_logs_and_signals_every_verdict(tmp_path):
+    clip = tmp_path / "src.mp4"
+    vw = cv2.VideoWriter(str(clip), cv2.VideoWriter_fourcc(*"mp4v"), 15, (640, 360))
+    for _ in range(10):
+        vw.write(make_strip(seed=12))
+    vw.release()
+    plc = Plc(host="127.0.0.1", port=0)
+    c, p = bench(tmp_path, client=TrayClient(), plc=plc, source=str(clip))
+    try:
+        log = lambda: _lines(p / "log.jsonl")  # noqa: E731
+        n = len(log())
+        vs = c.post("/tray").json()["verdicts"]
+        assert [v["strip_id"] for v in vs] == [1, 2] and vs[0]["status"] in ("PASS", "REJECT", "HOLD")
+        assert vs[1]["status"] == "HOLD" and "not seen clearly" in vs[1]["reasons"][0]["text"]
+        assert [(r["strip_id"], r["status"]) for r in log()[n:]] == [(v["strip_id"], v["status"]) for v in vs]
+        assert all(r["at"] for r in log()[n:]) and sum(plc.regs[:3]) == 2
+        assert c.get("/status").json()["last_verdict"]["strip_id"] == 2
+        c.post("/hold", json={})
+        assert "PASS" not in [v["status"] for v in c.post("/tray").json()["verdicts"]]
+    finally:
+        c.app.state.source.stop.set()
+
+
+def test_tray_needs_a_camera_or_video(tmp_path):
+    photos = tmp_path / "photos"
+    photos.mkdir()
+    cv2.imwrite(str(photos / "a.jpg"), make_strip())
+    approve(CHECKLIST, "Priya", tmp_path / "p" / "checklists.jsonl")
+    for source in (None, str(photos), str(photos / "a.jpg")):
+        c = TestClient(app_mod.create_app(tmp_path / "p", source, client=TrayClient()))
+        assert c.post("/tray").json() == {"error": "tray clip needs a camera or video source"}
+        if c.app.state.source:
+            c.app.state.source.stop.set()

@@ -36,6 +36,7 @@ td,th{font-size:12px;padding:2px 6px;text-align:left}
 <main>
 <section><img id="cam" src="/stream" alt="camera">
   <div><button onclick="inspectNow()">Inspect strip</button>
+  <button title="Record a short clip of the tray; one verdict per strip" onclick="trayNow()">Tray clip</button>
   <button title="Per-shift functional check — runs on top of the physical challenge strip" onclick="post('/selftest')">Self-test</button>
   <button onclick="post('/teach',{capture:true})">Teach: save this strip</button>
   <button onclick="post('/teach',{})">Teach from saved photos</button></div>
@@ -86,6 +87,8 @@ const show=o=>{$("msg").textContent=typeof o==="string"?o:(o.error||JSON.stringi
 async function j(url,body){const r=await fetch(url,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body||{})});return r.json()}
 async function post(url,b){show("Working...");show(await j(url,b))}
 async function inspectNow(){show("Working...");const v=await (await fetch("/inspect",{method:"POST"})).json();show(v.error?v:v.status+" "+(v.reasons||[]).map(r=>r.text).join("; "))}
+async function trayNow(){show("Working...");const r=await j("/tray");
+  show(r.verdicts?r.verdicts.map(v=>"Strip "+(v.strip_id??"-")+": "+v.status+" "+v.reasons.map(x=>x.text).join("; ")).join("\n"):r)}
 async function describe(){show("Working...");const r=await j("/describe",{text:$("text").value});shown(r)}
 function shown(r){if(r.error)return show(r);if(r.transcript)$("text").value=r.transcript;show("Check the rules, then Approve.")}
 async function approve(){show(await j("/approve"))}

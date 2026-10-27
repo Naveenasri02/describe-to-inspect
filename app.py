@@ -26,6 +26,7 @@ from d2i.meta_api import Budget, MetaClient
 from d2i.pockets import find_layout
 from d2i.station import Station, Verdict
 from d2i.supervisor import Supervisor, baseline_from, hold_line, hold_state, resume_line
+from d2i.tray import inspect_clip, record_clip
 
 STATIC = Path(__file__).parent / "static"
 NEED_GOOD = 5
@@ -34,6 +35,7 @@ LANGS = {"English", "Tamil", "Hindi"}  # "Auto" = omit
 NEED_TEACH = "Teach the station first"
 ANSWER_WAIT = 120  # seconds the agent waits for the operator
 INSPECT_ERROR = "inspection error — check by hand"
+TRAY_SECONDS = 4  # 60 frames at 15 fps: one SAM 3.1 video call
 
 
 class FrameSource:
@@ -307,6 +309,21 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
                     st.log(v)
                     return out
                 return publish([v])
+        return paid(run)
+
+    @app.post("/tray")
+    def tray():
+        def run():
+            if not st.checklist:
+                return {"error": NO_CHECKLIST}
+            s = src.source if src else ""
+            if not s or Path(s).is_dir() or Path(s).suffix.lower() in (".jpg", ".jpeg", ".png"):
+                return {"error": "tray clip needs a camera or video source"}
+            with lock:  # one slow station operation at a time; verdicts land in order
+                clip = record_clip(int(s) if s.isdigit() else s, TRAY_SECONDS, product_dir / "tray.mp4")
+                vs = inspect_clip(clip, st, get_client(), held=held_now())  # each one is already logged
+                publish(vs)
+                return {"verdicts": [asdict(v) for v in vs]}
         return paid(run)
 
     def make_record(batch, operator, hours):
