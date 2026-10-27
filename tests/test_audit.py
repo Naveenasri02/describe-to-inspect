@@ -118,3 +118,20 @@ def test_verify_survives_cut_multibyte_char(tmp_path):
     (tmp_path / "a.jsonl").write_bytes(b"\n".join(lines))
     assert log.verify() == (False, 2)
     assert "BROKEN" in shift_record(tmp_path, 0, 4_000_000_000, "B", "A", audit=log)
+
+
+def test_quarantine_stays_open_until_qa_release(tmp_path):
+    import time
+    now = time.time()
+    tests = [_selftest(now - 100, True), _selftest(now - 50, False)]
+    strips = [dict(_verdict(i, "PASS"), at=_at(now - 40 + i)) for i in range(3)]
+    (tmp_path / "log.jsonl").write_text("\n".join(json.dumps(r) for r in strips) + "\n")
+    tests.append(_selftest(now - 10, True))  # a later passing self-test
+    (tmp_path / "selftests.jsonl").write_text("\n".join(json.dumps(r) for r in tests) + "\n")
+    audit, users = AuditLog(tmp_path / "audit.jsonl"), Users(tmp_path / "users.json")
+    users.add("qa1", "qa", "pw2")
+    assert quarantine_list(tmp_path)["strips"] == []  # without the audit: old rule, the passing self-test closes it
+    q = quarantine_list(tmp_path, audit)
+    assert len(q["strips"]) == 3 and q["since"] == _at(now - 100) and q["failed_at"] == _at(now - 50)
+    assert release_quarantine(tmp_path, audit, users, "qa1", "pw2", "re-checked by hand")["details"]["strips"] == 3
+    assert quarantine_list(tmp_path, audit) == {"since": None, "failed_at": None, "strips": []}

@@ -17,9 +17,11 @@ def clear() -> None:
     _events.clear()
 
 
-def record(model: str, platform: str, job: str, ms: int, usd: float = 0.0, ok: bool = True) -> None:
+def record(model: str, platform: str, job: str, ms: int, usd: float = 0.0, ok: bool = True, error: str = "") -> None:
     ev = {"at": datetime.now().isoformat(timespec="seconds"), "model": model, "platform": platform,
           "job": job, "ms": int(ms), "usd": usd, "ok": ok}
+    if error:
+        ev["error"] = error
     _events.append(ev)
     if _path is not None:
         try:

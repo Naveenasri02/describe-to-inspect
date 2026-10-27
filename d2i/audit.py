@@ -107,16 +107,24 @@ def config_hashes(product_dir: Path) -> dict:
             "checklist_sha256": _hash(cl) if cl else None}
 
 
-def quarantine_list(product_dir: Path) -> dict:
+def quarantine_list(product_dir: Path, audit: AuditLog | None = None) -> dict:
+    """Strips since the last passed self-test before a failure. With `audit`, a failure stays open until a QA
+    release_quarantine entry at or after it; a later passing self-test alone does not close it."""
     from d2i.record import _lines, _ts
     p = Path(product_dir)
     tests = _lines(p / "selftests.jsonl")
-    if not tests or tests[-1]["passed"]:
+    if audit is None:
+        failed = [tests[-1]] if tests and not tests[-1]["passed"] else []
+    else:
+        releases = [e for e in audit.entries() if e.get("action") == "release_quarantine"]
+        released = datetime.fromisoformat(releases[-1]["at"]).timestamp() if releases else None
+        failed = [t for t in tests if not t["passed"] and (released is None or released < t["time"])]
+    if not failed:
         return {"since": None, "failed_at": None, "strips": []}
-    passed = [t for t in tests if t["passed"]]
+    passed = [t for t in tests if t["passed"] and t["time"] < failed[0]["time"]]
     since = passed[-1] if passed else None
     strips = [v for v in _lines(p / "log.jsonl") if since is None or _ts(v) >= _ts(since)]
-    return {"since": since["at"] if since else None, "failed_at": tests[-1]["at"], "strips": strips}
+    return {"since": since["at"] if since else None, "failed_at": failed[-1]["at"], "strips": strips}
 
 
 def _require_qa(users: Users, name: str, password: str) -> None:
@@ -128,7 +136,7 @@ def release_quarantine(product_dir, audit: AuditLog, users: Users, name: str, pa
     _require_qa(users, name, password)
     if not reason.strip():
         raise ValueError("a reason is required")
-    q = quarantine_list(product_dir)
+    q = quarantine_list(product_dir, audit)
     return audit.append("release_quarantine", name, {"strips": len(q["strips"]), "failed_at": q["failed_at"]}, reason)
 
 

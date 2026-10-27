@@ -135,7 +135,7 @@ def test_chat_error_falls_back_to_hold(bench, tmp_path, monkeypatch):
     chat = ToolChat(budget(tmp_path), http=FakeHTTP([(500, "Baseten down"), (503, "Meta down")]))
     out = supervisor(bench, chat, make_strip(seed=12)).investigate("self-test failed")
     assert out["fallback"] is True and out["conclusion"] == MODEL_DOWN and "call QA" in out["conclusion"]
-    assert out["pending"] == [] and bench.plc.coils[2] is True
+    assert out["pending"] == [] and bench.plc.coils[2] is True and chat.last_platform is None
     assert bench.audit.entries()[-1]["action"] == "agent_conclusion"
 
 
@@ -161,6 +161,7 @@ def test_primary_error_uses_fallback(tmp_path, monkeypatch):
     assert [(e["platform"], e["ok"]) for e in ev] == [("Baseten (open weights)", True), ("Baseten (open weights)", False),
                                                       ("Meta API", True)]
     assert ev[0]["model"] == "muse-spark-open-1026" and ev[0]["usd"] == pytest.approx(1000 * 1.25e-6 + 100 * 4.25e-6)
+    assert ev[1]["error"] == "HTTP 500" and "error" not in ev[0]
     monkeypatch.delenv("BASETEN_API_KEY")  # no Baseten key at all: straight to the Meta API
     monkeypatch.setattr("d2i.llm.BASETEN_KEY_FILE", tmp_path / "missing.txt")
     http.responses.append({"choices": [{"message": {"content": "ok"}}], "usage": usage})
@@ -221,4 +222,55 @@ def test_approve_requires_qa_password(bench):
         sup.approve(reteach["id"], bench.users, "qa1", "pw-qa")
     sup.approve(release["id"], bench.users, "qa1", "pw-qa")
     assert [(e["action"], e["reason"]) for e in bench.audit.entries()[-2:]] == [
-        ("release_quarantine", "strips re-checked by hand"), ("agent_approve", "strips re-checked by hand")]
+        ("release_quarantine", "Agent request: strips re-checked by hand"),
+        ("agent_approve", "Agent request: strips re-checked by hand")]
+    assert bench.audit.entries()[-1]["details"]["approved_by"] == "qa1"
+
+
+def test_agent_self_test_does_not_record_or_unlock(bench):
+    chat = ScriptedChat(calls(("run_self_test", {})), say("Self-test looks fine."))
+    out = supervisor(bench, chat, make_strip(seed=12)).investigate("shift start")
+    assert out["steps"][0]["result"] == {"passed": True, "missed": [],
+                                         "note": "diagnostic only — does not unlock the station"}
+    assert not (bench.st.dir / "selftests.jsonl").exists() and bench.st.lock_reason == "No self-test this shift"
+
+
+def test_malformed_tool_call_holds_and_calls_qa(bench):
+    for bad in (["junk"], [{"id": "c1", "function": {"name": ["image_health"], "arguments": "{}"}}]):
+        out = supervisor(bench, ScriptedChat({"content": None, "tool_calls": bad}), make_strip(seed=12)).investigate("x")
+        assert out["conclusion"] == MODEL_DOWN and out["fallback"] is True and bench.plc.coils[2] is True
+        assert bench.audit.entries()[-1]["action"] == "agent_conclusion"
+    out = supervisor(bench, ScriptedChat({"content": ""}), make_strip(seed=12)).investigate("x")
+    assert out["conclusion"] == MODEL_DOWN and out["fallback"] is True
+
+
+def test_qa_can_resume_without_model_request(bench):
+    sup = supervisor(bench, ScriptedChat(say("Rejects look real.")), make_strip(seed=12))
+    assert sup.investigate("rejects rose")["pending"] == [] and bench.plc.coils[2] is True
+    with pytest.raises(PermissionError):
+        sup.resume(bench.users, "op", "pw-op", "checked")
+    with pytest.raises(ValueError):
+        sup.resume(bench.users, "qa1", "pw-qa", " ")
+    assert sup.resume(bench.users, "qa1", "pw-qa", "checked") == {
+        "resumed": False, "message": "Station locked: No self-test this shift"}
+    assert bench.plc.coils[2] is True
+    assert bench.st.self_test(make_strip(seed=12), rng_seed=5)["passed"]  # a person's self-test records
+    assert sup.resume(bench.users, "qa1", "pw-qa", "strips re-checked by hand")["resumed"] is True
+    assert bench.plc.coils[2] is False
+    e = bench.audit.entries()[-1]
+    assert (e["action"], e["user"], e["reason"]) == ("resume_line", "qa1", "strips re-checked by hand")
+
+
+def test_hold_survives_restart(bench):
+    supervisor(bench, ScriptedChat(say("Held.")), make_strip(seed=12)).investigate("rejects rose")
+    held = json.loads((bench.st.dir / "hold.json").read_text(encoding="utf-8"))
+    assert held["held"] is True and held["by"] == "supervisor" and held["at"]
+    bench.plc = Plc(host="127.0.0.1", port=0)  # process restart: a fresh PLC starts with coil 2 off
+    sup = supervisor(bench, ScriptedChat(), make_strip(seed=12))
+    assert bench.plc.coils[2] is True
+    bench.st.self_test(make_strip(seed=12), rng_seed=5)
+    sup.resume(bench.users, "qa1", "pw-qa", "checked")
+    bench.plc = Plc(host="127.0.0.1", port=0)
+    supervisor(bench, ScriptedChat(), make_strip(seed=12))
+    assert bench.plc.coils[2] is False
+    assert json.loads((bench.st.dir / "hold.json").read_text(encoding="utf-8"))["by"] == "qa1"

@@ -24,6 +24,7 @@ class ToolChat:
         self.last_platform = None
 
     def complete(self, messages: list[dict], tools: list[dict]) -> dict:
+        self.last_platform = None
         msg = self._baseten(messages, tools)
         if msg is not None:
             self.last_platform = BASETEN
@@ -38,7 +39,7 @@ class ToolChat:
             BASETEN_KEY_FILE.read_text().strip() if BASETEN_KEY_FILE.exists() else "")
         if not key:
             return None
-        t0, usd, msg = time.perf_counter(), 0.0, None
+        t0, usd, msg, cause = time.perf_counter(), 0.0, None, ""
         try:
             r = self.http.post(BASETEN_URL, headers={"Authorization": f"Bearer {key}"}, timeout=self.timeout,
                                json={"model": BASETEN_MODEL, "messages": messages, "tools": tools,
@@ -49,8 +50,11 @@ class ToolChat:
                 usd = u.get("prompt_tokens", 0) * OPEN_IN + u.get("completion_tokens", 0) * OPEN_OUT
                 m = body["choices"][0]["message"]
                 msg = m if m.get("content") or m.get("tool_calls") else None
-        except Exception:
-            pass  # network error, timeout or a malformed body: the Meta API answers instead
+                cause = "" if msg else "no answer and no tool call"
+            else:
+                cause = f"HTTP {r.status_code}"
+        except Exception as e:  # network error, timeout or a malformed body: the Meta API answers instead
+            cause = type(e).__name__  # class name only: never the key or headers
         trace.record("muse-spark-open-1026", BASETEN, "chat_tools", (time.perf_counter() - t0) * 1000, usd,
-                     msg is not None)
+                     msg is not None, error=cause)
         return msg

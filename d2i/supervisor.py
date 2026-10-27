@@ -6,13 +6,13 @@ release are only requests until a QA person approves them with their password (`
 import json
 import uuid
 from collections import Counter
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 import cv2
 import numpy as np
 
-from d2i.audit import release_quarantine
+from d2i.audit import _require_qa, release_quarantine
 from d2i.judge import POCKET_SIZE, _crop
 from d2i.pockets import find_layout
 from d2i.record import _lines
@@ -83,6 +83,15 @@ class Supervisor:
         self.get_frame, self.good_dir = get_frame, Path(good_dir)
         self.pending = {}  # request id -> request, until QA approves it
         self._trigger, self._steps, self._new = "", [], []
+        self._hold_file = self.station.dir / "hold.json"
+        try:
+            self._held = json.loads(self._hold_file.read_text(encoding="utf-8"))["held"] is not False
+        except FileNotFoundError:
+            self._held = False
+        except Exception:  # unreadable hold file: stay held (the safe direction)
+            self._held = True
+        if self._held:
+            plc.set_hold(True)  # a restart keeps the line held
         self._tools = {
             "image_health": lambda: image_health(self.get_frame(), self.baseline),
             "camera_shift": self._camera_shift,
@@ -98,30 +107,34 @@ class Supervisor:
         }
 
     def investigate(self, trigger: str) -> dict:
-        self.plc.set_hold(True)  # held for the whole investigation; only a QA-approved resume releases it
+        self._set_hold(True, "supervisor")  # held for the whole investigation; only QA releases it
         self._trigger, self._steps, self._new = trigger, [], []
         messages = [{"role": "system", "content": SYSTEM}, {"role": "user", "content": f"Trigger: {trigger}"}]
-        conclusion, fallback = STEP_LIMIT, False
+        conclusion, platform = STEP_LIMIT, "none"
         for _ in range(MAX_STEPS):
             try:
                 msg = self.chat.complete(messages, TOOLS)
-            except Exception:  # any model failure (both platforms down, timeout, spend stop): stay held
-                conclusion, fallback = MODEL_DOWN, True
+                platform = self.chat.last_platform or platform
+                calls = msg.get("tool_calls") or []
+                if not calls:
+                    conclusion = msg.get("content") or MODEL_DOWN
+                    break
+                messages.append({"role": "assistant", "content": msg.get("content"), "tool_calls": calls})
+                for c in calls:
+                    fn = c.get("function") or {}
+                    name = fn.get("name")
+                    if not isinstance(name, str):
+                        raise TypeError(f"malformed tool call: {str(c)[:200]}")
+                    args, result = self._run(name, fn.get("arguments"))
+                    text = json.dumps(result, default=str)
+                    self._steps.append({"tool": name, "args": args, "result": result})
+                    self.audit.append("agent_step", "supervisor",
+                                      {"tool": name, "args": args, "result_summary": text[:300]})
+                    messages.append({"role": "tool", "tool_call_id": c.get("id"), "content": text})
+            except Exception:  # model down (both platforms, timeout, spend stop) or a malformed reply: stay held
+                conclusion = MODEL_DOWN
                 break
-            calls = msg.get("tool_calls") or []
-            if not calls:
-                conclusion = msg.get("content") or MODEL_DOWN
-                break
-            messages.append({"role": "assistant", "content": msg.get("content"), "tool_calls": calls})
-            for c in calls:
-                fn = c.get("function") or {}
-                args, result = self._run(fn.get("name"), fn.get("arguments"))
-                text = json.dumps(result, default=str)
-                self._steps.append({"tool": fn.get("name"), "args": args, "result": result})
-                self.audit.append("agent_step", "supervisor",
-                                  {"tool": fn.get("name"), "args": args, "result_summary": text[:300]})
-                messages.append({"role": "tool", "tool_call_id": c.get("id"), "content": text})
-        platform = self.chat.last_platform or "none"
+        fallback = conclusion == MODEL_DOWN
         self.audit.append("agent_conclusion", "supervisor",
                           {"trigger": trigger, "conclusion": conclusion, "platform": platform, "fallback": fallback})
         return {"steps": self._steps, "conclusion": conclusion, "pending": self._new, "fallback": fallback,
@@ -148,8 +161,8 @@ class Supervisor:
         return dict(camera_shift(lay, self.ref_box), note=lay.note)
 
     def _self_test(self):
-        r = self.station.self_test(self.get_frame())  # the operator has placed a known-good strip
-        return {"passed": r["passed"], "missed": r["failed"]}
+        r = self.station.self_test(self.get_frame(), record=False)  # the operator has placed a known-good strip
+        return {"passed": r["passed"], "missed": r["failed"], "note": "diagnostic only — does not unlock the station"}
 
     def _reject_stats(self, window):
         rows = _lines(self.station.dir / "log.jsonl")[-max(1, int(window)):]
@@ -177,11 +190,19 @@ class Supervisor:
             return "no answer"
 
     def _hold(self, reason):
-        self.plc.set_hold(True)
+        self._set_hold(True, "supervisor")
         return {"held": True}
 
+    def _set_hold(self, on: bool, by: str):
+        """PLC hold coil plus hold.json, so a restart keeps the line held."""
+        self.plc.set_hold(on)
+        if on != self._held:
+            self._held = on
+            at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+            self._hold_file.write_text(json.dumps({"held": on, "at": at, "by": by}), encoding="utf-8")
+
     def _request(self, kind, reason):
-        req = {"id": uuid.uuid4().hex[:8], "kind": kind, "reason": reason}
+        req = {"id": uuid.uuid4().hex[:8], "kind": kind, "reason": f"Agent request: {reason}"}
         self.pending[req["id"]] = req
         self._new.append(req)
         return {"id": req["id"], "status": "waiting for a QA person to approve"}
@@ -200,28 +221,42 @@ class Supervisor:
         return d / f"{datetime.now():%Y%m%d-%H%M%S-%f}{suffix}"
 
     def approve(self, request_id: str, users, name: str, password: str) -> dict:
-        """QA only. A request is approved once; a refused resume stays pending until the station unlocks."""
-        if users.check(name, password) != "qa":
-            raise PermissionError("QA login required")
-        req = self.pending.get(request_id)
+        """QA only. A request is approved once; a refused or failed one goes back to pending."""
+        _require_qa(users, name, password)
+        req = self.pending.pop(request_id, None)
         if req is None:
             raise ValueError(f"no pending request {request_id}")
         kind, st = req["kind"], self.station
-        if kind == "resume" and st.locked:
-            out = {"approved": False, "message": f"Station locked: {st.lock_reason}"}
-        else:
-            if kind == "reteach":
-                photos = [cv2.imread(str(p)) for p in sorted(self.good_dir.glob("*.jpg"))]
-                st.teach([im for im in photos if im is not None])
-                message = "Re-taught; the station stays locked until a self-test passes"
-            elif kind == "resume":
-                self.plc.set_hold(False)
-                message = "Line resumed"
+        try:
+            if kind == "resume" and st.locked:
+                self.pending[request_id] = req
+                out = {"approved": False, "message": f"Station locked: {st.lock_reason}"}
             else:
-                release_quarantine(st.dir, self.audit, users, name, password, req["reason"])
-                message = "Quarantine released"
-            del self.pending[request_id]
-            out = {"approved": True, "message": message}
-        out = {"id": request_id, "kind": kind, **out}
+                if kind == "reteach":
+                    photos = [cv2.imread(str(p)) for p in sorted(self.good_dir.glob("*.jpg"))]
+                    st.teach([im for im in photos if im is not None])
+                    message = "Re-taught; the station stays locked until a self-test passes"
+                elif kind == "resume":
+                    self._set_hold(False, name)
+                    message = "Line resumed"
+                else:
+                    release_quarantine(st.dir, self.audit, users, name, password, req["reason"])
+                    message = "Quarantine released"
+                out = {"approved": True, "message": message}
+        except BaseException:
+            self.pending[request_id] = req
+            raise
+        out = {"id": request_id, "kind": kind, "approved_by": name, **out}
         self.audit.append("agent_approve", name, out, req["reason"])
         return out
+
+    def resume(self, users, name: str, password: str, reason: str) -> dict:
+        """QA releases the hold directly, with or without an agent request; refused while the station is LOCKED."""
+        _require_qa(users, name, password)
+        if not reason.strip():
+            raise ValueError("a reason is required")
+        if self.station.locked:
+            return {"resumed": False, "message": f"Station locked: {self.station.lock_reason}"}
+        self._set_hold(False, name)
+        self.audit.append("resume_line", name, {"hold": False}, reason)
+        return {"resumed": True, "message": "Line resumed"}
