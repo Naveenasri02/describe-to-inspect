@@ -10,11 +10,13 @@ CL = {"rows": 2, "per_row": 5, "count": 10}
 class FakeSam:
     def __init__(self, strips, pockets):
         self.answers = {"blister strip": strips, "pill": pockets}
+        self.more = {}  # extra strip prompts, e.g. "blister pack"
         self.prompts = []
 
     def sam_image(self, image, prompt):
         self.prompts.append(prompt)
-        return [SamObject(i, box, score, None) for i, (box, score) in enumerate(self.answers[prompt])]
+        return [SamObject(i, box, score, None) for i, (box, score) in enumerate(
+            self.more.get(prompt) or self.answers.get(prompt, []))]
 
 
 class BrokenSam:
@@ -105,3 +107,34 @@ def test_extra_object_outside_pattern_holds():
     stray = ((267, 130, 277, 140), 0.9)  # between pocket columns
     lay = find_layout(make_strip(), CL, FakeSam([(STRIP_BOX, 0.95)], _pills(range(9)) + [stray]), _template())
     assert lay.ok is False and lay.note == "object outside the pocket pattern"
+
+
+def test_second_strip_prompt_used_when_first_empty():
+    sam = FakeSam([], _pills(range(10)))
+    sam.more["blister pack"] = [(STRIP_BOX, 0.9)]
+    lay = find_layout(make_strip(), CL, sam)
+    assert lay.ok and lay.strip_box == STRIP_BOX and lay.source == "sam"
+    assert sam.prompts == ["blister strip", "blister pack", "pill"]
+
+
+def test_pills_bound_the_strip_when_no_strip_prompt_works():
+    sam = FakeSam([], _pills(range(10)))
+    lay = find_layout(make_strip(), CL, sam)
+    x0, y0, x1, y1 = (min(pocket_box(i)[0] for i in range(10)), min(pocket_box(i)[1] for i in range(10)),
+                      max(pocket_box(i)[2] for i in range(10)), max(pocket_box(i)[3] for i in range(10)))
+    px, py = int((x1 - x0) * 0.08), int((y1 - y0) * 0.08)
+    assert lay.strip_box == (x0 - px, y0 - py, x1 + px, y1 + py)
+    assert lay.source == "sam-pills" and lay.ok and len(lay.pockets) == 10
+    assert sam.prompts == ["blister strip", "blister pack", "pill pack", "pill"]
+
+
+def test_no_strip_and_no_pills_is_no_strip():
+    lay = find_layout(make_strip(), CL, FakeSam([], []))
+    assert lay.ok is False and lay.note == "no strip" and lay.source == "sam"
+
+
+def test_pill_prompt_called_once():
+    for strips in ([(STRIP_BOX, 0.95)], []):
+        sam = FakeSam(strips, _pills(range(10)))
+        find_layout(make_strip(), CL, sam)
+        assert sam.prompts.count("pill") == 1

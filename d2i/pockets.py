@@ -7,6 +7,8 @@ import numpy as np
 from d2i.meta_api import BudgetExceeded, MetaError
 
 MIN_SCORE = 0.5
+STRIP_PROMPTS = ("blister strip", "blister pack", "pill pack")  # "blister strip" finds nothing on close-ups
+PAD = 0.08  # pill-outline strip: padding as a fraction of the pill bounds
 POCKET_PROMPT = "pill"  # SAM finds pills on real photos; "blister pocket" and "tablet" find nothing
 
 
@@ -14,7 +16,7 @@ POCKET_PROMPT = "pill"  # SAM finds pills on real photos; "blister pocket" and "
 class Layout:
     strip_box: tuple
     pockets: list
-    source: str   # "sam" or "grid"
+    source: str   # "sam", "sam-pills" (strip = padded pill bounds) or "grid"
     ok: bool
     note: str = ""
 
@@ -94,12 +96,23 @@ def _from_template(strip, template):
 def find_layout(image: np.ndarray, cl: dict, client=None, template=None) -> Layout:
     if client is not None:
         try:
-            strips = client.sam_image(image, "blister strip")
-            if not strips:
-                return Layout((0, 0, 0, 0), [], "sam", False, "no strip")
-            strip = tuple(max(strips, key=lambda o: (o.box[2] - o.box[0]) * (o.box[3] - o.box[1])).box)
-            found = client.sam_image(image, POCKET_PROMPT)
-            pills = [o.box for o in found if o.score is None or o.score >= MIN_SCORE]
+            strip = None
+            for prompt in STRIP_PROMPTS:
+                found = [o.box for o in client.sam_image(image, prompt) if o.score is None or o.score >= MIN_SCORE]
+                if found:
+                    strip = tuple(max(found, key=lambda b: (b[2] - b[0]) * (b[3] - b[1])))
+                    break
+            pills = [o.box for o in client.sam_image(image, POCKET_PROMPT) if o.score is None or o.score >= MIN_SCORE]
+            source = "sam"
+            if strip is None:
+                if not pills:
+                    return Layout((0, 0, 0, 0), [], "sam", False, "no strip")
+                h, w = image.shape[:2]
+                x0, y0 = min(b[0] for b in pills), min(b[1] for b in pills)
+                x1, y1 = max(b[2] for b in pills), max(b[3] for b in pills)
+                px, py = int((x1 - x0) * PAD), int((y1 - y0) * PAD)
+                strip = (max(0, x0 - px), max(0, y0 - py), min(w, x1 + px), min(h, y1 + py))
+                source = "sam-pills"
             centres = [((b[0] + b[2]) / 2, (b[1] + b[3]) / 2) for b in pills]
             pills = [b for b, (cx, cy) in zip(pills, centres)
                      if strip[0] <= cx <= strip[2] and strip[1] <= cy <= strip[3]]
@@ -107,7 +120,7 @@ def find_layout(image: np.ndarray, cl: dict, client=None, template=None) -> Layo
                 pockets = _row_major(pills)
                 ok = len(pockets) == cl["count"]
                 note = "" if ok else f"found {len(pockets)} pills, checklist says {cl['count']}"
-                return Layout(strip, pockets, "sam", ok, note)
+                return Layout(strip, pockets, source, ok, note)
             pockets = _from_template(strip, template)
             note = ""
             if len(pills) > len(pockets):
@@ -115,7 +128,7 @@ def find_layout(image: np.ndarray, cl: dict, client=None, template=None) -> Layo
             elif any(not any(p[0] <= (b[0] + b[2]) / 2 <= p[2] and p[1] <= (b[1] + b[3]) / 2 <= p[3]
                              for p in pockets) for b in pills):
                 note = "object outside the pocket pattern"
-            return Layout(strip, pockets, "sam", not note, note)
+            return Layout(strip, pockets, source, not note, note)
         except (MetaError, BudgetExceeded):
             pass  # keep inspecting offline with the checklist grid
     strip = _strip_by_contour(image)
