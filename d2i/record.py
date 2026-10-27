@@ -117,16 +117,25 @@ def _quarantine_section(product_dir: Path) -> str:
 def _audit_sections(audit, since: float, until: float) -> str:
     if audit is None:
         return "<h2>Audit trail</h2><p>No audit log</p>"
-    ts = lambda r: datetime.fromisoformat(r["at"]).timestamp()
-    rows = [r for r in audit.entries() if since <= ts(r) <= until]
-    ok, bad = audit.verify()
-    chain = f"Audit chain: intact ({len(audit.entries())} entries)" if ok else f"Audit chain: BROKEN at entry {bad}"
-    phys = [[r["at"], r["user"], r["details"].get("strip_label", ""), "yes" if r["details"].get("ejected") else "no"]
-            for r in rows if r["action"] == "physical_challenge"]
-    return ("<h2>Audit trail</h2><p>The audit trail is tamper-evident: each entry carries the hash of the one before.</p>"
-            + _table(["Time (UTC)", "User", "Action", "Reason"], [[r["at"], r["user"], r["action"], r["reason"]] for r in rows])
-            + "<h2>Physical challenge strips</h2>" + _table(["Time (UTC)", "User", "Strip", "Ejected?"], phys)
-            + f"<p>{e(chain)}</p>")
+    ok, bad = audit.verify()  # first: a damaged file must still render, with BROKEN shown
+    all_rows = audit.entries()
+    chain = f"Audit chain: intact ({len(all_rows)} entries)" if ok else f"Audit chain: BROKEN at entry {bad}"
+
+    def in_range(r):
+        try:
+            return since <= datetime.fromisoformat(r["at"]).timestamp() <= until
+        except (KeyError, TypeError, ValueError, OSError):
+            return True  # unreadable time: show the row rather than hide it
+
+    rows = [r for r in all_rows if in_range(r)]
+    g = lambda r, k: r.get(k, "?")
+    d = lambda r: r["details"] if isinstance(r.get("details"), dict) else {}
+    phys = [[g(r, "at"), g(r, "user"), d(r).get("strip_label", "?"), "yes" if d(r).get("ejected") else "no"]
+            for r in rows if r.get("action") == "physical_challenge"]
+    return (f"<h2>Audit trail</h2><p>{e(chain)}</p>"
+            "<p>The audit trail is tamper-evident: each entry carries the hash of the one before.</p>"
+            + _table(["Time (UTC)", "User", "Action", "Reason"], [[g(r, "at"), g(r, "user"), g(r, "action"), g(r, "reason")] for r in rows])
+            + "<h2>Physical challenge strips</h2>" + _table(["Time (UTC)", "User", "Strip", "Ejected?"], phys))
 
 
 def shift_record(product_dir: Path, since: float, until: float, batch: str, operator: str, client=None,

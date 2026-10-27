@@ -78,3 +78,30 @@ def test_sign_requires_password(tmp_path):
     s = sign_record("<html>", audit, users, "qa1", "pw2")
     assert s["signed_by"] == "qa1" and len(s["record_sha256"]) == 64
     assert audit.entries()[0]["action"] == "sign"
+
+
+def _three(tmp_path):
+    log = AuditLog(tmp_path / "a.jsonl")
+    for i in range(3):
+        log.append("act", "u", {"i": i})
+    return log
+
+
+def _garble(tmp_path):
+    lines = (tmp_path / "a.jsonl").read_text().splitlines()
+    lines[1] = "{not json"
+    (tmp_path / "a.jsonl").write_text("\n".join(lines) + "\n")
+
+
+def test_verify_garbled_line_reports_break(tmp_path):
+    log = _three(tmp_path)
+    _garble(tmp_path)
+    assert log.verify() == (False, 2)
+    assert len(log.entries()) == 2 and len(log.entries(since="2000-01-01T00:00:00+00:00")) == 2
+
+
+def test_append_refuses_on_damaged_log(tmp_path):
+    log = _three(tmp_path)
+    _garble(tmp_path)
+    with pytest.raises(ValueError, match="damaged at entry 2"):
+        log.append("act", "u", {})

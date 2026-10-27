@@ -20,9 +20,21 @@ class AuditLog:
     def _rows(self) -> list[dict]:
         if not self.path.exists():
             return []
-        return [json.loads(x) for x in self.path.read_text(encoding="utf-8").splitlines() if x.strip()]
+        return [self._parse(x) for x in self.path.read_text(encoding="utf-8").splitlines() if x.strip()]
+
+    @staticmethod
+    def _parse(line: str):
+        """A damaged line becomes None so verify() can report its position instead of raising."""
+        try:
+            row = json.loads(line)
+        except ValueError:
+            return None
+        return row if isinstance(row, dict) else None
 
     def append(self, action: str, user: str, details: dict, reason: str = "") -> dict:
+        ok, bad = self.verify()
+        if not ok:
+            raise ValueError(f"audit log is damaged at entry {bad} — stop and call QA")
         rows = self._rows()
         entry = {"seq": len(rows) + 1, "at": datetime.now(timezone.utc).isoformat(timespec="seconds"), "user": user,
                  "action": action, "details": details, "reason": reason, "prev": rows[-1]["hash"] if rows else GENESIS}
@@ -35,6 +47,8 @@ class AuditLog:
     def verify(self) -> tuple[bool, int | None]:
         prev = GENESIS
         for i, row in enumerate(self._rows(), 1):
+            if row is None:
+                return False, i
             body = {k: v for k, v in row.items() if k != "hash"}
             if row.get("seq") != i or row.get("prev") != prev or row.get("hash") != _hash(body):
                 return False, i
@@ -42,11 +56,18 @@ class AuditLog:
         return True, None
 
     def entries(self, since: str | None = None) -> list[dict]:
-        rows = self._rows()
+        rows = [r for r in self._rows() if r is not None]
         if since is None:
             return rows
         t = datetime.fromisoformat(since)
-        return [r for r in rows if datetime.fromisoformat(r["at"]) >= t]
+        out = []
+        for r in rows:
+            try:
+                if datetime.fromisoformat(r["at"]) >= t:
+                    out.append(r)
+            except (KeyError, TypeError, ValueError):
+                pass  # unreadable time: verify() reports the damage
+        return out
 
 
 def _pbkdf2(password: str, salt: str) -> str:

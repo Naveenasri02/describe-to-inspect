@@ -112,3 +112,15 @@ def test_rejects_sorted_by_rule_number(product):
     (product / "log.jsonl").write_text("\n".join(json.dumps(r) for r in rows) + "\n")
     html = shift_record(product, 0, T0 + 100, "B", "A")
     assert html.index("Rule 2<") < html.index("Rule 10<")
+
+
+def test_record_renders_broken_chain_with_stripped_keys(product):
+    audit = AuditLog(product / "audit.jsonl")
+    for i in range(3):
+        audit.append("act", "Asha", {"i": i})
+    rows = [json.loads(x) for x in (product / "audit.jsonl").read_text().splitlines()]
+    del rows[1]["user"]
+    rows[2]["at"] = "garbage"
+    (product / "audit.jsonl").write_text("\n".join(json.dumps(r) for r in rows) + "\n")
+    html = shift_record(product, 0, T0 + 100, "B", "A", audit=audit)
+    assert "Audit chain: BROKEN at entry 2" in html
