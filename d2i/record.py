@@ -5,6 +5,7 @@ from datetime import datetime
 from html import escape as e
 from pathlib import Path
 
+from d2i.audit import AuditLog, config_hashes, quarantine_list
 from d2i.checklist import current
 from d2i.meta_api import BudgetExceeded, MetaError
 
@@ -64,7 +65,7 @@ def _summary(product_dir, verdicts, tests, client) -> str:
         out = client.spark_json(SUMMARY_RULE, _prompt(product_dir, verdicts, tests, 200),
                                 {"type": "object", "additionalProperties": False, "required": ["summary"],
                                  "properties": {"summary": {"type": "string"}}}, name="summary")
-        return out["summary"]
+        return out.get("summary") or "Summary not available"
     except (MetaError, BudgetExceeded):
         return "Summary not available"
 
@@ -90,7 +91,7 @@ def _totals_section(verdicts: list[dict]) -> str:
 
 def _rejects_section(verdicts: list[dict]) -> str:
     n = Counter(f"Rule {r['rule']}" if r["rule"] else "Unlisted" for v in verdicts if v["status"] == "REJECT" for r in v["reasons"])
-    return "<h2>Rejects per rule</h2>" + _table(["Rule", "Rejects"], [[k, c] for k, c in sorted(n.items())])
+    return "<h2>Rejects per rule</h2>" + _table(["Rule", "Rejects"], [[k, c] for k, c in sorted(n.items(), key=lambda kv: (kv[0] == 'Unlisted', int(kv[0][5:]) if kv[0] != 'Unlisted' else 0))])
 
 
 def _held_section(verdicts: list[dict]) -> str:
@@ -99,7 +100,37 @@ def _held_section(verdicts: list[dict]) -> str:
     return "<h2>Held strips</h2>" + _table(["Time", "Strip", "Image", "Reason"], rows)
 
 
-def shift_record(product_dir: Path, since: float, until: float, batch: str, operator: str, client=None) -> str:
+def _config_section(product_dir: Path) -> str:
+    h = config_hashes(product_dir)
+    return "<h2>Configuration</h2>" + _table(["Item", "Value"], [[k, "" if v is None else v] for k, v in h.items()])
+
+
+def _quarantine_section(product_dir: Path) -> str:
+    q = quarantine_list(product_dir)
+    if not q["strips"]:
+        return ""
+    rows = [[v["at"], v["strip_id"] if v["strip_id"] is not None else "", v["status"]] for v in q["strips"]]
+    return (f"<h2>Quarantine</h2><p>Self-test failed at {e(str(q['failed_at']))}; strips since the last passed "
+            f"self-test ({e(str(q['since']))}) need QA review.</p>" + _table(["Time", "Strip", "Verdict"], rows))
+
+
+def _audit_sections(audit, since: float, until: float) -> str:
+    if audit is None:
+        return "<h2>Audit trail</h2><p>No audit log</p>"
+    ts = lambda r: datetime.fromisoformat(r["at"]).timestamp()
+    rows = [r for r in audit.entries() if since <= ts(r) <= until]
+    ok, bad = audit.verify()
+    chain = f"Audit chain: intact ({len(audit.entries())} entries)" if ok else f"Audit chain: BROKEN at entry {bad}"
+    phys = [[r["at"], r["user"], r["details"].get("strip_label", ""), "yes" if r["details"].get("ejected") else "no"]
+            for r in rows if r["action"] == "physical_challenge"]
+    return ("<h2>Audit trail</h2><p>The audit trail is tamper-evident: each entry carries the hash of the one before.</p>"
+            + _table(["Time (UTC)", "User", "Action", "Reason"], [[r["at"], r["user"], r["action"], r["reason"]] for r in rows])
+            + "<h2>Physical challenge strips</h2>" + _table(["Time (UTC)", "User", "Strip", "Ejected?"], phys)
+            + f"<p>{e(chain)}</p>")
+
+
+def shift_record(product_dir: Path, since: float, until: float, batch: str, operator: str, client=None,
+                 audit: AuditLog | None = None) -> str:
     verdicts, tests = _records(product_dir, since, until)
     cl = current(Path(product_dir) / "checklists.jsonl") or {}
     span = " to ".join(datetime.fromtimestamp(t).isoformat(timespec="seconds") for t in (since, until))
@@ -108,6 +139,7 @@ def shift_record(product_dir: Path, since: float, until: float, batch: str, oper
         f"<p>Product: {e(str(cl.get('product', '')))}<br>Batch: {e(batch)}<br>Operator: {e(operator)}<br>Time range: {e(span)}</p>",
         _checklist_section(cl), _selftest_section(tests), _totals_section(verdicts),
         _rejects_section(verdicts), _held_section(verdicts),
+        _config_section(product_dir), _quarantine_section(product_dir), _audit_sections(audit, since, until),
         f"<h2>Shift summary (written by Muse Spark — check before signing)</h2><p>{e(_summary(product_dir, verdicts, tests, client))}</p>",
         f"<p>{e(FOOTER)}</p>",
         "<div class='sig'><p>QA name: ______________________</p><p>Signature: ______________________</p>"

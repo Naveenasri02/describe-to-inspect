@@ -5,6 +5,7 @@ import pytest
 
 from d2i.checklist import approve
 from d2i.meta_api import MetaError
+from d2i.audit import AuditLog, config_hashes
 from d2i.record import ask, shift_record
 from tests.test_station import CHECKLIST
 
@@ -87,3 +88,27 @@ def test_record_with_summary_and_escaping(product):
 def test_record_summary_error_falls_back(product):
     html = shift_record(product, 0, T0 + 100, "B", "A", client=Fake(err=MetaError("down")))
     assert "Summary not available" in html
+
+
+def test_record_shows_chain_and_hashes(product):
+    (product / "model.pt").write_bytes(b"weights")
+    audit = AuditLog(product / "audit.jsonl")
+    audit.append("teach", "Asha", {})
+    audit.append("sign", "Priya", {})
+    sha = config_hashes(product)["model_sha256"]
+    html = shift_record(product, 0, T0 + 100, "B", "A", audit=audit)
+    assert "Audit chain: intact (2 entries)" in html and sha[:12] in html and "tamper-evident" in html
+    (product / "audit.jsonl").write_text((product / "audit.jsonl").read_text().replace("Asha", "Mallory"))
+    assert "Audit chain: BROKEN at entry 1" in shift_record(product, 0, T0 + 100, "B", "A", audit=audit)
+
+
+def test_record_summary_missing_key_falls_back(product):
+    assert "Summary not available" in shift_record(product, 0, T0 + 100, "B", "A", client=Fake({"other": "x"}))
+
+
+def test_rejects_sorted_by_rule_number(product):
+    r10 = dict(R2, rule=10)
+    rows = [_verdict(9, "REJECT", [R2]), _verdict(10, "REJECT", [r10])]
+    (product / "log.jsonl").write_text("\n".join(json.dumps(r) for r in rows) + "\n")
+    html = shift_record(product, 0, T0 + 100, "B", "A")
+    assert html.index("Rule 2<") < html.index("Rule 10<")
