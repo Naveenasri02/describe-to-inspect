@@ -185,3 +185,12 @@ def test_stale_template_after_checklist_change_locks(tmp_path):
     st = Station(tmp_path, client=ContourSam(), clock=lambda: T0)
     assert st.lock_reason == "Checklist changed — teach the station again"
     assert st.inspect(make_strip()).status == "LOCKED"
+
+
+def test_teach_saves_the_sam_strip_box(tmp_path):
+    approve(CHECKLIST, "Priya", tmp_path / "checklists.jsonl")
+    st = Station(tmp_path, client=ContourSam(), clock=lambda: T0)
+    st.teach([make_strip(seed=i, shift=(i, 0)) for i in range(6)])  # shifts 0..5 px: median x is +2.5
+    want = (STRIP_BOX[0] + 2.5, STRIP_BOX[1], STRIP_BOX[2] + 2.5, STRIP_BOX[3])
+    assert all(abs(g - w) <= 2 for g, w in zip(st.strip_box, want)), st.strip_box
+    assert Station(tmp_path, clock=lambda: T0).strip_box == st.strip_box

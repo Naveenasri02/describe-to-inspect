@@ -58,7 +58,6 @@ def run(product_dir: Path, runs: int, bad_dir: Path, chat=None) -> tuple[str, li
     from d2i.llm import ToolChat
     from d2i.meta_api import Budget
     from d2i.plc import Plc
-    from d2i.pockets import find_layout
     from d2i.station import Station
     from d2i.supervisor import Supervisor, baseline_from
 
@@ -70,10 +69,8 @@ def run(product_dir: Path, runs: int, bad_dir: Path, chat=None) -> tuple[str, li
         work = Path(tmp) / "p"
         shutil.copytree(product_dir, work)  # the real product's state is never touched
         st = Station(work)
-        boxes = [l.strip_box for l in (find_layout(im, st.checklist, None, st.template) for im in good) if l.ok]
-        if not boxes:
-            raise ValueError("no good photo shows a findable strip layout; teach the product first")
-        ref = tuple(float(v) for v in np.median(boxes, axis=0))
+        h, w = good[0].shape[:2]
+        ref = st.strip_box or (0.0, 0.0, float(w), float(h))  # taught (SAM) strip box, as the app uses
         chat = chat or ToolChat(budget)
         for sc in scenarios(good, bad):
             cause = safe = 0

@@ -353,3 +353,36 @@ def test_banner_ready_then_no_strip_grey_then_pass(tmp_path):
     assert plc.regs == [0, 0, 0, 0] and plc.coils[0] is False  # no reject pulse, no pass counted
     c.post("/inspect", files=up(make_strip(seed=15, shift=(2, 1))))
     assert c.get("/status").json()["state"] == "PASS" and plc.regs[0] == 1
+
+
+def test_hold_and_resume_work_without_a_supervisor(tmp_path):
+    plc = Plc(host="127.0.0.1", port=0)
+    users = Users(tmp_path / "users.json")
+    users.add("qa1", "qa", "pw-qa")
+    c = TestClient(app_mod.create_app(tmp_path / "p", None, plc=plc))  # never taught: no Supervisor can be built
+    assert c.post("/hold", json={"reason": "jam"}).json() == {"held": True}
+    s = c.get("/status").json()
+    assert plc.coils[2] is True and s["state"] == "HOLD"
+    assert s["text"].startswith("Line held by operator — QA must resume.")
+    assert "Log in" in c.post("/resume", json={"password": "pw-qa", "reason": "ok"}).json()["error"]
+    login(c, "qa1", "pw-qa")
+    assert c.post("/resume", json={"password": "pw-qa", "reason": "jam cleared"}).json() == {
+        "resumed": False, "message": "Station locked: No self-test this shift"}
+    assert plc.coils[2] is True
+
+
+def test_agent_runs_when_offline_finder_cannot_see_teaching_photos(tmp_path):
+    plc = Plc(host="127.0.0.1", port=0)
+    c, p = bench(tmp_path, ScriptChat({"content": "Checked."}), plc=plc)
+    for f in (p / "good").glob("*.jpg"):  # close-ups taught with SAM: the strip touches the frame edge
+        f.write_bytes(jpg(make_strip(seed=1)[70:290, 80:560]))
+    assert c.post("/investigate", json={}).json().get("error") is None
+    assert wait_done(c)["result"]["conclusion"] == "Checked."
+    assert c.get("/status").json()["text"].startswith("Line held by the Shift Supervisor — QA must resume.")
+    login(c, "qa1", "pw-qa")
+    assert c.post("/resume", json={"password": "pw-qa", "reason": "checked"}).json()["resumed"] is True
+    assert plc.coils[2] is False and c.get("/status").json()["held"] is False
+    old = TestClient(app_mod.create_app(p, None, chat=ScriptChat({"content": "Old model."})))
+    old.app.state.station.strip_box = None  # taught before the strip box was saved: the full-frame box
+    assert old.post("/investigate", json={}).json().get("error") is None
+    assert wait_done(old)["result"]["conclusion"] == "Old model."

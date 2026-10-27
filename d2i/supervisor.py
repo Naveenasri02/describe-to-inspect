@@ -69,6 +69,43 @@ def image_health(frame, baseline: dict) -> dict:
     return {**{k: round(v, 4) for k, v in now.items()}, "change": change, "drift": bool(drift)}
 
 
+def hold_state(product_dir) -> tuple[bool, str]:
+    """(held, who held it) from hold.json; an unreadable file counts as held (the safe direction)."""
+    try:
+        h = json.loads((Path(product_dir) / "hold.json").read_text(encoding="utf-8"))
+        return h["held"] is not False, str(h.get("by") or "")
+    except FileNotFoundError:
+        return False, ""
+    except Exception:
+        return True, ""
+
+
+def set_hold(product_dir, plc, on: bool, by: str):
+    """PLC hold coil plus hold.json, so a restart keeps the line held."""
+    plc.set_hold(on)
+    at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    (Path(product_dir) / "hold.json").write_text(json.dumps({"held": on, "at": at, "by": by}), encoding="utf-8")
+
+
+def hold_line(product_dir, plc, audit, by: str, reason: str) -> dict:
+    """Anyone may hold the line (the safe direction); only resume needs QA."""
+    set_hold(product_dir, plc, True, by)
+    audit.append("hold_line", by, {"hold": True}, reason)
+    return {"held": True}
+
+
+def resume_line(station, plc, audit, users, name: str, password: str, reason: str) -> dict:
+    """QA releases the hold directly, with or without an agent request; refused while the station is LOCKED."""
+    _require_qa(users, name, password)
+    if not reason.strip():
+        raise ValueError("a reason is required")
+    if station.locked:
+        return {"resumed": False, "message": f"Station locked: {station.lock_reason}"}
+    set_hold(station.dir, plc, False, name)
+    audit.append("resume_line", name, {"hold": False}, reason)
+    return {"resumed": True, "message": "Line resumed"}
+
+
 def camera_shift(layout, ref_box) -> dict:
     """Strip-centre movement against the taught strip box; drift past 5 % of the strip width."""
     (x0, y0, x1, y1), (r0, s0, r1, s1) = layout.strip_box, ref_box
@@ -86,14 +123,7 @@ class Supervisor:
         self.tool_lock = tool_lock  # any context manager; held around each tool call except ask_operator (it waits)
         self.pending = {}  # request id -> request, until QA approves it
         self._trigger, self._steps, self._new = "", [], []
-        self._hold_file = self.station.dir / "hold.json"
-        try:
-            self._held = json.loads(self._hold_file.read_text(encoding="utf-8"))["held"] is not False
-        except FileNotFoundError:
-            self._held = False
-        except Exception:  # unreadable hold file: stay held (the safe direction)
-            self._held = True
-        if self._held:
+        if hold_state(self.station.dir)[0]:
             plc.set_hold(True)  # a restart keeps the line held
         self._tools = {
             "image_health": lambda: image_health(self.get_frame(), self.baseline),
@@ -206,12 +236,7 @@ class Supervisor:
         return {"held": True}
 
     def _set_hold(self, on: bool, by: str):
-        """PLC hold coil plus hold.json, so a restart keeps the line held."""
-        self.plc.set_hold(on)
-        if on != self._held:
-            self._held = on
-            at = datetime.now(timezone.utc).isoformat(timespec="seconds")
-            self._hold_file.write_text(json.dumps({"held": on, "at": at, "by": by}), encoding="utf-8")
+        set_hold(self.station.dir, self.plc, on, by)  # never cached: the screen's /hold and /resume write it too
 
     def _request(self, kind, reason):
         req = {"id": uuid.uuid4().hex[:8], "kind": kind, "reason": f"Agent request: {reason}"}
@@ -261,20 +286,3 @@ class Supervisor:
         out = {"id": request_id, "kind": kind, "approved_by": name, **out}
         self.audit.append("agent_approve", name, out, req["reason"])
         return out
-
-    def hold(self, by: str, reason: str) -> dict:
-        """Anyone may hold the line (the safe direction); only resume needs QA."""
-        self._set_hold(True, by)
-        self.audit.append("hold_line", by, {"hold": True}, reason)
-        return {"held": True}
-
-    def resume(self, users, name: str, password: str, reason: str) -> dict:
-        """QA releases the hold directly, with or without an agent request; refused while the station is LOCKED."""
-        _require_qa(users, name, password)
-        if not reason.strip():
-            raise ValueError("a reason is required")
-        if self.station.locked:
-            return {"resumed": False, "message": f"Station locked: {self.station.lock_reason}"}
-        self._set_hold(False, name)
-        self.audit.append("resume_line", name, {"hold": False}, reason)
-        return {"resumed": True, "message": "Line resumed"}

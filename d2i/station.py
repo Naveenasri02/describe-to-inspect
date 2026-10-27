@@ -49,6 +49,7 @@ class Station:
         self.prototypes, self.taught_at = state.get("prototypes", {}), state.get("taught_at")
         t = state.get("template")
         self.template = [tuple(b) for b in t] if t else None
+        self.strip_box = tuple(state["strip_box"]) if state.get("strip_box") else None  # median taught strip box
 
     def _now(self) -> str:
         return datetime.fromtimestamp(self.clock()).isoformat(timespec="seconds")
@@ -105,6 +106,7 @@ class Station:
         for _ in images:
             trace.record("dinov2-small", "local", "teach", (time.perf_counter() - t0) * 1000 / len(images))
         template = template_from(layouts)
+        strip_box = tuple(float(v) for v in np.median([l.strip_box for l in layouts], axis=0))  # SAM's, when online
         protos = {}
         for kind in POCKET_KINDS:
             embs = []
@@ -119,9 +121,10 @@ class Station:
         self.judge.save(self.dir / "model.pt")
         self.taught_at = self.clock()
         state = torch.load(self.dir / "model.pt", map_location="cpu")
-        state.update(prototypes=protos, taught_at=self.taught_at, template=[list(b) for b in template])
+        state.update(prototypes=protos, taught_at=self.taught_at, template=[list(b) for b in template],
+                     strip_box=list(strip_box))
         torch.save(state, self.dir / "model.pt")
-        self.prototypes, self.template = protos, template
+        self.prototypes, self.template, self.strip_box = protos, template, strip_box
         return info
 
     def _reason(self, check, pocket=None):

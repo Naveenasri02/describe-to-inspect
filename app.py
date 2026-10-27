@@ -25,7 +25,7 @@ from d2i.llm import ToolChat
 from d2i.meta_api import Budget, MetaClient
 from d2i.pockets import find_layout
 from d2i.station import Station, Verdict
-from d2i.supervisor import Supervisor, baseline_from
+from d2i.supervisor import Supervisor, baseline_from, hold_line, hold_state, resume_line
 
 STATIC = Path(__file__).parent / "static"
 NEED_GOOD = 5
@@ -118,12 +118,7 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
         return sessions.get(request.cookies.get("d2i_session"), ("operator", None))
 
     def held_now():
-        try:
-            return json.loads((product_dir / "hold.json").read_text(encoding="utf-8"))["held"] is not False
-        except FileNotFoundError:
-            return False
-        except Exception:  # unreadable hold file: held (the safe direction)
-            return True
+        return hold_state(product_dir)[0]
 
     if plc and held_now():
         plc.set_hold(True)  # a restart keeps the line held
@@ -186,9 +181,11 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
             locked, reason = True, f"Cannot read self-test log: {ex}"
         if plc:
             plc.set_locked(locked)  # every poll, so shift expiry reaches coil 1
-        held, (qn, qerr) = held_now(), quarantine_count()
+        (held, by), (qn, qerr) = hold_state(product_dir), quarantine_count()
         if held:
-            banner, text = "HOLD", "Line held by the Shift Supervisor — QA must resume." + (f" {reason}" if locked else "")
+            by = "the Shift Supervisor" if by == "supervisor" else by
+            banner, text = "HOLD", (f"Line held by {by} — QA must resume." if by else "Line held — QA must resume.") \
+                + (f" {reason}" if locked else "")
         elif locked:
             banner, text = "LOCKED", reason
         elif last and last["status"] in ("REJECT", "HOLD"):
@@ -413,12 +410,11 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
                         if im is not None]
                 if not good or not st.checklist:
                     raise ValueError(NEED_TEACH)
-                boxes = [l.strip_box for l in (find_layout(im, st.checklist, None, st.template) for im in good) if l.ok]
-                if not boxes:
-                    raise ValueError(NEED_TEACH)
+                h, w = good[0].shape[:2]
+                ref = st.strip_box or (0.0, 0.0, float(w), float(h))  # taught (SAM) strip box; else the full frame
                 inv["sup"] = Supervisor(st, plc or _NoPlc(), audit, chat or ToolChat(budget), ask_operator,
-                                        baseline_from(good), tuple(float(v) for v in np.median(boxes, axis=0)),
-                                        lambda: src.get() if src else None, product_dir / "good", tool_lock=lock)
+                                        baseline_from(good), ref, lambda: src.get() if src else None,
+                                        product_dir / "good", tool_lock=lock)
             return inv["sup"]
 
     @app.post("/investigate")
@@ -469,8 +465,9 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
     @app.post("/hold")
     def hold_ep(request: Request, body: dict | None = None):
         def run():
-            with lock:
-                return get_sup().hold(who(request)[0], str((body or {}).get("reason", "")) or "operator voice command")
+            with lock:  # hold.json + PLC only: works before teaching and without the agent
+                return hold_line(product_dir, plc or _NoPlc(), audit, who(request)[0],
+                                 str((body or {}).get("reason", "")) or "operator voice command")
         return paid(run)
 
     @app.post("/command")
@@ -494,7 +491,8 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
     def resume(body: dict, request: Request):
         def run():
             with lock:
-                return get_sup().resume(users, qa(request), str(body.get("password", "")), str(body.get("reason", "")))
+                return resume_line(st, plc or _NoPlc(), audit, users, qa(request), str(body.get("password", "")),
+                                   str(body.get("reason", "")))
         return paid(run)
 
     def overlay_boxes(frame):

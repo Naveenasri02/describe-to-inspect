@@ -16,7 +16,7 @@ from d2i.llm import ToolChat
 from d2i.meta_api import CREDIT_END_UTC, Budget
 from d2i.plc import Plc
 from d2i.station import Station
-from d2i.supervisor import MAX_STEPS, MODEL_DOWN, STEP_LIMIT, Supervisor, baseline_from
+from d2i.supervisor import MAX_STEPS, MODEL_DOWN, STEP_LIMIT, Supervisor, baseline_from, resume_line
 from tests.conftest import STRIP_BOX, FakeHTTP, make_strip
 from tests.test_station import CHECKLIST, T0, Clock
 
@@ -271,15 +271,15 @@ def test_malformed_tool_call_holds_and_calls_qa(bench):
 def test_qa_can_resume_without_model_request(bench):
     sup = supervisor(bench, ScriptedChat(say("Rejects look real.")), make_strip(seed=12))
     assert sup.investigate("rejects rose")["pending"] == [] and bench.plc.coils[2] is True
+    resume = lambda *a: resume_line(bench.st, bench.plc, bench.audit, bench.users, *a)  # noqa: E731
     with pytest.raises(PermissionError):
-        sup.resume(bench.users, "op", "pw-op", "checked")
+        resume("op", "pw-op", "checked")
     with pytest.raises(ValueError):
-        sup.resume(bench.users, "qa1", "pw-qa", " ")
-    assert sup.resume(bench.users, "qa1", "pw-qa", "checked") == {
-        "resumed": False, "message": "Station locked: No self-test this shift"}
+        resume("qa1", "pw-qa", " ")
+    assert resume("qa1", "pw-qa", "checked") == {"resumed": False, "message": "Station locked: No self-test this shift"}
     assert bench.plc.coils[2] is True
     assert bench.st.self_test(make_strip(seed=12), rng_seed=5)["passed"]  # a person's self-test records
-    assert sup.resume(bench.users, "qa1", "pw-qa", "strips re-checked by hand")["resumed"] is True
+    assert resume("qa1", "pw-qa", "strips re-checked by hand")["resumed"] is True
     assert bench.plc.coils[2] is False
     e = bench.audit.entries()[-1]
     assert (e["action"], e["user"], e["reason"]) == ("resume_line", "qa1", "strips re-checked by hand")
@@ -290,10 +290,10 @@ def test_hold_survives_restart(bench):
     held = json.loads((bench.st.dir / "hold.json").read_text(encoding="utf-8"))
     assert held["held"] is True and held["by"] == "supervisor" and held["at"]
     bench.plc = Plc(host="127.0.0.1", port=0)  # process restart: a fresh PLC starts with coil 2 off
-    sup = supervisor(bench, ScriptedChat(), make_strip(seed=12))
+    supervisor(bench, ScriptedChat(), make_strip(seed=12))
     assert bench.plc.coils[2] is True
     bench.st.self_test(make_strip(seed=12), rng_seed=5)
-    sup.resume(bench.users, "qa1", "pw-qa", "checked")
+    resume_line(bench.st, bench.plc, bench.audit, bench.users, "qa1", "pw-qa", "checked")
     bench.plc = Plc(host="127.0.0.1", port=0)
     supervisor(bench, ScriptedChat(), make_strip(seed=12))
     assert bench.plc.coils[2] is False
