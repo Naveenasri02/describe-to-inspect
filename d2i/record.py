@@ -132,9 +132,11 @@ def _audit_sections(audit, since: float, until: float) -> str:
     d = lambda r: r["details"] if isinstance(r.get("details"), dict) else {}
     phys = [[g(r, "at"), g(r, "user"), d(r).get("strip_label", "?"), "yes" if d(r).get("ejected") else "no"]
             for r in rows if r.get("action") == "physical_challenge"]
+    agent = any(str(r.get("action", "")).startswith("agent_") for r in rows)  # rows carrying the agent's text
     return (f"<h2>Audit trail</h2><p>{e(chain)}</p>"
             "<p>The audit trail is tamper-evident: each entry carries the hash of the one before.</p>"
             + _table(["Time (UTC)", "User", "Action", "Reason"], [[g(r, "at"), g(r, "user"), g(r, "action"), g(r, "reason")] for r in rows])
+            + ("<p>Built with Muse Spark Open</p>" if agent else "")
             + "<h2>Physical challenge strips</h2>" + _table(["Time (UTC)", "User", "Strip", "Ejected?"], phys))
 
 

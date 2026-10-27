@@ -64,7 +64,7 @@ td,th{font-size:12px;padding:2px 6px;text-align:left}
   <div class="small"><a href="/lamp" target="_blank">Stack-light page</a></div>
 </section>
 <section>
-  <b>Shift Supervisor (Muse Spark Open, open weights)</b>
+  <b>Shift Supervisor (<span id="supmodel">Muse Spark Open, open weights</span>)</b>
   <div><input id="trig" placeholder="Why? e.g. rejects rose"><button onclick="investigate()">Investigate</button></div>
   <div id="invstate" class="small"></div>
   <ol id="steps"></ol><div class="model">Step summaries: written by the model — check before acting</div>
@@ -101,7 +101,7 @@ async function refresh(){
   const s=await (await fetch("/status")).json();
   $("banner").style.background=col[s.state]||"#888";
   $("banner").firstChild.textContent=s.state;$("why").textContent=s.text;
-  $("spent").textContent=s.spent_usd.toFixed(2);$("ver").textContent=s.checklist_version??"-";
+  $("spent").textContent=s.spent_usd==null?"?":s.spent_usd.toFixed(2);$("ver").textContent=s.checklist_version??"-";
   $("counts").textContent=Object.entries(s.counts).map(([k,v])=>k+" "+v).join(" · ");
   $("rules").innerHTML="";(s.pending||s.rules).forEach(t=>{const li=document.createElement("li");li.textContent=t.replace(/^Rule \d+: /,"");$("rules").appendChild(li)});
   $("pending").textContent=s.pending?"Waiting for approval":"";
@@ -136,6 +136,8 @@ let reqSig="",qId="";
 async function invRefresh(){
   const i=await (await fetch("/investigation")).json();
   $("invstate").textContent=i.running?"Investigating...":(i.result?(i.result.error||"Done"):"");
+  if(i.result&&i.result.platform)$("supmodel").textContent=  // the model that actually answered
+    {"Meta API":"Muse Spark 1.3 on the Meta API, fallback",none:"no model answered"}[i.result.platform]||"Muse Spark Open, open weights";
   const ol=$("steps");ol.replaceChildren();
   i.steps.forEach(t=>ol.appendChild(mk("li",t.tool+" "+JSON.stringify(t.args)+" → "+JSON.stringify(t.result).slice(0,160))));
   $("askbox").hidden=!i.question;if(i.question){qId=i.question.id;$("askq").textContent=i.question.text}

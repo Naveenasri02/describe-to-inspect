@@ -102,6 +102,15 @@ def test_record_shows_chain_and_hashes(product):
     assert "Audit chain: BROKEN at entry 1" in shift_record(product, 0, T0 + 100, "B", "A", audit=audit)
 
 
+def test_agent_text_in_the_audit_table_carries_the_credit(product):
+    audit = AuditLog(product / "audit.jsonl")
+    audit.append("teach", "Asha", {})
+    assert "Built with Muse Spark Open" not in shift_record(product, 0, T0 + 100, "B", "A", audit=audit)
+    audit.append("agent_approve", "Priya", {"kind": "reteach"}, "Agent request: lamp moved")
+    html = shift_record(product, 0, T0 + 100, "B", "A", audit=audit)
+    assert "Agent request: lamp moved" in html and "<p>Built with Muse Spark Open</p>" in html
+
+
 def test_record_builds_when_network_is_down(product):
     import requests
     from d2i.meta_api import CREDIT_END_UTC, Budget, MetaClient
