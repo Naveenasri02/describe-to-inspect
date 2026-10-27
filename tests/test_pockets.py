@@ -133,8 +133,22 @@ def test_no_strip_and_no_pills_is_no_strip():
     assert lay.ok is False and lay.note == "no strip" and lay.source == "sam"
 
 
-def test_pill_prompt_called_once():
+def test_pill_prompts_stop_at_first_that_finds_pills():
     for strips in ([(STRIP_BOX, 0.95)], []):
         sam = FakeSam(strips, _pills(range(10)))
         find_layout(make_strip(), CL, sam)
-        assert sam.prompts.count("pill") == 1
+        assert sam.prompts.count("pill") == 1 and "white pill" not in sam.prompts
+
+
+def test_white_pill_used_when_pill_finds_nothing():
+    sam = FakeSam([(STRIP_BOX, 0.95)], [])
+    sam.more["white pill"] = _pills(range(10))
+    lay = find_layout(make_strip(), CL, sam)
+    assert lay.ok and len(lay.pockets) == 10
+    assert sam.prompts == ["blister strip", "pill", "white pill"]
+
+
+def test_white_pill_not_called_when_pill_works():
+    sam = FakeSam([(STRIP_BOX, 0.95)], _pills(range(10)))
+    find_layout(make_strip(), CL, sam)
+    assert "white pill" not in sam.prompts

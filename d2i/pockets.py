@@ -9,7 +9,8 @@ from d2i.meta_api import BudgetExceeded, MetaError
 MIN_SCORE = 0.5
 STRIP_PROMPTS = ("blister strip", "blister pack", "pill pack")  # "blister strip" finds nothing on close-ups
 PAD = 0.08  # pill-outline strip: padding as a fraction of the pill bounds
-POCKET_PROMPT = "pill"  # SAM finds pills on real photos; "blister pocket" and "tablet" find nothing
+# shortcut: only white tablets measured (27 Oct); add colour words when a coloured product is taught
+POCKET_PROMPTS = ("pill", "white pill")  # "blister pocket" and "tablet" find nothing
 
 
 @dataclass
@@ -102,7 +103,10 @@ def find_layout(image: np.ndarray, cl: dict, client=None, template=None) -> Layo
                 if found:
                     strip = tuple(max(found, key=lambda b: (b[2] - b[0]) * (b[3] - b[1])))
                     break
-            pills = [o.box for o in client.sam_image(image, POCKET_PROMPT) if o.score is None or o.score >= MIN_SCORE]
+            for prompt in POCKET_PROMPTS:
+                pills = [o.box for o in client.sam_image(image, prompt) if o.score is None or o.score >= MIN_SCORE]
+                if pills:
+                    break
             source = "sam"
             if strip is None:
                 if not pills:
