@@ -578,7 +578,7 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
         """Pocket boxes for the stream, recomputed at most once a second, without paid calls."""
         t, boxes = state["overlay"]
         with meta:
-            cl, tpl = st.checklist, st.template
+            cl, tpl = st.checklist, st._template
         if cl and time.time() - t > 1:
             try:
                 lay = find_layout(frame, cl, None, tpl)

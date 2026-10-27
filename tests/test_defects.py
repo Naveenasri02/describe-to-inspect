@@ -12,7 +12,7 @@ def padded(box, pad, shape):
     return (max(0, int(x0 - dx)), max(0, int(y0 - dy)), min(shape[1], int(x1 + dx)), min(shape[0], int(y1 + dy)))
 
 
-@pytest.mark.parametrize("kind", CHECKS)
+@pytest.mark.parametrize("kind", ["empty_pocket", "broken_tablet", "foil_damage"])
 @pytest.mark.parametrize("pocket", [0, 7])  # an edge pocket in each row
 def test_each_kind_changes_only_near_pocket(kind, pocket):
     img = make_strip()
@@ -39,3 +39,16 @@ def test_paint_is_seeded():
     a = paint(img, pocket_box(5), "broken_tablet", STRIP_BOX, np.random.default_rng(7))
     b = paint(img, pocket_box(5), "broken_tablet", STRIP_BOX, np.random.default_rng(7))
     assert np.array_equal(a, b) and not np.array_equal(a, img)
+
+
+@pytest.mark.parametrize("kind", ["double_tablet", "wrong_tablet", "tablet_spot"])
+@pytest.mark.parametrize("pocket", [0, 7])
+def test_tablet_kinds_change_only_inside_pocket(kind, pocket):
+    img = make_strip()
+    x0, y0, x1, y1 = box = pocket_box(pocket)
+    out = paint(img, box, kind, STRIP_BOX, np.random.default_rng(1))
+    diff = np.abs(out.astype(int) - img.astype(int)).max(axis=2)
+    inside = np.zeros(diff.shape, bool)
+    inside[y0:y1, x0:x1] = True
+    assert (diff[inside] > 20).sum() >= 50, "the defect must be clearly visible"
+    assert (diff[~inside] > 0).sum() == 0

@@ -4,9 +4,10 @@ import shutil
 import numpy as np
 import pytest
 
-from d2i.checklist import approve
+from d2i.checklist import CHECKS, approve
 from d2i.judge import Judge
 from d2i.meta_api import SamObject
+from d2i.defects import paint
 from d2i.pockets import _strip_by_contour
 from d2i.station import Station, Verdict
 from tests.conftest import STRIP_BOX, make_strip, pocket_box
@@ -95,7 +96,7 @@ def test_blank_frame_no_strip(station):
 
 class ElevenPills:
     def sam_image(self, image, prompt):
-        boxes = [STRIP_BOX] if prompt == "blister strip" else [pocket_box(i) for i in [*range(10), 0]]
+        boxes = [STRIP_BOX] if prompt == "blister strip" else [pocket_box(i) for i in range(10)] + [(267, 130, 277, 140)]
         return [SamObject(i, b, 0.9, None) for i, b in enumerate(boxes)]
 
 
@@ -104,7 +105,7 @@ def test_count_mismatch_holds(station):
     st.self_test(make_strip(seed=12), rng_seed=5)
     st.client = ElevenPills()
     v = st.inspect(make_strip(seed=16))
-    assert v.status == "HOLD" and v.reasons[0]["rule"] == 1 and "11 pills" in v.reasons[0]["text"]
+    assert v.status == "HOLD" and v.reasons[0]["rule"] == 1 and "outside the pocket pattern" in v.reasons[0]["text"]
 
 
 def test_unlisted_defect_is_held_not_passed(station):
@@ -153,7 +154,10 @@ class ContourSam:
         strip = _strip_by_contour(image)
         if prompt == "blister strip":
             return [SamObject(0, strip, 0.95, None)]
-        return [SamObject(i, pocket_box(i, strip=strip), 0.9, None) for i in range(10) if i not in self.skip]
+        boxes = [pocket_box(i, strip=strip) for i in range(10) if i not in self.skip]
+        # a real SAM finds no pill where the pocket shows bare foil
+        return [SamObject(i, b, 0.9, None) for i, b in enumerate(boxes)
+                if image[(b[1] + b[3]) // 2 - 4:(b[1] + b[3]) // 2 + 4, (b[0] + b[2]) // 2 - 4:(b[0] + b[2]) // 2 + 4].mean() > 200]
 
 
 def test_station_inspect_uses_saved_template(tmp_path):
@@ -205,3 +209,56 @@ def test_teach_saves_the_sam_strip_box(tmp_path):
     want = (STRIP_BOX[0] + 2.5, STRIP_BOX[1], STRIP_BOX[2] + 2.5, STRIP_BOX[3])
     assert all(abs(g - w) <= 2 for g, w in zip(st.strip_box, want)), st.strip_box
     assert Station(tmp_path, clock=lambda: T0).strip_box == st.strip_box
+
+
+class TightSam(ContourSam):
+    """Pills drawn as tight boxes around the discs; `edit` maps pocket index -> replacement list of pill boxes."""
+
+    def __init__(self, edit=None):
+        super().__init__()
+        self.edit = edit or {}
+
+    def sam_image(self, image, prompt):
+        objs = super().sam_image(image, prompt)
+        if prompt == "blister strip":
+            return objs
+        out = []
+        for i, o in enumerate(objs):
+            x0, y0, x1, y1 = o.box
+            cx, cy, r = (x0 + x1) // 2, (y0 + y1) // 2, int((x1 - x0) / 0.88 * 0.32)
+            tight = (cx - r, cy - r, cx + r, cy + r)
+            out += [SamObject(i, b, 0.9, None) for b in self.edit.get(i, [tight])]
+        return out
+
+
+def test_double_wrong_spot_named_rules(tmp_path):
+    cl = dict(CHECKLIST, reject_if=list(CHECKS))
+    approve(cl, "Priya", tmp_path / "checklists.jsonl")
+    st = Station(tmp_path, client=TightSam(), clock=lambda: T0)
+    st.teach([make_strip(seed=i, shift=(i, 0)) for i in range(6)])
+    assert st.profile is not None and Station(tmp_path, clock=lambda: T0).profile == st.profile
+    strip = make_strip(seed=21)
+    box = TightSam().sam_image(strip, "pill")[2].box
+    cx, cy, r = (box[0] + box[2]) // 2, (box[1] + box[3]) // 2, (box[2] - box[0]) // 2
+    assert st._judge(strip, None, None).status == "PASS"
+    cases = {
+        "double_tablet": (strip, [box, (cx + 2, cy - 5, cx + 2 + r, cy - 5 + r)]),
+        "wrong_tablet": (strip, [(cx - r // 2, cy - r // 2, cx + r // 2, cy + r // 2)]),
+        "tablet_spot": (paint(strip, pocket_box(2, strip=_strip_by_contour(strip)), "tablet_spot", _strip_by_contour(strip),
+                              np.random.default_rng(3)), [box]),
+    }
+    for kind, (image, boxes) in cases.items():
+        st.client = TightSam({2: boxes})
+        v = st._judge(image, None, None)
+        want = {"rule": CHECKS.index(kind) + 2, "check": kind, "pocket": 3}
+        assert v.status == "REJECT" and any(want.items() <= x.items() for x in v.reasons), (kind, v.reasons)
+        assert v.skipped == []
+
+
+def test_grid_fallback_marks_measurements_skipped(station):
+    st, _ = station
+    st.checklist = dict(st.checklist, reject_if=list(CHECKS))
+    assert st.self_test(make_strip(seed=12), rng_seed=5)["passed"]
+    v = st.inspect(make_strip(seed=13))
+    assert v.status == "PASS" and v.skipped == ["tablet measurements"]
+    assert json.loads((st.dir / "log.jsonl").read_text().splitlines()[-1])["skipped"] == ["tablet measurements"]

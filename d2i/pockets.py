@@ -1,5 +1,5 @@
 """Find the strip and its pockets: SAM 3.1 when online, the checklist grid when offline."""
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import cv2
 import numpy as np
@@ -20,6 +20,11 @@ class Layout:
     source: str   # "sam", "sam-pills" (strip = padded pill bounds) or "grid"
     ok: bool
     note: str = ""
+    pills: list = field(default_factory=list)  # SAM pill boxes inside the strip (empty on the grid path)
+
+
+def pill_prompts(item: str) -> tuple:
+    return ("capsule", "pill") if "capsule" in item.lower() else POCKET_PROMPTS
 
 
 def grid(strip_box, rows: int, per_row: int, margin: float = 0.06) -> list[tuple]:
@@ -103,7 +108,7 @@ def find_layout(image: np.ndarray, cl: dict, client=None, template=None) -> Layo
                 if found:
                     strip = tuple(max(found, key=lambda b: (b[2] - b[0]) * (b[3] - b[1])))
                     break
-            for prompt in POCKET_PROMPTS:
+            for prompt in pill_prompts(cl["item"]):
                 pills = [o.box for o in client.sam_image(image, prompt) if o.score is None or o.score >= MIN_SCORE]
                 if pills:
                     break
@@ -124,15 +129,13 @@ def find_layout(image: np.ndarray, cl: dict, client=None, template=None) -> Layo
                 pockets = _row_major(pills)
                 ok = len(pockets) == cl["count"]
                 note = "" if ok else f"found {len(pockets)} pills, checklist says {cl['count']}"
-                return Layout(strip, pockets, source, ok, note)
+                return Layout(strip, pockets, source, ok, note, pills)
             pockets = _from_template(strip, template)
             note = ""
-            if len(pills) > len(pockets):
-                note = f"{len(pills)} pills found, only {len(pockets)} pockets"
-            elif any(not any(p[0] <= (b[0] + b[2]) / 2 <= p[2] and p[1] <= (b[1] + b[3]) / 2 <= p[3]
+            if any(not any(p[0] <= (b[0] + b[2]) / 2 <= p[2] and p[1] <= (b[1] + b[3]) / 2 <= p[3]
                              for p in pockets) for b in pills):
                 note = "object outside the pocket pattern"
-            return Layout(strip, pockets, source, not note, note)
+            return Layout(strip, pockets, source, not note, note, pills)
         except (MetaError, BudgetExceeded):
             pass  # keep inspecting offline with the checklist grid
     strip = _strip_by_contour(image)

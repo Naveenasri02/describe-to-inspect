@@ -3,11 +3,14 @@ import json
 from datetime import datetime
 from pathlib import Path
 
-CHECKS = ["empty_pocket", "broken_tablet", "foil_damage"]
+CHECKS = ["empty_pocket", "broken_tablet", "double_tablet", "wrong_tablet", "tablet_spot", "foil_damage"]
 
 RULE_TEXT = {
     "empty_pocket": "no pocket may be empty",
     "broken_tablet": "no {item} may be broken or chipped",
+    "double_tablet": "one {item} per pocket, never two",
+    "wrong_tablet": "every {item} must match the taught {item} (size, shape, colour)",
+    "tablet_spot": "no spots or specks on any {item}",
     "foil_damage": "foil must not be torn, cut or missing",
 }
 
@@ -29,7 +32,8 @@ SYSTEM = (
     "You set up a packaging-line QA bench for tablet blister strips. The worker describes a GOOD strip, "
     "in any language. Fill the schema in English: product name, rows of pockets, pockets per row, the item "
     "in each pocket (singular, e.g. 'tablet' or 'capsule'), and which checks to reject on "
-    "(empty_pocket, broken_tablet, foil_damage). Never invent numbers: if the sentence does not give "
+    "(empty_pocket, broken_tablet, double_tablet, wrong_tablet, tablet_spot, foil_damage); "
+    "the standard checks are always on, so list all of them. Never invent numbers: if the sentence does not give "
     "rows or pockets per row, use 0 and add a short question to 'unclear'. Anything else you are unsure "
     "about also goes to 'unclear' as a short question."
 )
@@ -41,9 +45,7 @@ def make_checklist(sentence: str, client) -> dict:
     if not (1 <= rows <= 10 and 1 <= per_row <= 20):
         raise ValueError(f"The sentence needs clear numbers (rows 1-10, pockets per row 1-20); "
                          f"got rows={rows}, per_row={per_row}. {' '.join(a.get('unclear', []))}".strip())
-    reject_if = [c for c in CHECKS if c in a["reject_if"]]
-    if not reject_if:
-        raise ValueError("The sentence needs at least one reject rule (empty pocket, broken tablet or foil damage).")
+    reject_if = list(CHECKS)  # the standard checks are always on
     item = a["item"].strip() or "tablet"
     count = rows * per_row
     rules = [f"Rule 1: exactly {count} {item}s in {rows} rows of {per_row}"]

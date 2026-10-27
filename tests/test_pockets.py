@@ -1,10 +1,10 @@
 import numpy as np
 
 from d2i.meta_api import MetaError, SamObject
-from d2i.pockets import Layout, find_layout, grid, template_from
+from d2i.pockets import Layout, find_layout, grid, pill_prompts, template_from
 from tests.conftest import STRIP_BOX, make_strip, pocket_box
 
-CL = {"rows": 2, "per_row": 5, "count": 10}
+CL = {"rows": 2, "per_row": 5, "count": 10, "item": "tablet"}
 
 
 class FakeSam:
@@ -162,3 +162,18 @@ def test_white_pill_not_called_when_pill_works():
     sam = FakeSam([(STRIP_BOX, 0.95)], _pills(range(10)))
     find_layout(make_strip(), CL, sam)
     assert "white pill" not in sam.prompts
+
+
+def test_capsule_prompts():
+    assert pill_prompts("Capsule") == ("capsule", "pill") and pill_prompts("tablet") == ("pill", "white pill")
+    sam = FakeSam([(STRIP_BOX, 0.95)], [])
+    sam.answers["capsule"] = _pills(range(10))
+    cl = dict(CL, item="capsule")
+    lay = find_layout(make_strip(), cl, sam)
+    assert lay.ok and len(lay.pockets) == 10 and "white pill" not in sam.prompts
+
+
+def test_template_extra_pill_inside_pocket_is_ok():
+    inner = (pocket_box(3)[0] + 8, pocket_box(3)[1] + 8, pocket_box(3)[0] + 30, pocket_box(3)[1] + 30)
+    lay = find_layout(make_strip(), CL, FakeSam([(STRIP_BOX, 0.95)], _pills(range(10)) + [(inner, 0.9)]), _template())
+    assert lay.ok and lay.note == "" and len(lay.pockets) == 10 and len(lay.pills) == 11

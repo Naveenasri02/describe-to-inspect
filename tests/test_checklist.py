@@ -35,9 +35,11 @@ def test_layout_out_of_range_raises():
         make_checklist("Some tablets.", spark(rows=0, unclear=["How many rows?"]))
 
 
-def test_empty_reject_list_raises():
-    with pytest.raises(ValueError, match="reject"):
-        make_checklist("Ten tablets in two rows.", spark(reject_if=()))
+def test_standard_checks_are_always_on():
+    cl = make_checklist("Ten tablets in two rows.", spark(reject_if=()))
+    assert cl["reject_if"] == CHECKS and len(cl["rules"]) == len(CHECKS) + 1
+    assert cl["rules"][3] == "Rule 4: one tablet per pocket, never two"
+    assert rule_number(cl, "tablet_spot") == 6
 
 
 def test_approve_versions(tmp_path):

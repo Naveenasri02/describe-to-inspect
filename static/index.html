@@ -30,6 +30,7 @@ td,th{font-size:12px;padding:2px 6px;text-align:left}
   <button onclick="login()">Log in</button></span>
   <button id="logoutbtn" onclick="logout()" hidden>Log out</button></header>
 <div id="banner">...<div id="why"></div><div id="batchline" class="small" style="color:#fff"></div></div>
+<div id="skipped" class="small"></div>
 <div id="qbanner" hidden><span id="qtext"></span><ul id="qlist"></ul>
   <input id="rp" type="password" placeholder="QA password"><input id="rr" placeholder="Reason">
   <button onclick="release()">Release quarantine (QA)</button></div>
@@ -115,7 +116,7 @@ async function ask(){const r=await j("/ask",{question:$("q").value});show(r.erro
 async function refresh(){
   const s=await (await fetch("/status")).json();
   $("banner").style.background=col[s.state]||"#888";
-  $("banner").firstChild.textContent=s.state;$("why").textContent=s.text;$("batchline").textContent=s.batch?"Batch "+s.batch.batch:"No batch open";
+  $("banner").firstChild.textContent=s.state;$("why").textContent=s.text;$("skipped").textContent=((s.last_verdict||{}).skipped||[]).length?"Not checked: "+s.last_verdict.skipped.join(", "):"";$("batchline").textContent=s.batch?"Batch "+s.batch.batch:"No batch open";
   $("spent").textContent=s.spent_usd==null?"?":s.spent_usd.toFixed(2);$("ver").textContent=s.checklist_version??"-";
   $("counts").textContent=Object.entries(s.counts).map(([k,v])=>k+" "+v).join(" · ");
   $("rules").innerHTML="";(s.pending||s.rules).forEach(t=>{const li=document.createElement("li");li.textContent=t.replace(/^Rule \d+: /,"");$("rules").appendChild(li)});

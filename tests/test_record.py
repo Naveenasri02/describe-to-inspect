@@ -186,3 +186,9 @@ def test_record_has_batch_section_first(product):
     assert html.index("<h2>Batch</h2>") < html.index("Checklist")
     for t in ("LOT7", "01/2028", "45.00", "still open", "clear", "FAIL", "bubbles", "Rule 2"):
         assert t in html
+
+
+def test_totals_list_checks_not_run():
+    from d2i.record import _totals_section
+    html = _totals_section([{"status": "PASS", "skipped": ["tablet measurements"]}, {"status": "PASS"}])
+    assert "Not checked" in html and "tablet measurements</td><td>1<" in html

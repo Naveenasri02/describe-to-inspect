@@ -87,7 +87,9 @@ def _selftest_section(tests: list[dict]) -> str:
 
 def _totals_section(verdicts: list[dict]) -> str:
     n = Counter(v["status"] for v in verdicts)
-    return "<h2>Totals</h2>" + _table(list(STATUSES), [[n[s] for s in STATUSES]])
+    skipped = Counter(c for v in verdicts for c in v.get("skipped", []))
+    return ("<h2>Totals</h2>" + _table(list(STATUSES), [[n[s] for s in STATUSES]])
+            + (_table(["Not checked", "Strips"], sorted(skipped.items())) if skipped else ""))
 
 
 def _rejects_section(verdicts: list[dict]) -> str:

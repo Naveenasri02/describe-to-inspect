@@ -13,12 +13,17 @@ from d2i import trace
 from d2i.checklist import current, rule_number
 from d2i.defects import paint
 from d2i.judge import Judge
+from d2i.measure import pocket_check, teach_profile
 from d2i.pockets import find_layout, template_from
 
+MEASURED = ("double_tablet", "wrong_tablet", "tablet_spot")  # decided by measure.py on SAM pill boxes
 POCKET_KINDS = ("empty_pocket", "broken_tablet")  # foil damage is caught on the border, not per pocket
 TEXT = {
     "empty_pocket": "pocket {n} is empty",
     "broken_tablet": "pocket {n} has a broken {item}",
+    "double_tablet": "pocket {n} has two {item}s",
+    "wrong_tablet": "pocket {n} has a different {item}",
+    "tablet_spot": "pocket {n} has a spot on the {item}",
     "foil_damage": "foil is damaged",
 }
 LINE_HELD = "Line held — QA must resume"
@@ -30,6 +35,7 @@ class Verdict:
     status: str  # PASS, REJECT, HOLD, LOCKED, NO_STRIP
     reasons: list = field(default_factory=list)
     pocket_scores: list = field(default_factory=list)
+    skipped: list = field(default_factory=list)  # checks that could not run, e.g. "tablet measurements"
     strip_id: int | None = None
     image_name: str | None = None
     at: str = ""
@@ -50,6 +56,7 @@ class Station:
         self.prototypes, self.taught_at = state.get("prototypes", {}), state.get("taught_at")
         t = state.get("template")
         self.template = [tuple(b) for b in t] if t else None
+        self.profile = state.get("profile")
         self.strip_box = tuple(state["strip_box"]) if state.get("strip_box") else None  # median taught strip box
 
     def _now(self) -> str:
@@ -119,13 +126,14 @@ class Station:
                     img = paint(img, lay.pockets[p], kind, lay.strip_box, rng)
                 embs.append(self.judge.pocket_embeddings(img, lay)[torch.as_tensor(chosen)])
             protos[kind] = F.normalize(torch.cat(embs).mean(0), dim=0).cpu()
+        profile = teach_profile(images, layouts)
         self.judge.save(self.dir / "model.pt")
         self.taught_at = self.clock()
         state = torch.load(self.dir / "model.pt", map_location="cpu")
         state.update(prototypes=protos, taught_at=self.taught_at, template=[list(b) for b in template],
-                     strip_box=list(strip_box))
+                     strip_box=list(strip_box), profile=profile)
         torch.save(state, self.dir / "model.pt")
-        self.prototypes, self.template, self.strip_box = protos, template, strip_box
+        self.prototypes, self.template, self.strip_box, self.profile = protos, template, strip_box, profile
         return info
 
     def _reason(self, check, pocket=None):
@@ -165,8 +173,16 @@ class Station:
                                             "text": f"Rule 1 failed: {lay.note}"}]
             return v
         v.pocket_scores = self.judge.score_pockets(image, lay)
-        failing = [i for i, s in enumerate(v.pocket_scores) if s > self.judge.pocket_threshold]
-        listed, unlisted = [], []
+        listed, unlisted, measured = [], [], set()
+        if lay.pills and self.profile:
+            for i, pocket in enumerate(lay.pockets):
+                kind = pocket_check(image, pocket, lay.pills, self.profile)
+                if kind:
+                    self._find(kind, listed, unlisted, i)
+                    measured.add(i)
+        else:
+            v.skipped.append("tablet measurements")
+        failing = [i for i, s in enumerate(v.pocket_scores) if s > self.judge.pocket_threshold and i not in measured]
         if failing:
             embs = self.judge.pocket_embeddings(image, lay).cpu()
             for i in failing:
@@ -208,7 +224,11 @@ class Station:
             per = cl["per_row"]
             edge = [i for i in range(len(lay.pockets))
                     if i // per in (0, cl["rows"] - 1) or i % per in (0, per - 1)]
+            measuring = bool(lay.pills and self.profile)
             for kind in cl["reject_if"] + ([] if "empty_pocket" in cl["reject_if"] else ["empty_pocket"]):  # Rule 1
+                if kind in MEASURED and not measuring:  # no SAM pills or no profile: it cannot be seen, so it is skipped
+                    continue
+                # shortcut: wrong_tablet self-test changes size only (SAM may miss recoloured pills); the colour path is covered by unit tests
                 p = int(rng.choice(edge if kind == "foil_damage" else len(lay.pockets)))
                 v = self._judge(paint(good_image, lay.pockets[p], kind, lay.strip_box, rng), None, None)
                 results.append({"kind": kind, "pocket": p + 1, "caught": v.status == "REJECT",

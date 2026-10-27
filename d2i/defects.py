@@ -84,4 +84,30 @@ def paint(image, pocket_box, kind, strip_box, rng):
         _fill(out, region > 0, _background_colour(image, strip_box), rng)
         return out
 
+    if kind in ("double_tablet", "wrong_tablet", "tablet_spot"):
+        foil = _foil_colour(image, pocket_box, strip_box)
+        tablet = np.zeros(shape, np.uint8)
+        cv2.ellipse(tablet, (cx, cy), (ax, ay), 0, 0, 360, 255, -1)
+        if kind == "double_tablet":  # a copy of the tablet, 35% of the pocket width to the right, kept in the pocket
+            move = np.float32([[1, 0, int((x1 - x0) * 0.35)], [0, 1, 0]])
+            copy, mask = (cv2.warpAffine(a, move, (shape[1], shape[0])) for a in (image, tablet))
+            mask[:, :x0] = 0
+            mask[:, x1:] = 0
+            out[mask > 0] = copy[mask > 0]
+        elif kind == "wrong_tablet":  # the same tablet at 65% size
+            patch = image[cy - ay:cy + ay + 1, cx - ax:cx + ax + 1]
+            sx, sy = max(2, int(ax * 0.65)), max(2, int(ay * 0.65))
+            small = cv2.resize(patch, (2 * sx + 1, 2 * sy + 1))
+            mask = np.zeros(small.shape[:2], np.uint8)
+            cv2.ellipse(mask, (sx, sy), (sx, sy), 0, 0, 360, 255, -1)
+            _fill(out, tablet > 0, foil, rng)
+            roi = out[cy - sy:cy + sy + 1, cx - sx:cx + sx + 1]
+            roi[mask > 0] = small[mask > 0]
+        else:  # a dark speck on the tablet
+            r = max(2, int(0.08 * min(x1 - x0, y1 - y0)))
+            ang, d = rng.uniform(0, 2 * np.pi), rng.uniform(0, 0.4) * min(ax, ay)
+            cv2.circle(out, (int(cx + d * np.cos(ang)), int(cy + d * np.sin(ang))), r,
+                       tuple(int(c) for c in np.clip(foil * 0.2, 0, 255)), -1)
+        return out
+
     raise ValueError(f"unknown defect kind: {kind}")
