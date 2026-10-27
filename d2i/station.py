@@ -22,6 +22,7 @@ TEXT = {
     "foil_damage": "foil is damaged",
 }
 LINE_HELD = "Line held — QA must resume"
+NEED_TEACH = "Teach the station first"
 
 
 @dataclass
@@ -197,6 +198,8 @@ class Station:
         """record=False: a diagnostic run that writes nothing. record="failures": a failed run is written like any
         failed self-test (it locks and opens quarantine), a pass never is (so it cannot unlock), and with no strip
         in view nothing is written."""
+        if self.taught_at is None:
+            raise ValueError(NEED_TEACH)
         cl = self.checklist
         rng = np.random.default_rng(rng_seed)
         lay = find_layout(good_image, cl, self.client, self._template)

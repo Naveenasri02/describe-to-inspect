@@ -469,3 +469,9 @@ def test_sign_pins_the_verdict_files(tmp_path):
     sha = lambda n: hashlib.sha256((p / n).read_bytes()).hexdigest()  # noqa: E731
     assert e["action"] == "sign"
     assert e["details"]["files_sha256"] == {"log.jsonl": sha("log.jsonl"), "selftests.jsonl": sha("selftests.jsonl")}
+
+
+def test_self_test_before_teaching_says_teach_first(tmp_path):
+    approve(CHECKLIST, "Priya", tmp_path / "p" / "checklists.jsonl")
+    c = TestClient(app_mod.create_app(tmp_path / "p", None))
+    assert c.post("/selftest", files=up(make_strip(seed=12))).json() == {"error": "Teach the station first"}

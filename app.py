@@ -1,4 +1,4 @@
-"""Bench web app: python app.py --source 0|<video>|<photo folder> --product blister --port 8000"""
+"""Bench web app: python app.py --source 0|<video>|<photo folder> --product blister --port 8000 [--host 0.0.0.0]"""
 import argparse
 import html
 import hashlib
@@ -24,7 +24,7 @@ from d2i.checklist import approve, make_checklist
 from d2i.llm import ToolChat
 from d2i.meta_api import Budget, MetaClient
 from d2i.pockets import find_layout
-from d2i.station import Station, Verdict
+from d2i.station import NEED_TEACH, Station, Verdict
 from d2i.supervisor import Supervisor, baseline_from, hold_line, hold_state, resume_line
 from d2i.tray import inspect_clip, record_clip
 
@@ -32,7 +32,6 @@ STATIC = Path(__file__).parent / "static"
 NEED_GOOD = 5
 NO_CHECKLIST = "Describe and approve the good strip first"
 LANGS = {"English", "Tamil", "Hindi"}  # "Auto" = omit
-NEED_TEACH = "Teach the station first"
 ANSWER_WAIT = 120  # seconds the agent waits for the operator
 INSPECT_ERROR = "inspection error — check by hand"
 TRAY_SECONDS = 4  # 60 frames at 15 fps: one SAM 3.1 video call
@@ -553,6 +552,7 @@ if __name__ == "__main__":
     ap.add_argument("--source", default="0")
     ap.add_argument("--product", default="blister")
     ap.add_argument("--port", type=int, default=8000)
+    ap.add_argument("--host", default="127.0.0.1", help="0.0.0.0 lets a phone on the same network open /lamp")
     ap.add_argument("--add-user", metavar="NAME")
     ap.add_argument("--role", choices=["qa", "operator"], default="operator")
     a = ap.parse_args()
@@ -567,4 +567,4 @@ if __name__ == "__main__":
     plc = Plc()
     plc.start()
     budget = Budget()
-    uvicorn.run(create_app(pdir, a.source, MetaClient(budget), plc, budget=budget), host="0.0.0.0", port=a.port)
+    uvicorn.run(create_app(pdir, a.source, MetaClient(budget), plc, budget=budget), host=a.host, port=a.port)
