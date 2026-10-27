@@ -1,0 +1,11 @@
+fastapi==0.115.6
+uvicorn==0.34.0
+python-multipart==0.0.28
+httpx==0.28.1
+numpy==1.26.4
+opencv-python==4.11.0.86
+requests==2.33.1
+torch==2.6.0
+transformers==5.19.0
+meta-sam-parser==0.1.0
+pytest==9.0.3
