@@ -16,13 +16,19 @@ from d2i.meta_api import Budget, MetaClient
 ROOT = Path(__file__).resolve().parent.parent
 
 
+def need(img):
+    if img is None:
+        raise ValueError("no photo found to send")
+    return img
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--yes-credits-are-on-billing", action="store_true")
     if not ap.parse_args(argv).yes_credits_are_on_billing:
         print("Refusing: this makes paid calls. Check the credits on Billing, then pass --yes-credits-are-on-billing.")
         return 2
-    good = sorted((ROOT / "photos" / "good").glob("*.jpg"))
+    good = sorted(p for p in (ROOT / "photos" / "good").glob("*") if p.suffix.lower() in (".jpg", ".jpeg", ".png"))
     img = cv2.imread(str(good[0] if good else ROOT / "photos" / "real_wa" / "wa5.jpg"))
     buf = io.BytesIO()
     with wave.open(buf, "wb") as w:
@@ -31,18 +37,19 @@ def main(argv=None) -> int:
     with tempfile.TemporaryDirectory() as tmp:
         tmp = Path(tmp)
         clip = tmp / "clip.mp4"
-        vw = cv2.VideoWriter(str(clip), cv2.VideoWriter_fourcc(*"mp4v"), 15, (img.shape[1], img.shape[0]))
-        for _ in range(60):
-            vw.write(img)
-        vw.release()
+        if img is not None:
+            vw = cv2.VideoWriter(str(clip), cv2.VideoWriter_fourcc(*"mp4v"), 15, (img.shape[1], img.shape[0]))
+            for _ in range(60):
+                vw.write(img)
+            vw.release()
         client = MetaClient(Budget(tmp / "spend.json"))
         calls = [
             ("Muse Spark (spark_json)", lambda: client.spark_json(
                 "Answer in JSON.", "Say ok.", {"type": "object", "additionalProperties": False,
                                                "required": ["reply"], "properties": {"reply": {"type": "string"}}},
                 name="smoke", max_out=1500)),
-            ("SAM 3.1 image", lambda: client.sam_image(img, "tablet")),
-            ("SAM 3.1 video", lambda: client.sam_video(clip.read_bytes(), "tablet")),
+            ("SAM 3.1 image", lambda: client.sam_image(need(img), "pill pack")),
+            ("SAM 3.1 video", lambda: client.sam_video(need(img) and clip.read_bytes(), "pill pack")),
             ("Transcribe", lambda: client.transcribe(buf.getvalue())),
         ]
         for name, fn in calls:
