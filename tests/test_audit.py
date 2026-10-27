@@ -18,6 +18,21 @@ def test_chain_detects_edit(tmp_path):
     assert log.verify() == (False, 2)
 
 
+def test_concurrent_appends_keep_the_chain(tmp_path):
+    import threading
+    log = AuditLog(tmp_path / "a.jsonl")
+
+    def write(who):
+        for i in range(40):
+            log.append("act", who, {"i": i})
+    threads = [threading.Thread(target=write, args=(w,)) for w in ("agent", "qa")]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert log.verify() == (True, None) and len(log.entries()) == 80
+
+
 def test_users_never_store_plain_password(tmp_path):
     u = Users(tmp_path / "users.json")
     u.add("priya", "qa", "s3cret-pw")

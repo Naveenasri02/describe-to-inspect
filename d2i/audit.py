@@ -2,11 +2,13 @@
 import hashlib
 import json
 import secrets
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
 ROLES = {"operator", "qa"}
 GENESIS = "0" * 64
+_APPEND = threading.Lock()  # one writer at a time in this process: verify, read and write as one step
 
 
 def _hash(entry: dict) -> str:
@@ -32,17 +34,19 @@ class AuditLog:
         return row if isinstance(row, dict) else None
 
     def append(self, action: str, user: str, details: dict, reason: str = "") -> dict:
-        ok, bad = self.verify()
-        if not ok:
-            raise ValueError(f"audit log is damaged at entry {bad} — stop and call QA")
-        rows = self._rows()
-        entry = {"seq": len(rows) + 1, "at": datetime.now(timezone.utc).isoformat(timespec="seconds"), "user": user,
-                 "action": action, "details": details, "reason": reason, "prev": rows[-1]["hash"] if rows else GENESIS}
-        entry["hash"] = _hash(entry)
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        with self.path.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
-        return entry
+        with _APPEND:
+            ok, bad = self.verify()
+            if not ok:
+                raise ValueError(f"audit log is damaged at entry {bad} — stop and call QA")
+            rows = self._rows()
+            entry = {"seq": len(rows) + 1, "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                     "user": user, "action": action, "details": details, "reason": reason,
+                     "prev": rows[-1]["hash"] if rows else GENESIS}
+            entry["hash"] = _hash(entry)
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            with self.path.open("a", encoding="utf-8") as f:
+                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+            return entry
 
     def verify(self) -> tuple[bool, int | None]:
         prev = GENESIS
