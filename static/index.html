@@ -49,7 +49,8 @@ td,th{font-size:12px;padding:2px 6px;text-align:left}
   <textarea id="text" rows="3" placeholder="Describe the good strip, e.g. ten tablets in two rows of five; reject empty or broken"></textarea>
   <div><button onclick="describe()">Make checklist</button>
   <select id="lang"><option>Auto</option><option>English</option><option>Tamil</option><option>Hindi</option></select>
-  <button id="rec" onclick="toggleRec()">Speak rule</button></div>
+  <button id="rec" onclick="toggleRec()">Speak rule</button>
+  <button id="vcmd" title="Say: self test, teach, inspect, hold, record" onclick="voiceCmd=true;toggleRec()">Voice command</button></div>
   <div id="pending"></div>
   <div><input id="by" placeholder="Approver name"><button onclick="approve()">Approve</button></div>
   <div id="msg"></div>
@@ -143,14 +144,14 @@ async function invRefresh(){
     const b=mk("button","Approve (QA)");b.onclick=()=>approveReq(q.id,pw);d.appendChild(b);r.appendChild(d)});
 }
 // Speak rule: mono audio, downsampled to 16 kHz 16-bit PCM WAV
-let ctx,proc,chunks=[],recording=false;
+let ctx,proc,chunks=[],recording=false,voiceCmd=false;
 async function toggleRec(){
-  if(recording){recording=false;proc.disconnect();ctx.close();$("rec").textContent="Speak rule";return send(wav(chunks,ctx.sampleRate))}
+  if(recording){recording=false;proc.disconnect();ctx.close();$("rec").textContent="Speak rule";$("vcmd").textContent="Voice command";return send(wav(chunks,ctx.sampleRate))}
   const stream=await navigator.mediaDevices.getUserMedia({audio:true});
   ctx=new AudioContext();chunks=[];
   const srcN=ctx.createMediaStreamSource(stream);proc=ctx.createScriptProcessor(4096,1,1);
   proc.onaudioprocess=e=>chunks.push(new Float32Array(e.inputBuffer.getChannelData(0)));
-  srcN.connect(proc);proc.connect(ctx.destination);recording=true;$("rec").textContent="Stop";
+  srcN.connect(proc);proc.connect(ctx.destination);recording=true;$((voiceCmd?"vcmd":"rec")).textContent="Stop";
 }
 function wav(chunks,rate){
   const n=chunks.reduce((a,c)=>a+c.length,0),all=new Float32Array(n);let o=0;chunks.forEach(c=>{all.set(c,o);o+=c.length});
@@ -161,9 +162,18 @@ function wav(chunks,rate){
   for(let i=0;i<len;i++){const s=Math.max(-1,Math.min(1,all[Math.floor(i*ratio)]));pcm.setInt16(44+i*2,s<0?s*0x8000:s*0x7fff,true)}
   return new Blob([pcm],{type:"audio/wav"});
 }
+const ACTIONS={self_test:()=>post('/selftest'),teach:()=>post('/teach',{capture:true}),inspect:inspectNow,
+  record:rec,hold:()=>post('/hold',{reason:'operator voice command'})};
 async function send(blob){
+  const cmd=voiceCmd;voiceCmd=false;
   show("Working...");const f=new FormData();f.append("audio",blob,"rule.wav");
   const l=$("lang").value;if(l!=="Auto")f.append("languages",l);
+  if(cmd){const r=await (await fetch("/command",{method:"POST",body:f})).json();
+    if(r.error)return show(r);
+    if(!ACTIONS[r.command])return show("Heard: "+r.transcript+"
+Command not understood — use the buttons");
+    show("Heard: "+r.transcript+"
+Command: "+r.command);return ACTIONS[r.command]()}
   shown(await (await fetch("/describe",{method:"POST",body:f})).json());
 }
 refresh();setInterval(refresh,2000);

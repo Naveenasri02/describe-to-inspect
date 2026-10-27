@@ -99,7 +99,7 @@ class ScriptChat:
         return self.replies.pop(0)
 
 
-def bench(tmp_path, chat=None):
+def bench(tmp_path, chat=None, client=None, plc=None):
     """Taught, self-tested bench in tmp_path/p with a QA user (qa1/pw-qa) and an operator (op/pw-op)."""
     p = tmp_path / "p"
     approve(CHECKLIST, "Priya", p / "checklists.jsonl")
@@ -109,7 +109,7 @@ def bench(tmp_path, chat=None):
     users = Users(tmp_path / "users.json")
     users.add("qa1", "qa", "pw-qa")
     users.add("op", "operator", "pw-op")
-    c = TestClient(app_mod.create_app(p, None, chat=chat))
+    c = TestClient(app_mod.create_app(p, None, chat=chat, client=client, plc=plc))
     assert c.post("/teach", json={}).json().get("error") is None
     c.post("/selftest", files={"image": ("a.jpg", jpg(make_strip(seed=12)), "image/jpeg")})
     return c, p
@@ -246,3 +246,45 @@ def test_status_flags_unreadable_quarantine(tmp_path, monkeypatch):
     monkeypatch.setattr(app_mod, "quarantine_list", lambda *a, **k: 1 / 0)
     s = c.get("/status").json()
     assert s["quarantine_count"] is None and s["quarantine_error"] is True
+
+
+class HoldPlc:
+    held = False
+
+    def set_hold(self, on):
+        self.held = on
+
+
+def test_hold_endpoint_holds_line(tmp_path):
+    plc = HoldPlc()
+    c, p = bench(tmp_path, plc=plc)
+    assert c.post("/hold", json={}).json() == {"held": True}
+    assert plc.held is True and c.get("/status").json()["held"] is True
+    rows = [json.loads(l) for l in (p / "audit.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert rows[-1]["action"] == "hold_line" and rows[-1]["reason"] == "operator voice command"
+
+
+class VoiceClient:
+    def __init__(self, text=None):
+        self.text, self.kw = text, None
+
+    def transcribe(self, wav, keywords=(), languages=None, mode="PUSH_TO_TALK"):
+        if self.text is None:
+            raise RuntimeError("voice is down")
+        self.kw = (list(keywords), languages, mode)
+        return self.text
+
+
+def test_command_endpoint_returns_match(tmp_path):
+    vc = VoiceClient("start the self test")
+    c = TestClient(app_mod.create_app(tmp_path, None, client=vc))
+    r = c.post("/command", files={"audio": ("a.wav", b"x")}, data={"languages": "Tamil"})
+    assert r.json() == {"transcript": "start the self test", "command": "self_test"}
+    assert vc.kw[1:] == (["Tamil"], "ENDPOINTING") and "blister" in vc.kw[0]
+
+
+def test_command_endpoint_error_is_plain(tmp_path):
+    c = TestClient(app_mod.create_app(tmp_path, None, client=VoiceClient()))
+    r = c.post("/command", files={"audio": ("a.wav", b"x")})
+    assert r.status_code == 200 and r.json() == {"error": "voice is down"}
+    assert "error" in c.post("/command", files={"other": ("a.txt", b"x")}).json()

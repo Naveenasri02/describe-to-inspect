@@ -226,11 +226,12 @@ class MetaClient:
                 for r in _parse(sam.video_segmentation_format(), text) if r.kind == "box"]
 
     @_traced("muse-voice-transcribe-1.0")
-    def transcribe(self, wav: bytes, keywords=(), languages: list[str] | None = None) -> str:
+    def transcribe(self, wav: bytes, keywords=(), languages: list[str] | None = None,
+                   mode: str = "PUSH_TO_TALK") -> str:
         with wave.open(io.BytesIO(wav)) as wf:
             seconds = wf.getnframes() / wf.getframerate()
         cost = seconds / 3600 * VOICE_HOUR
-        req = {"model": "muse-voice-transcribe-1.0", "audioEncoding": "WAV", "mode": "PUSH_TO_TALK",
+        req = {"model": "muse-voice-transcribe-1.0", "audioEncoding": "WAV", "mode": mode,
                "keywords": list(keywords)}
         if languages:
             req["languageBias"] = list(languages)

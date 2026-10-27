@@ -139,6 +139,15 @@ def test_transcribe_multipart(tmp_path):
     assert "languageBias" not in json.loads(http.calls[1]["files"]["request"][1])
 
 
+def test_transcribe_sends_mode(tmp_path):
+    http = FakeHTTP([{"transcript": "a"}, {"transcript": "b"}])
+    client = MetaClient(budget(tmp_path), key="k", http=http)
+    client.transcribe(wav_bytes(), mode="ENDPOINTING")
+    assert json.loads(http.calls[0]["files"]["request"][1])["mode"] == "ENDPOINTING"
+    client.transcribe(wav_bytes())
+    assert json.loads(http.calls[1]["files"]["request"][1])["mode"] == "PUSH_TO_TALK"
+
+
 def test_trace_records_meta_calls(tmp_path):
     from d2i import trace
     trace.clear()

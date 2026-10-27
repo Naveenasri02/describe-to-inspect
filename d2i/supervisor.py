@@ -258,6 +258,12 @@ class Supervisor:
         self.audit.append("agent_approve", name, out, req["reason"])
         return out
 
+    def hold(self, by: str, reason: str) -> dict:
+        """Anyone may hold the line (the safe direction); only resume needs QA."""
+        self._set_hold(True, by)
+        self.audit.append("hold_line", by, {"hold": True}, reason)
+        return {"held": True}
+
     def resume(self, users, name: str, password: str, reason: str) -> dict:
         """QA releases the hold directly, with or without an agent request; refused while the station is LOCKED."""
         _require_qa(users, name, password)

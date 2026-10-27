@@ -17,6 +17,7 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 
 from d2i import record, trace
+from d2i.commands import KEYWORDS, match
 from d2i.audit import (AuditLog, Users, log_physical_challenge, quarantine_list, release_quarantine,
                        sign_record)
 from d2i.checklist import approve, make_checklist
@@ -436,6 +437,30 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
             with lock:
                 return get_sup().approve(str(body.get("id", "")), users, qa(request), str(body.get("password", "")))
         return paid(run)
+
+    @app.post("/hold")
+    def hold_ep(request: Request, body: dict | None = None):
+        def run():
+            with lock:
+                return get_sup().hold(who(request)[0], str((body or {}).get("reason", "")) or "operator voice command")
+        return paid(run)
+
+    @app.post("/command")
+    async def command(request: Request):
+        try:
+            form = await request.form()
+            if "audio" not in form:
+                return {"error": "No audio was received."}
+            audio = await form["audio"].read()
+            lang = form.get("languages")
+        except Exception as ex:
+            return {"error": f"Could not read the request: {ex}"}
+
+        def run():
+            text = get_client().transcribe(audio, keywords=KEYWORDS, languages=[lang] if lang in LANGS else None,
+                                           mode="ENDPOINTING")
+            return {"transcript": text, "command": match(text)}
+        return await run_in_threadpool(paid, run)
 
     @app.post("/resume")
     def resume(body: dict, request: Request):
