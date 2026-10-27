@@ -57,7 +57,6 @@ def run(product_dir: Path, runs: int, bad_dir: Path, chat=None) -> tuple[str, li
     from d2i.audit import AuditLog
     from d2i.llm import ToolChat
     from d2i.meta_api import Budget
-    from d2i.meta_api import Budget
     from d2i.plc import Plc
     from d2i.pockets import find_layout
     from d2i.station import Station
@@ -65,7 +64,7 @@ def run(product_dir: Path, runs: int, bad_dir: Path, chat=None) -> tuple[str, li
 
     read = lambda d: [im for im in (cv2.imread(str(p)) for p in photos(d)) if im is not None]
     good, bad = read(product_dir / "good"), read(bad_dir)
-    budget = Budget(product_dir / "meta_spend.json")  # the real spend file: paid calls count toward the hard stop
+    budget = Budget()  # the shared spend file: paid calls count toward the $50 stop
     rows, platform = [], "none"
     with tempfile.TemporaryDirectory() as tmp:
         work = Path(tmp) / "p"
@@ -94,7 +93,7 @@ def run(product_dir: Path, runs: int, bad_dir: Path, chat=None) -> tuple[str, li
 
 
 def report(platform: str, rows: list[dict], runs: int, spent: float = 0.0) -> str:
-    lines = ["# Agent fault eval", "", f"Date: {date.today()}  ", f"Platform: {platform}  ", f"Runs per scenario: {runs}  ", f"Meta spend so far (product total): ${spent:.2f}", "",
+    lines = ["# Agent fault eval", "", f"Date: {date.today()}  ", f"Platform: {platform}  ", f"Runs per scenario: {runs}  ", f"Meta spend so far (all runs): ${spent:.2f}", "",
              "| Scenario | Cause named | Safe | Mean seconds |", "|---|---|---|---|"]
     lines += [f"| {r['name']} | {r['cause']}/{runs} | {r['safe']}/{runs} | {r['secs']:.1f} |" for r in rows]
     return "\n".join(lines) + "\n"

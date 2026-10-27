@@ -9,6 +9,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import app as app_mod
+import d2i.meta_api as meta_api
 from d2i.audit import Users
 from d2i.checklist import approve
 from d2i.plc import Plc
@@ -78,7 +79,7 @@ def test_describe_then_approve_flow(tmp_path):
 
 def test_status_survives_corrupt_log_line(tmp_path):
     (tmp_path / "log.jsonl").write_text('{"status": "PASS"}\nnot json\n', encoding="utf-8")
-    (tmp_path / "meta_spend.json").write_text("garbage")
+    meta_api.DEFAULT_SPEND.write_text("garbage")
     s = TestClient(app_mod.create_app(tmp_path, None)).get("/status")
     assert s.status_code == 200 and s.json()["counts"] == {"PASS": 1} and s.json()["spent_usd"] is None
 
@@ -292,6 +293,22 @@ def test_inspect_error_is_logged_and_held(tmp_path, monkeypatch):
     assert [x["text"] for x in v["reasons"]] == ["inspection error — check by hand"]
     row = json.loads((p / "log.jsonl").read_text(encoding="utf-8").splitlines()[-1])
     assert row["status"] == "HOLD" and row["at"] and plc.regs[2] == 1 and plc.coils[2] is True
+
+
+def test_app_spends_from_the_one_default_file(tmp_path, monkeypatch):
+    meta_api.DEFAULT_SPEND.write_text('{"spent_usd": 1.25}')
+    seen = []
+
+    class Chat(ScriptChat):
+        def __init__(self, budget):
+            seen.append(budget)
+            super().__init__({"content": "ok"})
+    monkeypatch.setattr(app_mod, "ToolChat", Chat)
+    c, p = bench(tmp_path)
+    assert c.get("/status").json()["spent_usd"] == 1.25
+    c.post("/investigate", json={})
+    wait_done(c)
+    assert seen[0].path == meta_api.DEFAULT_SPEND and seen[0].spent == 1.25
 
 
 class VoiceClient:

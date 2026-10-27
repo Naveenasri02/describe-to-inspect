@@ -8,6 +8,7 @@ import json
 import os
 import re
 import tempfile
+import threading
 import time
 import wave
 from dataclasses import dataclass
@@ -25,6 +26,8 @@ API = "https://api.meta.ai/v1"
 KEY_FILE = Path.home() / ".secrets" / "meta_model_api_key.txt"
 LIMIT_USD = 50.0
 CREDIT_END_UTC = datetime(2026, 11, 5, 2, 0, tzinfo=timezone.utc).timestamp()
+DEFAULT_SPEND = Path(__file__).resolve().parent.parent / "meta_spend.json"  # the one spend file, at the repo root
+_SPEND_LOCK = threading.Lock()  # read-check-write of the spend file as one step, across all Budget objects
 
 SPARK_MODEL = "muse-spark-1.3"
 SPARK_IN, SPARK_OUT = 1.25e-6, 4.25e-6       # USD per token
@@ -60,24 +63,44 @@ class MetaError(RuntimeError):
 
 
 class Budget:
-    def __init__(self, path: Path, limit: float = LIMIT_USD, clock=time.time):
-        self.path, self.limit, self.clock = Path(path), limit, clock
-        self.spent = json.loads(self.path.read_text())["spent_usd"] if self.path.exists() else 0.0
+    """The spend total lives only in the file, so every Budget on it (app, agent chat, tools) shares one $50 stop."""
 
-    def _save(self):
-        self.path.write_text(json.dumps({"spent_usd": round(self.spent, 6)}))
+    def __init__(self, path: Path | None = None, limit: float = LIMIT_USD, clock=time.time):
+        self.path, self.limit, self.clock = Path(path or DEFAULT_SPEND), limit, clock
+
+    def _read(self) -> float:
+        if not self.path.exists():
+            return 0.0
+        try:
+            spent = float(json.loads(self.path.read_text())["spent_usd"])
+            if not spent >= 0:  # also refuses NaN
+                raise ValueError(spent)
+            return spent
+        except Exception as e:  # never crash and never reset to $0: refuse paid calls until a person checks it
+            raise BudgetExceeded(f"spend file unreadable — check {self.path.name}") from e
+
+    def _save(self, spent: float):
+        tmp = self.path.with_name(f"{self.path.name}.{os.getpid()}.tmp")
+        tmp.write_text(json.dumps({"spent_usd": spent}))  # full float: the total is re-read on every call
+        os.replace(tmp, self.path)  # a crash mid-write never leaves half a file
+
+    @property
+    def spent(self) -> float:
+        with _SPEND_LOCK:
+            return self._read()
 
     def reserve(self, worst: float) -> None:
         if self.clock() > CREDIT_END_UTC and os.environ.get("D2I_ALLOW_PAID") != "1":
             raise BudgetExceeded("free credit window ended (set D2I_ALLOW_PAID=1 to pay with the card)")
-        if self.spent + worst > self.limit:
-            raise BudgetExceeded(f"spend stop: ${self.spent:.2f} used of ${self.limit:.2f}")
-        self.spent += worst
-        self._save()
+        with _SPEND_LOCK:
+            spent = self._read()
+            if spent + worst > self.limit:
+                raise BudgetExceeded(f"spend stop: ${spent:.2f} used of ${self.limit:.2f}")
+            self._save(spent + worst)
 
     def settle(self, worst: float, actual: float) -> None:
-        self.spent += actual - worst
-        self._save()
+        with _SPEND_LOCK:
+            self._save(self._read() + actual - worst)
 
 
 @dataclass

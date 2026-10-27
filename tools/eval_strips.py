@@ -99,7 +99,7 @@ def main(argv=None) -> int:
         client = None
         if a.sam:
             from d2i.meta_api import Budget, MetaClient
-            client = MetaClient(Budget(tmp / "spend.json"))
+            client = MetaClient(Budget())  # the shared spend file: these calls count toward the $50 stop
         try:
             res = evaluate(Station(tmp, client=client), good, bad)
         except SelfTestFailed as e:
@@ -107,7 +107,7 @@ def main(argv=None) -> int:
             return 1
         print("\n".join(summary_lines(res)))
         if client:
-            print(f"Meta spend: ${client.budget.spent:.4f}")
+            print(f"Meta spend so far (all runs): ${client.budget.spent:.4f}")
     return 0
 
 

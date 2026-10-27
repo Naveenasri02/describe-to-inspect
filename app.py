@@ -84,7 +84,8 @@ class _NoPlc:  # no PLC attached (tests): the hold still lives in hold.json
         pass
 
 
-def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time, chat=None) -> FastAPI:
+def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time, chat=None,
+               budget: Budget | None = None) -> FastAPI:
     product_dir = Path(product_dir)
     product_dir.mkdir(parents=True, exist_ok=True)
     app = FastAPI()
@@ -96,7 +97,7 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
     q_lock = threading.Lock()  # the open operator question, its answer and the Event, together
     records = {}  # record id -> (html, sha256) of what /record served; last 20
     st = Station(product_dir, client=client, clock=clock)
-    spend_path = product_dir / "meta_spend.json"
+    budget = budget or Budget()  # one spend file for every paid call (Meta client and agent chat): the $50 stop
     src = FrameSource(source) if source is not None else None
     lock = threading.RLock()  # one slow station operation at a time
     meta = threading.RLock()  # short: checklist / pending / last-verdict references
@@ -105,7 +106,7 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
 
     def get_client():  # built lazily so a missing key is reported when a paid call is needed
         if state["client"] is None:
-            state["client"] = MetaClient(Budget(spend_path))
+            state["client"] = MetaClient(budget)
         return state["client"]
 
     def image_from(upload: UploadFile | None):
@@ -169,8 +170,8 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
         except OSError:
             pass
         try:
-            spent = float(json.loads(spend_path.read_text())["spent_usd"]) if spend_path.exists() else 0.0
-        except Exception:
+            spent = budget.spent
+        except Exception:  # unreadable spend file: shown as unknown; paid calls are refused
             spent = None
         with meta:
             cl, pending, last = st.checklist, state["pending"], state["last"]
@@ -404,7 +405,7 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
                 boxes = [l.strip_box for l in (find_layout(im, st.checklist, None, st.template) for im in good) if l.ok]
                 if not boxes:
                     raise ValueError(NEED_TEACH)
-                inv["sup"] = Supervisor(st, plc or _NoPlc(), audit, chat or ToolChat(Budget(spend_path)), ask_operator,
+                inv["sup"] = Supervisor(st, plc or _NoPlc(), audit, chat or ToolChat(budget), ask_operator,
                                         baseline_from(good), tuple(float(v) for v in np.median(boxes, axis=0)),
                                         lambda: src.get() if src else None, product_dir / "good", tool_lock=lock)
             return inv["sup"]
@@ -539,4 +540,5 @@ if __name__ == "__main__":
         raise SystemExit(f"Added {a.role} user {a.add_user}.")
     plc = Plc()
     plc.start()
-    uvicorn.run(create_app(pdir, a.source, MetaClient(Budget(pdir / "meta_spend.json")), plc), host="0.0.0.0", port=a.port)
+    budget = Budget()
+    uvicorn.run(create_app(pdir, a.source, MetaClient(budget), plc, budget=budget), host="0.0.0.0", port=a.port)

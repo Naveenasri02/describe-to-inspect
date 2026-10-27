@@ -69,10 +69,10 @@ def main(argv=None) -> int:
             for _ in range(60):
                 vw.write(img)
             vw.release()
-        client = MetaClient(Budget(tmp / "spend.json"))
+        client = MetaClient(Budget())  # the shared spend file: these calls count toward the $50 stop
         for name, res, secs in run_calls(client, img, clip, buf.getvalue()):
             print(f"{name}: {res} in {secs:.1f}s")
-        print(f"Total spend: ${client.budget.spent:.4f}")
+        print(f"Meta spend so far (all runs): ${client.budget.spent:.4f}")
     return 0
 
 

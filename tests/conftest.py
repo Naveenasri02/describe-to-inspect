@@ -2,6 +2,13 @@ import json
 
 import cv2
 import numpy as np
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _own_spend_file(tmp_path, monkeypatch):
+    """No test reads or writes the real meta_spend.json."""
+    monkeypatch.setattr("d2i.meta_api.DEFAULT_SPEND", tmp_path / "meta_spend.json")
 
 
 class FakeResponse:

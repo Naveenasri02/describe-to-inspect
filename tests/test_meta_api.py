@@ -39,6 +39,41 @@ def test_budget_refuses_past_limit(tmp_path):
     assert Budget(tmp_path / "spend.json", limit=1.0).spent == pytest.approx(0.6)
 
 
+def test_two_budgets_on_one_file_share_the_total(tmp_path):
+    a, b = budget(tmp_path, limit=1.0), budget(tmp_path, limit=1.0)
+    a.reserve(0.6)
+    with pytest.raises(BudgetExceeded):
+        b.reserve(0.6)
+    b.reserve(0.3)
+    a.settle(0.6, 0.1)
+    assert a.spent == b.spent == pytest.approx(0.4)
+
+
+def test_corrupt_spend_file_refuses_paid_calls(tmp_path):
+    import d2i.meta_api as m
+    assert m.DEFAULT_SPEND.name == "meta_spend.json" and Budget().path == m.DEFAULT_SPEND
+    m.DEFAULT_SPEND.write_text("garbage")
+    b = Budget(clock=lambda: BEFORE_END)  # building it does not crash
+    with pytest.raises(BudgetExceeded, match="^spend file unreadable — check meta_spend.json$"):
+        b.reserve(0.01)
+    assert m.DEFAULT_SPEND.read_text() == "garbage"  # never reset to $0
+
+
+def test_concurrent_reserves_lose_no_spend(tmp_path):
+    import threading
+    budgets = [budget(tmp_path) for _ in range(4)]
+
+    def spend(b):
+        for _ in range(50):
+            b.reserve(0.01)
+    threads = [threading.Thread(target=spend, args=(b,)) for b in budgets]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert budgets[0].spent == pytest.approx(2.0)
+
+
 def test_budget_refuses_after_credit_window(tmp_path, monkeypatch):
     monkeypatch.delenv("D2I_ALLOW_PAID", raising=False)
     b = Budget(tmp_path / "spend.json", clock=lambda: CREDIT_END_UTC + 1)
