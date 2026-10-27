@@ -6,6 +6,7 @@ from html import escape as e
 from pathlib import Path
 
 from d2i.audit import AuditLog, config_hashes, quarantine_list
+from d2i.batch import Batches
 from d2i.checklist import current
 from d2i.meta_api import BudgetExceeded, MetaError
 
@@ -140,13 +141,35 @@ def _audit_sections(audit, since: float, until: float) -> str:
             + "<h2>Physical challenge strips</h2>" + _table(["Time (UTC)", "User", "Strip", "Ejected?"], phys))
 
 
+def _batch_section(product_dir: Path) -> str:
+    """The open batch, else the last one: fields, clearance, leak results, verdict counts by status and rule."""
+    rows = Batches(product_dir).rows
+    start = next((r for r in reversed(rows) if r["event"] == "start"), None)
+    if start is None:
+        return "<h2>Batch</h2><p>No batch has been started</p>"
+    mine = [r for r in rows if r.get("batch") == start["batch"] and r["at"] >= start["at"]]
+    end = next((r for r in mine if r["event"] == "end"), None)
+    clr = next((c for c in Batches(product_dir).clearances() if c["at"] == start["clearance_at"]), None)
+    fields = [["Batch", start["batch"]], ["MFG", start["mfg"]], ["EXP", start["exp"]], ["MRP (Rs.)", start["mrp"]],
+              ["Started", f"{start['at']} by {start['by']}"], ["Ended", f"{end['at']} by {end['by']}" if end else "still open"],
+              ["Line clearance", f"{clr['at']} by {clr['by']}: {'clear' if clr['clear'] else 'NOT clear'}" if clr else "not found"]]
+    leaks = [[r["at"], r["by"], r["result"].upper(), r["note"]] for r in mine if r["event"] == "leak"]
+    vs = [v for v in _lines(Path(product_dir) / "log.jsonl") if v.get("batch") == start["batch"]]
+    by_status = Counter(v["status"] for v in vs)
+    by_rule = Counter(f"Rule {r['rule']}" if r["rule"] else "Unlisted" for v in vs for r in v["reasons"])
+    return ("<h2>Batch</h2>" + _table(["Item", "Value"], fields) + "<h2>Leak test</h2>"
+            + _table(["Time", "By", "Result", "Note"], leaks)
+            + "<h2>Batch verdicts</h2>" + _table(list(STATUSES), [[by_status[s] for s in STATUSES]])
+            + _table(["Reason", "Count"], sorted(by_rule.items())))
+
+
 def shift_record(product_dir: Path, since: float, until: float, batch: str, operator: str, client=None,
                  audit: AuditLog | None = None) -> str:
     verdicts, tests = _records(product_dir, since, until)
     cl = current(Path(product_dir) / "checklists.jsonl") or {}
     span = " to ".join(datetime.fromtimestamp(t).isoformat(timespec="seconds") for t in (since, until))
     parts = [
-        "<h1>DRAFT — needs QA signature</h1>",
+        "<h1>DRAFT — needs QA signature</h1>", _batch_section(product_dir),
         f"<p>Product: {e(str(cl.get('product', '')))}<br>Batch: {e(batch)}<br>Operator: {e(operator)}<br>Time range: {e(span)}</p>",
         _checklist_section(cl), _selftest_section(tests), _totals_section(verdicts),
         _rejects_section(verdicts), _held_section(verdicts),

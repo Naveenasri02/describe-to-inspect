@@ -28,11 +28,11 @@ class FakeStation:
     def __init__(self):
         self.crops, self.logged = [], []
 
-    def inspect(self, image, strip_id=None, image_name=None, held=False):
+    def inspect(self, image, strip_id=None, image_name=None, held=False, batch=None):
         self.crops.append(image)
-        return self.log(Verdict(status="PASS", strip_id=strip_id), held)
+        return self.log(Verdict(status="PASS", strip_id=strip_id), held, batch)
 
-    def log(self, v, held=False):
+    def log(self, v, held=False, batch=None):
         if held and v.status == "PASS":
             v.status = "HOLD"
         self.logged.append(v)

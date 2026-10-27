@@ -6,6 +6,7 @@ import pytest
 from d2i.checklist import approve
 from d2i.meta_api import MetaError
 from d2i.audit import AuditLog, config_hashes
+from d2i.batch import Batches
 from d2i.record import ask, shift_record
 from tests.test_station import CHECKLIST
 
@@ -170,3 +171,18 @@ def test_record_quarantine_open_until_qa_release(product):
     (product / "audit.jsonl").write_text("\n".join(rows) + "\n")
     html = shift_record(product, 0, now + 100, "B", "A", audit=audit)
     assert "Audit chain: BROKEN at entry 1" in html and quarantine in html
+
+
+def test_record_has_batch_section_first(product):
+    assert "No batch has been started" in shift_record(product, T0 - 10, T0 + 100, "", "")
+    b = Batches(product)
+    b.clearance({"clear": True, "found": []}, "qa1", T0)
+    b.start("LOT7", "01/2026", "01/2028", "45", "qa1", T0 + 60)
+    b.leak("fail", "qa1", "bubbles", T0 + 70)
+    rows = [dict(_verdict(i, st, rs), batch="LOT7") for i, (st, rs) in enumerate([("PASS", []), ("REJECT", [R2])], 10)]
+    with (product / "log.jsonl").open("a", encoding="utf-8") as f:
+        f.write("".join(json.dumps(r) + chr(10) for r in rows))
+    html = shift_record(product, T0 - 10, T0 + 100, "", "")
+    assert html.index("<h2>Batch</h2>") < html.index("Checklist")
+    for t in ("LOT7", "01/2028", "45.00", "still open", "clear", "FAIL", "bubbles", "Rule 2"):
+        assert t in html

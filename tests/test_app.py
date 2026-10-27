@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 import app as app_mod
 import d2i.meta_api as meta_api
 from d2i.audit import Users
+from d2i.batch import Batches
 from d2i.checklist import approve
 from d2i.meta_api import SamTrackPoint
 from d2i.record import _lines
@@ -58,6 +59,7 @@ def test_inspect_upload_returns_verdict(tmp_path):
     up = lambda img: {"image": ("a.jpg", jpg(img), "image/jpeg")}
     assert c.post("/selftest", files=up(make_strip(seed=12))).json()["passed"] is True
     assert c.get("/status").json()["locked"] is False
+    open_batch(p)
     v = c.post("/inspect", files=up(make_strip(missing=(0,), seed=13))).json()
     assert v["status"] == "REJECT"
     assert "pocket 1" in " ".join(r["text"] for r in v["reasons"])
@@ -129,7 +131,14 @@ class ScriptChat:
         return self.replies.pop(0)
 
 
-def bench(tmp_path, chat=None, client=None, plc=None, source=None):
+def open_batch(p, no="B1"):
+    """A clear line clearance and a started batch, written straight to the files (no SAM call)."""
+    b = Batches(p)
+    b.clearance({"clear": True, "found": []}, "qa1", time.time())
+    return b.start(no, "01/2026", "01/2028", "45", "qa1", time.time())
+
+
+def bench(tmp_path, chat=None, client=None, plc=None, source=None, batch=True):
     """Taught, self-tested bench in tmp_path/p with a QA user (qa1/pw-qa) and an operator (op/pw-op)."""
     p = tmp_path / "p"
     approve(CHECKLIST, "Priya", p / "checklists.jsonl")
@@ -144,6 +153,8 @@ def bench(tmp_path, chat=None, client=None, plc=None, source=None):
     assert c.post("/teach", json={}).json().get("error") is None
     c.post("/selftest", files={"image": ("a.jpg", jpg(make_strip(seed=12)), "image/jpeg")})
     c.post("/logout")
+    if batch:
+        open_batch(p)
     return c, p
 
 
@@ -439,7 +450,7 @@ def test_tray_clip_logs_and_signals_every_verdict(tmp_path):
         assert [v["strip_id"] for v in vs] == [1, 2] and vs[0]["status"] in ("PASS", "REJECT", "HOLD")
         assert vs[1]["status"] == "HOLD" and "not seen clearly" in vs[1]["reasons"][0]["text"]
         assert [(r["strip_id"], r["status"]) for r in log()[n:]] == [(v["strip_id"], v["status"]) for v in vs]
-        assert all(r["at"] for r in log()[n:]) and sum(plc.regs[:3]) == 2
+        assert all(r["at"] and r["batch"] == "B1" for r in log()[n:]) and sum(plc.regs[:3]) == 2
         assert c.get("/status").json()["last_verdict"]["strip_id"] == 2
         c.post("/hold", json={})
         assert "PASS" not in [v["status"] for v in c.post("/tray").json()["verdicts"]]
@@ -475,3 +486,51 @@ def test_self_test_before_teaching_says_teach_first(tmp_path):
     approve(CHECKLIST, "Priya", tmp_path / "p" / "checklists.jsonl")
     c = TestClient(app_mod.create_app(tmp_path / "p", None))
     assert c.post("/selftest", files=up(make_strip(seed=12))).json() == {"error": "Teach the station first"}
+
+
+class ClearClient(FakeClient):
+    def sam_image(self, image, prompt):
+        if prompt in ("blister pack", "pill", "capsule") and getattr(self, "cleared", False):
+            return []  # nothing left on the table
+        raise meta_api.MetaError("offline")  # pockets: the checklist grid
+
+
+def test_inspect_without_batch_refused_and_not_logged(tmp_path):
+    clip = tmp_path / "src.mp4"
+    vw = cv2.VideoWriter(str(clip), cv2.VideoWriter_fourcc(*"mp4v"), 15, (640, 360))
+    for _ in range(3):
+        vw.write(make_strip(seed=12))
+    vw.release()
+    c, p = bench(tmp_path, client=TrayClient(), batch=False, source=str(clip))
+    for url in ("/inspect", "/tray"):
+        r = c.post(url, files=up(make_strip(seed=15))) if url == "/inspect" else c.post(url)
+        assert r.status_code == 409 and r.json() == {"error": "Start a batch first (QA)"}
+    c.app.state.source.stop.set()
+    assert not (p / "log.jsonl").exists() and c.get("/status").json()["batch"] is None
+
+
+def test_inspect_logs_batch(tmp_path):
+    c, p = bench(tmp_path, client=ClearClient(), batch=False)
+    login(c, "qa1", "pw-qa")
+    c.app.state.station.client.cleared = True
+    assert c.post("/clearance", files=up(make_strip(seed=1))).json() == {"clear": True, "found": []}
+    form = {"batch": "lot 7", "mfg": "01/2026", "exp": "01/2028", "mrp": "Rs. 45"}
+    assert c.post("/batch/start", data=form).json()["batch"] == "LOT7"
+    assert c.post("/batch/start", data=form).json() == {"error": "A batch is already open: LOT7"}
+    assert c.get("/status").json()["batch"]["batch"] == "LOT7"
+    assert c.post("/inspect", files=up(make_strip(seed=15))).json()["status"] == "PASS"
+    assert _lines(p / "log.jsonl")[-1]["batch"] == "LOT7"
+    assert c.post("/leak", data={"result": "pass", "note": "ok"}).json()["result"] == "pass"
+    assert c.post("/batch/end").json()["event"] == "end"
+    assert c.get("/status").json()["batch"] is None
+    acts = [json.loads(x)["action"] for x in (p / "audit.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert acts[-4:] == ["line_clearance", "batch_start", "leak_test", "batch_end"]
+
+
+def test_batch_endpoints_need_qa(tmp_path):
+    c, p = bench(tmp_path, client=ClearClient(), batch=False)
+    login(c, "op", "pw-op")
+    for url, data in (("/clearance", {}), ("/batch/start", {"batch": "B1", "mfg": "01/2026", "exp": "01/2028", "mrp": "45"}),
+                      ("/leak", {"result": "pass"}), ("/batch/end", {})):
+        assert c.post(url, data=data).json() == {"error": "Log in as a QA user first"}
+    assert not (p / "batches.jsonl").exists() and not (p / "clearances.jsonl").exists()

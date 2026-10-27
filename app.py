@@ -12,7 +12,7 @@ from pathlib import Path
 
 import cv2
 import numpy as np
-from fastapi import FastAPI, File, Request, UploadFile
+from fastapi import FastAPI, File, Form, Request, UploadFile
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 
@@ -20,6 +20,7 @@ from d2i import record, trace
 from d2i.commands import KEYWORDS, match
 from d2i.audit import (AuditLog, Users, log_physical_challenge, quarantine_list, release_quarantine,
                        sign_record)
+from d2i.batch import Batches, line_clearance
 from d2i.checklist import approve, make_checklist
 from d2i.llm import ToolChat
 from d2i.meta_api import Budget, MetaClient
@@ -31,6 +32,7 @@ from d2i.tray import inspect_clip, record_clip
 STATIC = Path(__file__).parent / "static"
 NEED_GOOD = 5
 NO_CHECKLIST = "Describe and approve the good strip first"
+NO_BATCH = "Start a batch first (QA)"
 LANGS = {"English", "Tamil", "Hindi"}  # "Auto" = omit
 ANSWER_WAIT = 120  # seconds the agent waits for the operator
 INSPECT_ERROR = "inspection error — check by hand"
@@ -98,6 +100,7 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
     q_lock = threading.Lock()  # the open operator question, its answer and the Event, together
     records = {}  # record id -> (html, sha256) of what /record served; last 20
     st = Station(product_dir, client=client, clock=clock)
+    batches = Batches(product_dir)
     budget = budget or Budget()  # one spend file for every paid call (Meta client and agent chat): the $50 stop
     src = FrameSource(source) if source is not None else None
     lock = threading.RLock()  # one slow station operation at a time
@@ -147,6 +150,10 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
             state["last"] = asdict(verdicts[-1])
         return state["last"]
 
+    def need_batch():  # inspecting without an open batch would leave verdicts no batch owns: refuse, log nothing
+        b = batches.open
+        return (b["batch"], None) if b else (None, JSONResponse({"error": NO_BATCH}, status_code=409))
+
     def paid(fn):  # the screen never sees a 500: any failure becomes plain text
         try:
             return fn()
@@ -180,6 +187,10 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
         with meta:
             cl, pending, last = st.checklist, state["pending"], state["last"]
         try:
+            open_batch = batches.open
+        except Exception:  # unreadable batch file: shown as no batch (inspection is refused then)
+            open_batch = None
+        try:
             locked = st.locked
             reason = st.lock_reason if cl else NO_CHECKLIST
         except Exception as ex:  # unreadable self-test log: stay locked
@@ -201,7 +212,7 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
             banner, text = "READY", ""
         return {"locked": locked, "lock_reason": reason if locked else "",
                 "checklist_version": cl and cl["version"], "spent_usd": spent,
-                "counts": counts, "last_verdict": last, "state": banner, "text": text,
+                "counts": counts, "batch": open_batch, "last_verdict": last, "state": banner, "text": text,
                 "rules": cl["rules"] if cl else [], "pending": pending["rules"] if pending else None,
                 "held": held, "quarantine_count": qn, "quarantine_error": qerr,
                 "user": dict(zip(("name", "role"), who(request))) if request.cookies.get("d2i_session") in sessions else None}
@@ -302,14 +313,17 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
                 return {"status": "NO_CHECKLIST", "reasons": [{"text": NO_CHECKLIST}]}
             if im is None:
                 return {"error": "No image."}
+            no, refused = need_batch()
+            if refused:
+                return refused
             with lock:  # inspect and publish together so verdicts land in order
                 try:
-                    v = st.inspect(im, held=held_now())
+                    v = st.inspect(im, held=held_now(), batch=no)
                 except Exception:  # logged and held, never a 500 that leaves the PLC on the previous verdict
                     v = Verdict("HOLD", [{"rule": None, "check": "inspection_error", "pocket": None,
                                           "text": INSPECT_ERROR}], at=st._now())
                     out = publish([v])  # the hold reaches the PLC even if the log cannot be written either
-                    st.log(v)
+                    st.log(v, batch=no)
                     return out
                 return publish([v])
         return paid(run)
@@ -322,9 +336,12 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
             s = src.source if src else ""
             if not s or Path(s).is_dir() or Path(s).suffix.lower() in (".jpg", ".jpeg", ".png"):
                 return {"error": "tray clip needs a camera or video source"}
+            no, refused = need_batch()
+            if refused:
+                return refused
             with lock:  # one slow station operation at a time; verdicts land in order
                 clip = record_clip(int(s) if s.isdigit() else s, TRAY_SECONDS, product_dir / "tray.mp4")
-                vs = inspect_clip(clip, st, get_client(), held=held_now())  # each one is already logged
+                vs = inspect_clip(clip, st, get_client(), held=held_now(), batch=no)  # each one is already logged
                 publish(vs)
                 return {"verdicts": [asdict(v) for v in vs]}
         return paid(run)
@@ -355,6 +372,51 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
         if role != "qa":
             raise PermissionError("Log in as a QA user first")
         return name
+
+    @app.post("/clearance")
+    def clearance(request: Request, image: UploadFile | None = File(None)):
+        def run():
+            name = qa(request)
+            im = image_from(image)
+            if im is None:
+                return {"error": "No camera frame to check."}
+            out = line_clearance(im, get_client())
+            with meta:
+                batches.clearance(out, name, clock())
+                audit.append("line_clearance", name, dict(out, cleared_by=name))
+            return out
+        return paid(run)
+
+    @app.post("/batch/start")
+    def batch_start(request: Request, batch: str = Form(""), mfg: str = Form(""), exp: str = Form(""),
+                    mrp: str = Form("")):
+        def run():
+            name = qa(request)
+            with meta:
+                row = batches.start(batch, mfg, exp, mrp, name, clock())
+                audit.append("batch_start", name, {k: row[k] for k in ("batch", "mfg", "exp", "mrp", "clearance_at")})
+            return row
+        return paid(run)
+
+    @app.post("/leak")
+    def leak(request: Request, result: str = Form(""), note: str = Form("")):
+        def run():
+            name = qa(request)
+            with meta:
+                row = batches.leak(result, name, note, clock())
+                audit.append("leak_test", name, {"batch": row["batch"], "result": result, "note": note})
+            return row
+        return paid(run)
+
+    @app.post("/batch/end")
+    def batch_end(request: Request):
+        def run():
+            name = qa(request)
+            with meta:
+                row = batches.end(name, clock())
+                audit.append("batch_end", name, {"batch": row["batch"]})
+            return row
+        return paid(run)
 
     @app.post("/login")
     def login(body: dict):

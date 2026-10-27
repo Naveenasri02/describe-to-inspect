@@ -29,7 +29,7 @@ td,th{font-size:12px;padding:2px 6px;text-align:left}
   <span id="loginbox"><input id="ln" placeholder="Name"><input id="lp" type="password" placeholder="Password">
   <button onclick="login()">Log in</button></span>
   <button id="logoutbtn" onclick="logout()" hidden>Log out</button></header>
-<div id="banner">...<div id="why"></div></div>
+<div id="banner">...<div id="why"></div><div id="batchline" class="small" style="color:#fff"></div></div>
 <div id="qbanner" hidden><span id="qtext"></span><ul id="qlist"></ul>
   <input id="rp" type="password" placeholder="QA password"><input id="rr" placeholder="Reason">
   <button onclick="release()">Release quarantine (QA)</button></div>
@@ -64,6 +64,15 @@ td,th{font-size:12px;padding:2px 6px;text-align:left}
   <div class="small"><a href="/lamp" target="_blank">Stack-light page</a></div>
 </section>
 <section>
+  <b>Batch</b> <span class="small">(QA logs in to use these)</span>
+  <div><button onclick="clearance()">Line clearance</button> <span id="clr" class="small"></span></div>
+  <div><input id="bn" placeholder="Batch no."><input id="bm" placeholder="MFG 10/2026"><input id="be" placeholder="EXP 10/2028"><input id="bp" placeholder="MRP Rs.">
+  <button onclick="batchStart()">Start batch</button></div>
+  <div>Leak test: <button onclick="leak('pass')">Pass</button><button onclick="leak('fail')">Fail</button>
+  <input id="bnote" placeholder="Note"></div>
+  <div><button onclick="batchEnd()">End batch</button></div>
+</section>
+<section>
   <b>Shift Supervisor (<span id="supmodel">Muse Spark Open, open weights</span>)</b>
   <div><input id="trig" placeholder="Why? e.g. rejects rose"><button onclick="investigate()">Investigate</button></div>
   <div id="invstate" class="small"></div>
@@ -89,6 +98,12 @@ async function post(url,b){show("Working...");show(await j(url,b))}
 async function inspectNow(){show("Working...");const v=await (await fetch("/inspect",{method:"POST"})).json();show(v.error?v:v.status+" "+(v.reasons||[]).map(r=>r.text).join("; "))}
 async function trayNow(){show("Working...");const r=await j("/tray");
   show(r.verdicts?r.verdicts.map(v=>"Strip "+(v.strip_id??"-")+": "+v.status+" "+v.reasons.map(x=>x.text).join("; ")).join("\n"):r)}
+async function form(url,o){const r=await fetch(url,{method:"POST",body:new URLSearchParams(o||{})});return r.json()}
+async function clearance(){show("Checking the table...");const r=await form("/clearance");
+  $("clr").textContent=r.error?"":(r.clear?"Clear":"Not clear: "+r.found.map(f=>f.count+" "+f.prompt).join(", "));show(r.error?r:"Line clearance: "+(r.clear?"clear":"NOT clear"))}
+async function batchStart(){show(await form("/batch/start",{batch:$("bn").value,mfg:$("bm").value,exp:$("be").value,mrp:$("bp").value}))}
+async function leak(r){show(await form("/leak",{result:r,note:$("bnote").value}))}
+async function batchEnd(){show(await form("/batch/end"))}
 async function describe(){show("Working...");const r=await j("/describe",{text:$("text").value});shown(r)}
 function shown(r){if(r.error)return show(r);if(r.transcript)$("text").value=r.transcript;show("Check the rules, then Approve.")}
 async function approve(){show(await j("/approve"))}
@@ -100,7 +115,7 @@ async function ask(){const r=await j("/ask",{question:$("q").value});show(r.erro
 async function refresh(){
   const s=await (await fetch("/status")).json();
   $("banner").style.background=col[s.state]||"#888";
-  $("banner").firstChild.textContent=s.state;$("why").textContent=s.text;
+  $("banner").firstChild.textContent=s.state;$("why").textContent=s.text;$("batchline").textContent=s.batch?"Batch "+s.batch.batch:"No batch open";
   $("spent").textContent=s.spent_usd==null?"?":s.spent_usd.toFixed(2);$("ver").textContent=s.checklist_version??"-";
   $("counts").textContent=Object.entries(s.counts).map(([k,v])=>k+" "+v).join(" · ");
   $("rules").innerHTML="";(s.pending||s.rules).forEach(t=>{const li=document.createElement("li");li.textContent=t.replace(/^Rule \d+: /,"");$("rules").appendChild(li)});

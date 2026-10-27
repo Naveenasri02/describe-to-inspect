@@ -178,20 +178,20 @@ class Station:
         v.status = "REJECT" if listed else "HOLD" if unlisted else "PASS"
         return v
 
-    def inspect(self, image, strip_id=None, image_name=None, held: bool = False) -> Verdict:
+    def inspect(self, image, strip_id=None, image_name=None, held: bool = False, batch=None) -> Verdict:
         if self.locked:
             v = Verdict("LOCKED", [{"rule": None, "check": "locked", "pocket": None, "text": self.lock_reason}],
                         strip_id=strip_id, image_name=image_name, at=self._now())
         else:
             v = self._judge(image, strip_id, image_name)
-        return self.log(v, held)
+        return self.log(v, held, batch)
 
-    def log(self, v: Verdict, held: bool = False) -> Verdict:
+    def log(self, v: Verdict, held: bool = False, batch=None) -> Verdict:
         """Append one verdict to log.jsonl. held: the line is held, so a PASS is logged (and returned) as HOLD."""
         if held and v.status == "PASS":
             v.status, v.reasons = "HOLD", [{"rule": None, "check": "line_held", "pocket": None, "text": LINE_HELD}]
         v.at = v.at or self._now()
-        _append(self.dir / "log.jsonl", dict(asdict(v), checklist_version=self.checklist["version"]))
+        _append(self.dir / "log.jsonl", dict(asdict(v), checklist_version=self.checklist["version"], batch=batch))
         return v
 
     def self_test(self, good_image, rng_seed: int | None = None, record: bool | str = True) -> dict:
