@@ -53,25 +53,29 @@ def score(result: dict, scenario: dict) -> dict:
     return {"cause_right": cause, "safe": safe}
 
 
-def run(product_dir: Path, runs: int, chat=None) -> tuple[str, list[dict]]:
+def run(product_dir: Path, runs: int, bad_dir: Path, chat=None) -> tuple[str, list[dict], float]:
     from d2i.audit import AuditLog
     from d2i.llm import ToolChat
+    from d2i.meta_api import Budget
     from d2i.meta_api import Budget
     from d2i.plc import Plc
     from d2i.pockets import find_layout
     from d2i.station import Station
     from d2i.supervisor import Supervisor, baseline_from
 
-    read = lambda d: [im for im in (cv2.imread(str(p)) for p in sorted((product_dir / d).glob("*.jpg"))) if im is not None]
-    good, bad = read("good"), read("bad")
+    read = lambda d: [im for im in (cv2.imread(str(p)) for p in photos(d)) if im is not None]
+    good, bad = read(product_dir / "good"), read(bad_dir)
+    budget = Budget(product_dir / "meta_spend.json")  # the real spend file: paid calls count toward the hard stop
     rows, platform = [], "none"
     with tempfile.TemporaryDirectory() as tmp:
         work = Path(tmp) / "p"
         shutil.copytree(product_dir, work)  # the real product's state is never touched
         st = Station(work)
         boxes = [l.strip_box for l in (find_layout(im, st.checklist, None, st.template) for im in good) if l.ok]
+        if not boxes:
+            raise ValueError("no good photo shows a findable strip layout; teach the product first")
         ref = tuple(float(v) for v in np.median(boxes, axis=0))
-        chat = chat or ToolChat(Budget(work / "meta_spend.json"))
+        chat = chat or ToolChat(budget)
         for sc in scenarios(good, bad):
             cause = safe = 0
             secs = []
@@ -86,35 +90,44 @@ def run(product_dir: Path, runs: int, chat=None) -> tuple[str, list[dict]]:
                 s = score(res, sc)
                 cause, safe = cause + s["cause_right"], safe + s["safe"]
             rows.append({"name": sc["name"], "cause": cause, "safe": safe, "secs": float(np.mean(secs))})
-    return platform, rows
+    return platform, rows, budget.spent
 
 
-def report(platform: str, rows: list[dict], runs: int) -> str:
-    lines = ["# Agent fault eval", "", f"Date: {date.today()}  ", f"Platform: {platform}  ", f"Runs per scenario: {runs}", "",
+def report(platform: str, rows: list[dict], runs: int, spent: float = 0.0) -> str:
+    lines = ["# Agent fault eval", "", f"Date: {date.today()}  ", f"Platform: {platform}  ", f"Runs per scenario: {runs}  ", f"Meta spend so far (product total): ${spent:.2f}", "",
              "| Scenario | Cause named | Safe | Mean seconds |", "|---|---|---|---|"]
     lines += [f"| {r['name']} | {r['cause']}/{runs} | {r['safe']}/{runs} | {r['secs']:.1f} |" for r in rows]
     return "\n".join(lines) + "\n"
 
 
+def photos(folder) -> list[Path]:
+    return sorted(p for p in Path(folder).glob("*") if p.suffix.lower() in (".jpg", ".jpeg", ".png"))
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("product_dir", type=Path)
+    ap.add_argument("--bad", type=Path, default=Path("photos/bad"), help="photos of bad strips (real_defects)")
     ap.add_argument("--runs", type=int, default=3)
     ap.add_argument("--yes-live", action="store_true")
     a = ap.parse_args(argv)
     if not a.yes_live:
         print("Refusing: this calls the paid model. Re-run with --yes-live.", file=sys.stderr)
         return 2
-    good = list((a.product_dir / "good").glob("*.jpg"))
+    good = photos(a.product_dir / "good")
     if not (a.product_dir / "model.pt").exists() or len(good) < 5:
         print("Refusing: the product needs a taught model (model.pt) and at least 5 good photos in good/.", file=sys.stderr)
         return 2
-    if not list((a.product_dir / "bad").glob("*.jpg")):
-        print("Refusing: the real_defects scenario needs photos of bad strips in bad/.", file=sys.stderr)
+    if not photos(a.bad):
+        print(f"Refusing: the real_defects scenario needs photos of bad strips in {a.bad} (--bad DIR).", file=sys.stderr)
         return 2
-    platform, rows = run(a.product_dir, a.runs)
-    Path("EVAL_AGENT.md").write_text(report(platform, rows, a.runs), encoding="utf-8")
-    print(report(platform, rows, a.runs))
+    try:
+        platform, rows, spent = run(a.product_dir, a.runs, a.bad)
+    except ValueError as e:
+        print(f"Refusing: {e}", file=sys.stderr)
+        return 2
+    Path("EVAL_AGENT.md").write_text(report(platform, rows, a.runs, spent), encoding="utf-8")
+    print(report(platform, rows, a.runs, spent))
     return 0
 
 
