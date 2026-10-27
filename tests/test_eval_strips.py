@@ -70,3 +70,21 @@ def test_no_strip_is_not_judged_and_hold_counts():
     assert (res["caught"], res["held"], res["false_rejects"], res["not_judged"]) == (1, 1, 0, 2)
     lines = summary_lines(res)
     assert "caught 1 of 3 bad (1 held for a person)" in lines and "not judged: 2" in lines
+
+
+def test_smoke_video_call_reaches_client(tmp_path):
+    import numpy as np
+    from tools.smoke_live import run_calls
+
+    class C:
+        seen = []
+
+        def spark_json(self, *a, **k): return {"reply": "ok"}
+        def sam_image(self, img, prompt): return []
+        def sam_video(self, mp4, prompt): C.seen.append(mp4); return []
+        def transcribe(self, wav): return []
+
+    clip = tmp_path / "c.mp4"
+    clip.write_bytes(b"x")
+    res = run_calls(C(), np.zeros((2, 2, 3), np.uint8), clip, b"w")
+    assert C.seen == [b"x"] and all(r[1].startswith("OK") for r in res)
