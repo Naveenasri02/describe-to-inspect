@@ -395,7 +395,7 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
             rec = records.get(str(body.get("record_id", "")))
             if rec is None:
                 return {"error": RECORD_EXPIRED}
-            return sign_record(rec[0], audit, users, name, str(body.get("password", "")))
+            return sign_record(rec[0], audit, users, name, str(body.get("password", "")), product_dir=product_dir)
         return paid(run)
 
     @app.get("/trace")

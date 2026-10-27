@@ -154,8 +154,14 @@ def log_physical_challenge(audit: AuditLog, user: str, strip_label: str, ejected
 
 
 def sign_record(html: str, audit: AuditLog, users: Users, name: str, password: str,
-                meaning: str = "Reviewed and approved") -> dict:
+                meaning: str = "Reviewed and approved", product_dir: Path | None = None) -> dict:
+    """With product_dir, the signed entry also pins the verdict files (log.jsonl, selftests.jsonl) by sha256."""
     _require_qa(users, name, password)
     sha = hashlib.sha256(html.encode("utf-8")).hexdigest()
-    entry = audit.append("sign", name, {"record_sha256": sha, "meaning": meaning})
+    details = {"record_sha256": sha, "meaning": meaning}
+    if product_dir is not None:
+        files = [Path(product_dir) / n for n in ("log.jsonl", "selftests.jsonl")]
+        details["files_sha256"] = {f.name: hashlib.sha256(f.read_bytes()).hexdigest() if f.exists() else None
+                                   for f in files}
+    entry = audit.append("sign", name, details)
     return {"signed_by": name, "role": "qa", "meaning": meaning, "at": entry["at"], "record_sha256": sha}

@@ -457,3 +457,15 @@ def test_tray_needs_a_camera_or_video(tmp_path):
         assert c.post("/tray").json() == {"error": "tray clip needs a camera or video source"}
         if c.app.state.source:
             c.app.state.source.stop.set()
+
+
+def test_sign_pins_the_verdict_files(tmp_path):
+    c, p = bench(tmp_path)
+    c.post("/inspect", files=up(make_strip(seed=15)))
+    login(c, "qa1", "pw-qa")
+    rid = c.get("/record").headers["X-Record-Id"]
+    assert c.post("/sign", json={"password": "pw-qa", "record_id": rid}).json()["signed_by"] == "qa1"
+    e = json.loads((p / "audit.jsonl").read_text(encoding="utf-8").splitlines()[-1])
+    sha = lambda n: hashlib.sha256((p / n).read_bytes()).hexdigest()  # noqa: E731
+    assert e["action"] == "sign"
+    assert e["details"]["files_sha256"] == {"log.jsonl": sha("log.jsonl"), "selftests.jsonl": sha("selftests.jsonl")}
