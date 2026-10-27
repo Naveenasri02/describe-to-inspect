@@ -15,15 +15,18 @@ class FakeResponse:
 
 
 class FakeHTTP:
-    """Stands in for `requests`: returns queued responses and records each call."""
+    """Stands in for `requests`: returns queued responses (an exception is raised) and records each call."""
 
     def __init__(self, responses):
         self.responses = list(responses)
         self.calls = []
 
     def post(self, url, headers=None, json=None, files=None, data=None, timeout=None):
-        self.calls.append({"url": url, "headers": headers, "json": json, "files": files, "data": data})
+        self.calls.append({"url": url, "headers": headers, "json": json, "files": files, "data": data,
+                           "timeout": timeout})
         item = self.responses.pop(0)
+        if isinstance(item, Exception):
+            raise item
         status, body = item if isinstance(item, tuple) else (200, item)
         return FakeResponse(status, body)
 

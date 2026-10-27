@@ -72,6 +72,16 @@ def test_meta_error_falls_back_to_grid():
     assert lay.source == "grid" and lay.ok
 
 
+def test_network_error_falls_back_to_grid(tmp_path):
+    import requests
+    from d2i.meta_api import CREDIT_END_UTC, Budget, MetaClient
+    from tests.conftest import FakeHTTP
+    client = MetaClient(Budget(tmp_path / "s.json", clock=lambda: CREDIT_END_UTC - 3600), key="k",
+                        http=FakeHTTP([requests.ConnectionError("no route to api.meta.ai")]))
+    lay = find_layout(make_strip(), CL, client)
+    assert lay.source == "grid" and lay.ok
+
+
 def _pills(idx, strip=STRIP_BOX):
     return [(pocket_box(i, strip=strip), 0.9) for i in idx]
 

@@ -102,6 +102,16 @@ def test_record_shows_chain_and_hashes(product):
     assert "Audit chain: BROKEN at entry 1" in shift_record(product, 0, T0 + 100, "B", "A", audit=audit)
 
 
+def test_record_builds_when_network_is_down(product):
+    import requests
+    from d2i.meta_api import CREDIT_END_UTC, Budget, MetaClient
+    from tests.conftest import FakeHTTP
+    client = MetaClient(Budget(product / "s.json", clock=lambda: CREDIT_END_UTC - 3600), key="k",
+                        http=FakeHTTP([requests.Timeout("read timed out")]))
+    html = shift_record(product, 0, T0 + 100, "B", "A", client=client)
+    assert "DRAFT — needs QA signature" in html and "Summary not available" in html
+
+
 def test_record_summary_missing_key_falls_back(product):
     assert "Summary not available" in shift_record(product, 0, T0 + 100, "B", "A", client=Fake({"other": "x"}))
 

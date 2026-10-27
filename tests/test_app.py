@@ -282,6 +282,18 @@ def test_held_line_turns_pass_into_hold(tmp_path):
     assert c.post("/inspect", files=up(make_strip(missing=(0,), seed=13))).json()["status"] == "REJECT"
 
 
+def test_inspect_error_is_logged_and_held(tmp_path, monkeypatch):
+    plc = Plc(host="127.0.0.1", port=0)
+    c, p = bench(tmp_path, plc=plc)
+    monkeypatch.setattr(c.app.state.station, "_judge", lambda *a: 1 / 0)
+    r = c.post("/inspect", files=up(make_strip(seed=15)))
+    v = r.json()
+    assert r.status_code == 200 and v["status"] == "HOLD"
+    assert [x["text"] for x in v["reasons"]] == ["inspection error — check by hand"]
+    row = json.loads((p / "log.jsonl").read_text(encoding="utf-8").splitlines()[-1])
+    assert row["status"] == "HOLD" and row["at"] and plc.regs[2] == 1 and plc.coils[2] is True
+
+
 class VoiceClient:
     def __init__(self, text=None):
         self.text, self.kw = text, None

@@ -24,7 +24,7 @@ from d2i.checklist import approve, make_checklist
 from d2i.llm import ToolChat
 from d2i.meta_api import Budget, MetaClient
 from d2i.pockets import find_layout
-from d2i.station import Station
+from d2i.station import Station, Verdict
 from d2i.supervisor import Supervisor, baseline_from
 
 STATIC = Path(__file__).parent / "static"
@@ -33,6 +33,7 @@ NO_CHECKLIST = "Describe and approve the good strip first"
 LANGS = {"English", "Tamil", "Hindi"}  # "Auto" = omit
 NEED_TEACH = "Teach the station first"
 ANSWER_WAIT = 120  # seconds the agent waits for the operator
+INSPECT_ERROR = "inspection error — check by hand"
 
 
 class FrameSource:
@@ -131,6 +132,15 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
             return len(quarantine_list(product_dir, audit)["strips"]), False
         except Exception:
             return None, True  # unknown is shown, never hidden
+
+    def publish(verdicts):
+        """Each verdict to the PLC in order; the last one is shown on the screen."""
+        for v in verdicts:
+            if plc:
+                plc.set_verdict(v)
+        with meta:
+            state["last"] = asdict(verdicts[-1])
+        return state["last"]
 
     def paid(fn):  # the screen never sees a 500: any failure becomes plain text
         try:
@@ -282,12 +292,15 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
             if im is None:
                 return {"error": "No image."}
             with lock:  # inspect and publish together so verdicts land in order
-                v = st.inspect(im, held=held_now())
-                with meta:
-                    state["last"] = asdict(v)
-                if plc:
-                    plc.set_verdict(v)
-                return state["last"]
+                try:
+                    v = st.inspect(im, held=held_now())
+                except Exception:  # logged and held, never a 500 that leaves the PLC on the previous verdict
+                    v = Verdict("HOLD", [{"rule": None, "check": "inspection_error", "pocket": None,
+                                          "text": INSPECT_ERROR}], at=st._now())
+                    out = publish([v])  # the hold reaches the PLC even if the log cannot be written either
+                    st.log(v)
+                    return out
+                return publish([v])
         return paid(run)
 
     def make_record(batch, operator, hours):

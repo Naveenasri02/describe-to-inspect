@@ -84,6 +84,25 @@ def test_meta_error_keeps_reservation(tmp_path):
     assert client.budget.spent > 0
 
 
+def test_network_errors_become_meta_error(tmp_path):
+    import requests
+    schema = {"type": "object", "properties": {}, "required": []}
+    for item in (requests.ConnectionError("no route"), requests.Timeout("read timed out"), (200, "<html>busy</html>")):
+        client = MetaClient(budget(tmp_path), key="k", http=FakeHTTP([item]))
+        with pytest.raises(MetaError, match="^Meta API unreachable: "):
+            client.spark_json("sys", "user", schema)
+
+
+def test_image_calls_time_out_after_30_s(tmp_path):
+    img = np.zeros((8, 8, 3), np.uint8)
+    http = FakeHTTP([responses_body(""), chat_body(json.dumps({"count": 1, "points": [[1, 2]]})), chat_body('{}')])
+    client = MetaClient(budget(tmp_path), key="k", http=http)
+    client.sam_image(img, "pill")
+    client.spark_count(img, "tablet")
+    client.spark_json("s", "u", {"type": "object", "properties": {}, "required": []})
+    assert [c["timeout"] for c in http.calls] == [30, 30, 180]
+
+
 def test_no_key_raises_with_key_file_hint(tmp_path, monkeypatch):
     monkeypatch.delenv("MODEL_API_KEY", raising=False)
     monkeypatch.setattr("d2i.meta_api.KEY_FILE", tmp_path / "missing.txt")

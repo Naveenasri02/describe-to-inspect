@@ -17,6 +17,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 import meta_sam_parser as sam
+import requests
 
 from d2i import trace
 
@@ -30,6 +31,7 @@ SPARK_IN, SPARK_OUT = 1.25e-6, 4.25e-6       # USD per token
 SAM_IMAGE = 2.50 / 1000                        # USD per image
 SAM_FRAME, SAM_MIN_FRAMES = 0.20 / 1000, 50    # USD per video frame, billed minimum
 VOICE_HOUR = 0.18                              # USD per audio hour
+IMAGE_TIMEOUT = 30  # seconds; image calls run inside inspection, which holds the station lock
 
 
 def _traced(model):
@@ -97,10 +99,7 @@ class SamTrackPoint:
 class MetaClient:
     def __init__(self, budget: Budget, key: str | None = None, http=None):
         self.budget, self._key = budget, key
-        if http is None:
-            import requests
-            http = requests
-        self.http = http
+        self.http = http or requests
 
     def _headers(self):
         key = self._key or os.environ.get("MODEL_API_KEY")
@@ -110,13 +109,16 @@ class MetaClient:
             raise MetaError(f"no Meta API key: set MODEL_API_KEY or put the key in {KEY_FILE}")
         return {"Authorization": f"Bearer {key}"}
 
-    def _post(self, path, worst, **kw):
+    def _post(self, path, worst, timeout=180, **kw):
         headers = self._headers()
         self.budget.reserve(worst)  # a failed call keeps its reservation
-        r = self.http.post(f"{API}{path}", headers=headers, timeout=180, **kw)
-        if r.status_code >= 400:
-            raise MetaError(f"Meta API {r.status_code}: {r.text[:300]}")
-        return r.json()
+        try:
+            r = self.http.post(f"{API}{path}", headers=headers, timeout=timeout, **kw)
+            if r.status_code >= 400:
+                raise MetaError(f"Meta API {r.status_code}: {r.text[:300]}")
+            return r.json()
+        except (requests.RequestException, ValueError) as e:  # network down, timeout, or a body that is not JSON
+            raise MetaError(f"Meta API unreachable: {e}") from e
 
     @_traced(SPARK_MODEL)
     def spark_json(self, system: str, user: str, schema: dict, name: str = "result", max_out: int = 4000,
@@ -157,7 +159,7 @@ class MetaClient:
             url = "data:image/jpeg;base64," + base64.b64encode(jpg.tobytes()).decode()
             content = [{"type": "text", "text": user}, {"type": "image_url", "image_url": {"url": url}}]
         messages = ([{"role": "system", "content": system}] if system else []) + [{"role": "user", "content": content}]
-        body = self._post("/chat/completions", worst, json={
+        body = self._post("/chat/completions", worst, timeout=180 if image is None else IMAGE_TIMEOUT, json={
             "model": SPARK_MODEL, "max_tokens": max_out, "reasoning_effort": effort,
             "messages": messages,
             "response_format": {"type": "json_schema",
@@ -173,8 +175,8 @@ class MetaClient:
             raise MetaError(f"Muse Spark answer is missing {missing}")
         return out
 
-    def _sam(self, worst, actual, content):
-        body = self._post("/responses", worst, json={
+    def _sam(self, worst, actual, content, timeout=180):
+        body = self._post("/responses", worst, timeout=timeout, json={
             "model": "sam-3.1", "metadata": {"include_confidence": "true"},
             "input": [{"role": "user", "content": content}]})
         self.budget.settle(worst, actual)
@@ -188,7 +190,7 @@ class MetaClient:
         ok, jpg = cv2.imencode(".jpg", image, [cv2.IMWRITE_JPEG_QUALITY, 92])
         url = "data:image/jpeg;base64," + base64.b64encode(jpg.tobytes()).decode()
         text = self._sam(SAM_IMAGE, SAM_IMAGE, [{"type": "input_text", "text": prompt},
-                                                {"type": "input_image", "image_url": url}])
+                                                {"type": "input_image", "image_url": url}], IMAGE_TIMEOUT)
         h, w = image.shape[:2]
         sx, sy = _scale(text, w, h)
         records = _parse(sam.image_segmentation_format(), text)
