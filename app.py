@@ -2,8 +2,10 @@
 import argparse
 import html
 import json
+import secrets
 import threading
 import time
+import uuid
 from dataclasses import asdict
 from pathlib import Path
 
@@ -11,18 +13,24 @@ import cv2
 import numpy as np
 from fastapi import FastAPI, File, Request, UploadFile
 from fastapi.concurrency import run_in_threadpool
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 
-from d2i import record
+from d2i import record, trace
+from d2i.audit import (AuditLog, Users, log_physical_challenge, quarantine_list, release_quarantine,
+                       sign_record)
 from d2i.checklist import approve, make_checklist
+from d2i.llm import ToolChat
 from d2i.meta_api import Budget, MetaClient
 from d2i.pockets import find_layout
 from d2i.station import Station
+from d2i.supervisor import Supervisor, baseline_from
 
 STATIC = Path(__file__).parent / "static"
 NEED_GOOD = 5
 NO_CHECKLIST = "Describe and approve the good strip first"
 LANGS = {"English", "Tamil", "Hindi"}  # "Auto" = omit
+NEED_TEACH = "Teach the station first"
+ANSWER_WAIT = 120  # seconds the agent waits for the operator
 
 
 class FrameSource:
@@ -65,10 +73,24 @@ class FrameSource:
             self.stop.wait(0.03)
 
 
-def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time) -> FastAPI:
+class _NoPlc:  # no PLC attached (tests): the hold still lives in hold.json
+    def set_hold(self, on):
+        pass
+
+
+def _locked(lock, fn, kw):
+    with lock:
+        return fn(**kw)
+
+
+def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time, chat=None) -> FastAPI:
     product_dir = Path(product_dir)
     product_dir.mkdir(parents=True, exist_ok=True)
     app = FastAPI()
+    trace.set_path(product_dir / "trace.jsonl")
+    audit, users = AuditLog(product_dir / "audit.jsonl"), Users(product_dir.parent / "users.json")
+    sessions = {}  # token -> (name, role); in memory, lost on restart
+    inv = {"running": False, "question": None, "result": None, "answer": None, "event": threading.Event(), "sup": None}
     st = Station(product_dir, client=client, clock=clock)
     spend_path = product_dir / "meta_spend.json"
     src = FrameSource(source) if source is not None else None
@@ -87,6 +109,26 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
             return cv2.imdecode(np.frombuffer(upload.file.read(), np.uint8), cv2.IMREAD_COLOR)
         return src.get() if src else None
 
+    def who(request: Request):
+        return sessions.get(request.cookies.get("d2i_session"), ("operator", None))
+
+    def held_now():
+        try:
+            return json.loads((product_dir / "hold.json").read_text(encoding="utf-8"))["held"] is not False
+        except FileNotFoundError:
+            return False
+        except Exception:  # unreadable hold file: held (the safe direction)
+            return True
+
+    if plc and held_now():
+        plc.set_hold(True)  # a restart keeps the line held
+
+    def quarantine_count():
+        try:
+            return len(quarantine_list(product_dir, audit)["strips"])
+        except Exception:
+            return None
+
     def paid(fn):  # the screen never sees a 500: any failure becomes plain text
         try:
             return fn()
@@ -102,7 +144,7 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
         return (STATIC / "lamp.html").read_text(encoding="utf-8")
 
     @app.get("/status")
-    def status():
+    def status(request: Request):
         counts = {}
         try:
             for line in (product_dir / "log.jsonl").read_text(encoding="utf-8", errors="replace").splitlines():
@@ -124,7 +166,10 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
             reason = st.lock_reason if cl else NO_CHECKLIST
         except Exception as ex:  # unreadable self-test log: stay locked
             locked, reason = True, f"Cannot read self-test log: {ex}"
-        if locked:
+        held = held_now()
+        if held:
+            banner, text = "HOLD", "Line held by the Shift Supervisor — QA must resume." + (f" {reason}" if locked else "")
+        elif locked:
             banner, text = "LOCKED", reason
         elif last and last["status"] in ("REJECT", "HOLD"):
             banner, text = last["status"], " ".join(r["text"] for r in last["reasons"])
@@ -133,7 +178,9 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
         return {"locked": locked, "lock_reason": reason if locked else "",
                 "checklist_version": cl and cl["version"], "spent_usd": spent,
                 "counts": counts, "last_verdict": last, "state": banner, "text": text,
-                "rules": cl["rules"] if cl else [], "pending": pending["rules"] if pending else None}
+                "rules": cl["rules"] if cl else [], "pending": pending["rules"] if pending else None,
+                "held": held, "quarantine_count": quarantine_count(),
+                "user": dict(zip(("name", "role"), who(request))) if request.cookies.get("d2i_session") in sessions else None}
 
     @app.post("/describe")
     async def describe(request: Request):
@@ -160,7 +207,7 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
         return await run_in_threadpool(paid, lambda: run(*args))
 
     @app.post("/approve")
-    def approve_ep(body: dict):
+    def approve_ep(body: dict, request: Request):
         by = str(body.get("by", "")).strip()
 
         def run():
@@ -171,11 +218,12 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
                     return {"error": "Enter the approver's name."}
                 st.checklist = approve(state["pending"], by, product_dir / "checklists.jsonl")
                 state["pending"] = None
+                audit.append("checklist_approve", who(request)[0], {"approved_by": by, "version": st.checklist["version"]})
                 return {"checklist": st.checklist}
         return paid(run)
 
     @app.post("/teach")
-    def teach(body: dict | None = None):
+    def teach(request: Request, body: dict | None = None):
         good = product_dir / "good"
         good.mkdir(exist_ok=True)
         if (body or {}).get("capture"):
@@ -200,11 +248,13 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
 
         def run():
             with lock:
-                return {"taught": len(imgs), "skipped": skipped, "info": st.teach(imgs)}
+                out = {"taught": len(imgs), "skipped": skipped, "info": st.teach(imgs)}
+                audit.append("teach", who(request)[0], {"photos": len(imgs)})
+                return out
         return paid(run)
 
     @app.post("/selftest")
-    def selftest(image: UploadFile | None = File(None)):
+    def selftest(request: Request, image: UploadFile | None = File(None)):
         def run():
             im = image_from(image)
             if not st.checklist:
@@ -212,7 +262,9 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
             if im is None:
                 return {"error": "No good strip in view."}
             with lock:
-                return st.self_test(im)
+                r = st.self_test(im)
+                audit.append("selftest", who(request)[0], {"passed": r.get("passed")})
+                return r
         return paid(run)
 
     @app.post("/inspect")
@@ -232,17 +284,146 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
                 return state["last"]
         return paid(run)
 
+    def make_record(batch, operator, hours):
+        now = clock()
+        return record.shift_record(product_dir, now - hours * 3600, now, batch, operator, state["client"], audit)
+
     @app.get("/record", response_class=HTMLResponse)
     def shift_record(batch: str = "", operator: str = "", hours: float = 8.0):
         try:
-            now = clock()
-            return record.shift_record(product_dir, now - hours * 3600, now, batch, operator, state["client"])
+            return make_record(batch, operator, hours)
         except Exception as ex:
             return f"<!doctype html><meta charset='utf-8'><p>The shift record could not be made: {html.escape(str(ex))}</p>"
 
     @app.post("/ask")
     def ask(body: dict):
         return paid(lambda: {"answer": record.ask(str(body.get("question", "")), product_dir, get_client())})
+
+    def qa(request: Request):
+        name, role = who(request)
+        if role != "qa":
+            raise PermissionError("Log in as a QA user first")
+        return name
+
+    @app.post("/login")
+    def login(body: dict):
+        name = str(body.get("name", "")).strip()
+        role = users.check(name, str(body.get("password", ""))) if name else None
+        if role is None:
+            return {"error": "Wrong name or password"}
+        token = secrets.token_urlsafe(24)
+        sessions[token] = (name, role)
+        r = JSONResponse({"name": name, "role": role})
+        r.set_cookie("d2i_session", token, httponly=True, samesite="strict")
+        return r
+
+    @app.post("/logout")
+    def logout(request: Request):
+        sessions.pop(request.cookies.get("d2i_session"), None)
+        r = JSONResponse({"ok": True})
+        r.delete_cookie("d2i_session")
+        return r
+
+    @app.get("/quarantine")
+    def quarantine():
+        return paid(lambda: quarantine_list(product_dir, audit))
+
+    @app.post("/challenge")
+    def challenge(body: dict, request: Request):
+        label = str(body.get("strip_label", "")).strip()
+        if not label:
+            return {"error": "Enter the challenge strip label."}
+        return paid(lambda: log_physical_challenge(audit, who(request)[0], label, bool(body.get("ejected"))))
+
+    @app.post("/release")
+    def release(body: dict, request: Request):
+        return paid(lambda: release_quarantine(product_dir, audit, users, qa(request), str(body.get("password", "")),
+                                               str(body.get("reason", ""))))
+
+    @app.post("/sign")
+    def sign(body: dict, request: Request):
+        return paid(lambda: sign_record(make_record(str(body.get("batch", "")), str(body.get("operator", "")), 8.0),
+                                        audit, users, qa(request), str(body.get("password", ""))))
+
+    @app.get("/trace")
+    def trace_ep():
+        return trace.recent(50)
+
+    # --- Shift Supervisor: runs in a background thread; the screen polls /investigation ---
+    def ask_operator(question):
+        inv["answer"] = None
+        inv["event"].clear()
+        inv["question"] = question
+        try:
+            if not inv["event"].wait(ANSWER_WAIT):
+                raise TimeoutError("no answer")
+            return inv["answer"]
+        finally:
+            inv["question"] = None
+
+    def get_sup():
+        if inv["sup"] is None:
+            good = [im for im in (cv2.imread(str(p)) for p in sorted((product_dir / "good").glob("*.jpg")))
+                    if im is not None]
+            if not good or not st.checklist:
+                raise ValueError(NEED_TEACH)
+            boxes = [l.strip_box for l in (find_layout(im, st.checklist, None, st.template) for im in good) if l.ok]
+            if not boxes:
+                raise ValueError(NEED_TEACH)
+            sup = Supervisor(st, plc or _NoPlc(), audit, chat or ToolChat(Budget(spend_path)), ask_operator,
+                             baseline_from(good), tuple(float(v) for v in np.median(boxes, axis=0)),
+                             lambda: src.get() if src else None, product_dir / "good")
+            for name in ("camera_shift", "run_self_test", "compare_to_last_good"):  # station work never alongside /inspect
+                sup._tools[name] = (lambda fn: lambda **kw: _locked(lock, fn, kw))(sup._tools[name])
+            inv["sup"] = sup
+        return inv["sup"]
+
+    @app.post("/investigate")
+    def investigate(body: dict):
+        def run():
+            sup = get_sup()  # slow the first time: kept outside `meta`
+            with meta:
+                if inv["running"]:
+                    return {"error": "an investigation is already running"}
+                inv.update(running=True, result=None)
+
+            def work():
+                try:
+                    inv["result"] = sup.investigate(str(body.get("trigger", "")) or "started from the bench screen")
+                except Exception as ex:
+                    inv["result"] = {"error": str(ex) or type(ex).__name__}
+                inv["running"] = False
+            threading.Thread(target=work, daemon=True).start()
+            return {"id": uuid.uuid4().hex[:8]}
+        return paid(run)
+
+    @app.get("/investigation")
+    def investigation():
+        sup = inv["sup"]
+        return {"running": inv["running"], "steps": list(sup._steps) if sup else [], "question": inv["question"],
+                "pending": list(sup.pending.values()) if sup else [], "result": inv["result"]}
+
+    @app.post("/ask-operator-answer")
+    def operator_answer(body: dict):
+        if inv["question"] is None:
+            return {"error": "The agent is not asking anything."}
+        inv["answer"] = str(body.get("answer", ""))
+        inv["event"].set()
+        return {"ok": True}
+
+    @app.post("/approve-request")
+    def approve_request(body: dict, request: Request):
+        def run():
+            with lock:
+                return get_sup().approve(str(body.get("id", "")), users, qa(request), str(body.get("password", "")))
+        return paid(run)
+
+    @app.post("/resume")
+    def resume(body: dict, request: Request):
+        def run():
+            with lock:
+                return get_sup().resume(users, qa(request), str(body.get("password", "")), str(body.get("reason", "")))
+        return paid(run)
 
     def overlay_boxes(frame):
         """Pocket boxes for the stream, recomputed at most once a second, without paid calls."""
@@ -288,8 +469,17 @@ if __name__ == "__main__":
     ap.add_argument("--source", default="0")
     ap.add_argument("--product", default="blister")
     ap.add_argument("--port", type=int, default=8000)
+    ap.add_argument("--add-user", metavar="NAME")
+    ap.add_argument("--role", choices=["qa", "operator"], default="operator")
     a = ap.parse_args()
     pdir = Path("data") / a.product
+    if a.add_user:
+        import getpass
+        pw = getpass.getpass("Password: ")
+        if not pw or pw != getpass.getpass("Again: "):
+            raise SystemExit("Passwords empty or not matching; no user added.")
+        Users(pdir.parent / "users.json").add(a.add_user, a.role, pw)
+        raise SystemExit(f"Added {a.role} user {a.add_user}.")
     plc = Plc()
     plc.start()
     uvicorn.run(create_app(pdir, a.source, MetaClient(Budget(pdir / "meta_spend.json")), plc), host="0.0.0.0", port=a.port)

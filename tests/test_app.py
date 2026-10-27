@@ -1,8 +1,12 @@
+import json
+import time
+
 import cv2
 import pytest
 from fastapi.testclient import TestClient
 
 import app as app_mod
+from d2i.audit import Users
 from d2i.checklist import approve
 from tests.conftest import make_strip
 from tests.test_station import CHECKLIST
@@ -79,3 +83,106 @@ def test_describe_multipart_without_audio_returns_error(tmp_path):
     c = TestClient(app_mod.create_app(tmp_path, None, client=FakeClient()))
     r = c.post("/describe", files={"other": ("a.txt", b"x")})
     assert r.status_code == 200 and "audio" in r.json()["error"]
+
+
+# --- login, quarantine, trace, Shift Supervisor ---
+class ScriptChat:
+    last_platform = "Baseten (open weights)"
+
+    def __init__(self, *replies):
+        self.replies = list(replies)
+
+    def complete(self, messages, tools):
+        return self.replies.pop(0)
+
+
+def bench(tmp_path, chat=None):
+    """Taught, self-tested bench in tmp_path/p with a QA user (qa1/pw-qa) and an operator (op/pw-op)."""
+    p = tmp_path / "p"
+    approve(CHECKLIST, "Priya", p / "checklists.jsonl")
+    (p / "good").mkdir()
+    for i in range(6):
+        (p / "good" / f"{i}.jpg").write_bytes(jpg(make_strip(seed=i, shift=(i, 0))))
+    users = Users(tmp_path / "users.json")
+    users.add("qa1", "qa", "pw-qa")
+    users.add("op", "operator", "pw-op")
+    c = TestClient(app_mod.create_app(p, None, chat=chat))
+    assert c.post("/teach", json={}).json().get("error") is None
+    c.post("/selftest", files={"image": ("a.jpg", jpg(make_strip(seed=12)), "image/jpeg")})
+    return c, p
+
+
+def login(c, name, pw):
+    return c.post("/login", json={"name": name, "password": pw}).json()
+
+
+def test_release_requires_qa_login(tmp_path):
+    c, p = bench(tmp_path)
+    assert "Log in" in c.post("/release", json={"password": "pw-qa", "reason": "x"}).json()["error"]
+    assert login(c, "op", "pw-op")["role"] == "operator"
+    assert c.post("/release", json={"password": "pw-op", "reason": "x"}).json()["error"]
+    assert login(c, "qa1", "wrong")["error"]
+    assert login(c, "qa1", "pw-qa") == {"name": "qa1", "role": "qa"}
+    assert c.post("/release", json={"password": "bad", "reason": "x"}).json()["error"]
+    assert c.post("/release", json={"password": "pw-qa", "reason": "strips re-checked"}).json()["action"] == "release_quarantine"
+    assert c.post("/challenge", json={"strip_label": "C-1", "ejected": True}).json()["user"] == "qa1"
+    assert c.post("/sign", json={"password": "pw-qa"}).json()["signed_by"] == "qa1"
+
+
+def test_trace_endpoint_lists_events(tmp_path):
+    from d2i import trace
+    trace.clear()
+    c = TestClient(app_mod.create_app(tmp_path / "p", None))
+    trace.record("DINOv2", "local", "pocket scoring", 12)
+    rows = c.get("/trace").json()
+    assert rows[-1]["model"] == "DINOv2" and rows[-1]["platform"] == "local"
+
+
+def wait_done(c):
+    for _ in range(100):
+        s = c.get("/investigation").json()
+        if not s["running"] and s["result"] is not None:
+            return s
+        time.sleep(0.05)
+    raise AssertionError("investigation did not finish")
+
+
+def call(name, args):
+    return {"content": None, "tool_calls": [{"id": "c1", "type": "function",
+                                              "function": {"name": name, "arguments": json.dumps(args)}}]}
+
+
+def test_investigate_returns_pending_reteach(tmp_path):
+    chat = ScriptChat(call("request_reteach", {"reason": "lamp moved"}), {"content": "Lamp moved."})
+    c, p = bench(tmp_path, chat)
+    assert c.post("/investigate", json={"trigger": "rejects rose"}).json()["id"]
+    s = wait_done(c)
+    assert s["result"]["conclusion"] == "Lamp moved." and [r["kind"] for r in s["pending"]] == ["reteach"]
+    assert c.get("/status").json()["state"] == "HOLD"
+    assert c.post("/approve-request", json={"id": s["pending"][0]["id"], "password": "pw-qa"}).json()["error"]  # not logged in
+    login(c, "qa1", "pw-qa")
+    assert c.post("/approve-request", json={"id": s["pending"][0]["id"], "password": "pw-qa"}).json()["approved"] is True
+
+
+def test_investigate_needs_teaching(tmp_path):
+    c = TestClient(app_mod.create_app(tmp_path / "p", None))
+    assert c.post("/investigate", json={}).json() == {"error": "Teach the station first"}
+
+
+def test_resume_requires_qa_password(tmp_path):
+    c, p = bench(tmp_path)
+    (p / "hold.json").write_text('{"held": true}')
+    assert c.get("/status").json()["held"] is True
+    assert c.post("/resume", json={"password": "pw-qa", "reason": "ok"}).json()["error"]  # not logged in
+    login(c, "qa1", "pw-qa")
+    assert c.post("/resume", json={"password": "wrong", "reason": "ok"}).json()["error"]
+    assert c.get("/status").json()["held"] is True
+    assert c.post("/resume", json={"password": "pw-qa", "reason": "lamp fixed"}).json()["resumed"] is True
+    assert c.get("/status").json()["held"] is False
+
+
+def test_status_shows_held(tmp_path):
+    (tmp_path / "hold.json").write_text('{"held": true}')
+    c = TestClient(app_mod.create_app(tmp_path, None))
+    s = c.get("/status").json()
+    assert s["held"] is True and s["state"] == "HOLD" and s["quarantine_count"] == 0

@@ -15,15 +15,32 @@ button{cursor:pointer}
 textarea{width:100%;box-sizing:border-box}
 #msg{white-space:pre-wrap;margin-top:8px}
 .small{font-size:13px;color:#555}
+#qbanner{padding:10px 16px;background:#e59a00;color:#111;font-weight:600}
+#qbanner ul{margin:6px 0 0;font-weight:400}
+header input{width:110px;padding:4px 6px;margin:0 2px}
+header span{margin-left:12px}
+.model{font-style:italic;color:#7a4a00;font-size:13px}
+.req{border:1px solid #ccc;border-radius:6px;padding:6px;margin:6px 0}
+footer{padding:12px 16px;color:#555;font-size:13px}
+td,th{font-size:12px;padding:2px 6px;text-align:left}
 </style></head><body>
-<header>Describe-to-Inspect <small>Packaging-line QA bench</small></header>
+<header>Describe-to-Inspect <small>Packaging-line QA bench</small>
+  <span id="who"></span>
+  <span id="loginbox"><input id="ln" placeholder="Name"><input id="lp" type="password" placeholder="Password">
+  <button onclick="login()">Log in</button></span>
+  <button id="logoutbtn" onclick="logout()" hidden>Log out</button></header>
 <div id="banner">...<div id="why"></div></div>
+<div id="qbanner" hidden><span id="qtext"></span><ul id="qlist"></ul>
+  <input id="rp" type="password" placeholder="QA password"><input id="rr" placeholder="Reason">
+  <button onclick="release()">Release quarantine (QA)</button></div>
 <main>
 <section><img id="cam" src="/stream" alt="camera">
   <div><button onclick="inspectNow()">Inspect strip</button>
   <button title="Per-shift functional check — runs on top of the physical challenge strip" onclick="post('/selftest')">Self-test</button>
   <button onclick="post('/teach',{capture:true})">Teach: save this strip</button>
   <button onclick="post('/teach',{})">Teach from saved photos</button></div>
+  <div><input id="cl" placeholder="Challenge strip label"> <label><input type="checkbox" id="ce"> ejected</label>
+  <button onclick="challenge()">Log physical challenge strip</button></div>
   <div class="small">Spent: $<span id="spent">0</span> · Checklist v<span id="ver">-</span> · <span id="counts"></span></div>
 </section>
 <section>
@@ -39,10 +56,27 @@ textarea{width:100%;box-sizing:border-box}
   <hr>
   <input id="batch" placeholder="Batch"><input id="op" placeholder="Operator">
   <a href="#" onclick="rec();return false">Shift record</a>
+  <input id="sp" type="password" placeholder="QA password"><button onclick="sign()">Sign record (QA)</button>
   <div><input id="q" placeholder="Ask about the records"><button onclick="ask()">Ask</button></div>
   <div class="small"><a href="/lamp" target="_blank">Stack-light page</a></div>
 </section>
+<section>
+  <b>Shift Supervisor (Muse Spark Open, open weights)</b>
+  <div><input id="trig" placeholder="Why? e.g. rejects rose"><button onclick="investigate()">Investigate</button></div>
+  <div id="invstate" class="small"></div>
+  <ol id="steps"></ol><div class="model">Step summaries: written by the model — check before acting</div>
+  <div id="askbox" hidden><b id="askq"></b><div><input id="ans"><button onclick="answer()">Answer</button></div></div>
+  <div id="concl"></div>
+  <div id="reqs"></div>
+  <div><input id="rsp" type="password" placeholder="QA password"><input id="rsr" placeholder="Reason to resume">
+  <button onclick="resumeLine()">Resume line (QA)</button></div>
+</section>
+<section>
+  <b>What each model did</b>
+  <table><thead><tr><th>Model</th><th>Job</th><th>ms</th><th>USD</th></tr></thead><tbody id="trace"></tbody></table>
+</section>
 </main>
+<footer>Built with Muse Spark Open</footer>
 <script>
 const $=id=>document.getElementById(id);
 const col={READY:"#118a3a",REJECT:"#c4161c",LOCKED:"#c4161c",HOLD:"#e59a00"};
@@ -63,6 +97,46 @@ async function refresh(){
   $("counts").textContent=Object.entries(s.counts).map(([k,v])=>k+" "+v).join(" · ");
   $("rules").innerHTML="";(s.pending||s.rules).forEach(t=>{const li=document.createElement("li");li.textContent=t.replace(/^Rule \d+: /,"");$("rules").appendChild(li)});
   $("pending").textContent=s.pending?"Waiting for approval":"";
+  $("who").textContent=s.user?s.user.name+" ("+s.user.role+")":"";
+  $("loginbox").hidden=!!s.user;$("logoutbtn").hidden=!s.user;
+  quarantine(s.quarantine_count);traceRows();invRefresh();
+}
+const mk=(tag,text,cls)=>{const e=document.createElement(tag);e.textContent=text;if(cls)e.className=cls;return e};
+const MODEL_NOTE="written by the model — check before acting";
+async function login(){show(await j("/login",{name:$("ln").value,password:$("lp").value}));$("lp").value=""}
+async function logout(){await j("/logout");refresh()}
+async function challenge(){show(await j("/challenge",{strip_label:$("cl").value,ejected:$("ce").checked}))}
+async function release(){show(await j("/release",{password:$("rp").value,reason:$("rr").value}));$("rp").value=""}
+async function sign(){const r=await j("/sign",{password:$("sp").value,batch:$("batch").value,operator:$("op").value});$("sp").value="";show(r)}
+async function quarantine(n){
+  $("qbanner").hidden=!n;if(!n)return;
+  $("qtext").textContent="Quarantine: "+n+" strips since the last passed self-test — QA release needed";
+  const q=await (await fetch("/quarantine")).json(),ul=$("qlist");ul.replaceChildren();
+  (q.strips||[]).slice(-10).forEach(v=>ul.appendChild(mk("li",(v.at||"")+" "+v.status)));
+}
+async function traceRows(){
+  const rows=await (await fetch("/trace")).json(),tb=$("trace");tb.replaceChildren();
+  rows.slice(-12).reverse().forEach(e=>{const tr=document.createElement("tr");
+    [e.model+" — "+e.platform,e.job+(e.ok?"":" (failed)"),e.ms,(e.usd||0).toFixed(4)].forEach(t=>tr.appendChild(mk("td",t)));tb.appendChild(tr)});
+}
+async function investigate(){const r=await j("/investigate",{trigger:$("trig").value});if(r.error)show(r);invRefresh()}
+async function answer(){show(await j("/ask-operator-answer",{answer:$("ans").value}));$("ans").value=""}
+async function approveReq(id,pw){show(await j("/approve-request",{id:id,password:pw.value}));pw.value=""}
+async function resumeLine(){show(await j("/resume",{password:$("rsp").value,reason:$("rsr").value}));$("rsp").value=""}
+let reqSig="";
+async function invRefresh(){
+  const i=await (await fetch("/investigation")).json();
+  $("invstate").textContent=i.running?"Investigating...":(i.result?(i.result.error||"Done"):"");
+  const ol=$("steps");ol.replaceChildren();
+  i.steps.forEach(t=>ol.appendChild(mk("li",t.tool+" "+JSON.stringify(t.args)+" → "+JSON.stringify(t.result).slice(0,160))));
+  $("askbox").hidden=!i.question;if(i.question)$("askq").textContent=i.question;
+  const c=$("concl");c.replaceChildren();
+  if(i.result&&i.result.conclusion){c.appendChild(mk("div",i.result.conclusion));c.appendChild(mk("div",MODEL_NOTE,"model"))}
+  const r=$("reqs"),sig=JSON.stringify(i.pending);if(sig===reqSig)return;reqSig=sig;r.replaceChildren();  // keep a typed password while polling
+  i.pending.forEach(q=>{const d=document.createElement("div");d.className="req";
+    d.appendChild(mk("b",q.kind));d.appendChild(mk("div",q.reason));d.appendChild(mk("div",MODEL_NOTE,"model"));
+    const pw=document.createElement("input");pw.type="password";pw.placeholder="QA password";d.appendChild(pw);
+    const b=mk("button","Approve (QA)");b.onclick=()=>approveReq(q.id,pw);d.appendChild(b);r.appendChild(d)});
 }
 // Speak rule: mono audio, downsampled to 16 kHz 16-bit PCM WAV
 let ctx,proc,chunks=[],recording=false;
