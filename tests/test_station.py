@@ -262,8 +262,8 @@ def test_grid_fallback_marks_measurements_skipped(station):
     st.checklist = dict(st.checklist, reject_if=list(CHECKS))
     assert st.self_test(make_strip(seed=12), rng_seed=5)["passed"]
     v = st.inspect(make_strip(seed=13))
-    assert v.status == "PASS" and v.skipped == ["tablet measurements"]
-    assert json.loads((st.dir / "log.jsonl").read_text().splitlines()[-1])["skipped"] == ["tablet measurements"]
+    assert v.status == "PASS" and v.skipped == ["tablet measurements", "strip size"]
+    assert json.loads((st.dir / "log.jsonl").read_text().splitlines()[-1])["skipped"] == ["tablet measurements", "strip size"]
 
 
 class ImageSam(ContourSam):
@@ -319,3 +319,28 @@ def test_selftest_lists_skipped_kinds_without_profile(station):
     assert r["skipped"] == NEW3 and r["passed"], r
     assert [x["kind"] for x in r["results"]] == ["empty_pocket"]
     assert json.loads((st.dir / "selftests.jsonl").read_text().splitlines()[-1])["skipped"] == NEW3
+
+
+def test_station_strip_cut_named(tmp_path):
+    cl = dict(CHECKLIST, reject_if=["strip_cut"])
+    approve(cl, "Priya", tmp_path / "checklists.jsonl")
+    st = Station(tmp_path, client=ImageSam(), clock=lambda: T0)
+    st.teach([make_strip(seed=i, shift=(i, 0)) for i in range(6)])
+    assert st.strip_profile is not None and Station(tmp_path, clock=lambda: T0).strip_profile == st.strip_profile
+    good = make_strip(seed=21)
+    v = st._judge(good, None, None)
+    assert v.status == "PASS" and "strip size" not in v.skipped, v
+    cut = paint(good, pocket_box(0), "strip_cut", STRIP_BOX, np.random.default_rng(3))
+    v = st._judge(cut, None, None)
+    want = {"rule": 2, "check": "strip_cut"}
+    assert v.status == "REJECT" and any(want.items() <= x.items() for x in v.reasons), v.reasons
+    assert st.self_test(make_strip(seed=12), rng_seed=5)["skipped"] == []
+    r = st.self_test(make_strip(seed=12), rng_seed=5)
+    assert [x["kind"] for x in r["results"]].count("strip_cut") == 1 and r["passed"], r
+
+
+def test_strip_cut_skipped_without_profile(station):
+    st, _ = station
+    st.checklist = dict(st.checklist, reject_if=list(CHECKS))
+    r = st.self_test(make_strip(seed=12), rng_seed=5)
+    assert "strip_cut" in r["skipped"] and st.inspect(make_strip(seed=13)).skipped.count("strip size") == 1

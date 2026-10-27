@@ -13,7 +13,7 @@ from d2i import trace
 from d2i.checklist import current, rule_number
 from d2i.defects import paint
 from d2i.judge import Judge
-from d2i.measure import features, pills_in, pocket_check, teach_profile
+from d2i.measure import features, pills_in, pocket_check, strip_check, teach_profile, teach_strip
 from d2i.pockets import find_layout, template_from
 
 MEASURED = ("double_tablet", "wrong_tablet", "tablet_spot")  # decided by measure.py on SAM pill boxes
@@ -25,6 +25,7 @@ TEXT = {
     "wrong_tablet": "pocket {n} has a different {item}",
     "tablet_spot": "pocket {n} has a spot on the {item}",
     "foil_damage": "foil is damaged",
+    "strip_cut": "strip is cut wrong or the wrong size",
 }
 LINE_HELD = "Line held — QA must resume"
 NEED_TEACH = "Teach the station first"
@@ -57,6 +58,7 @@ class Station:
         t = state.get("template")
         self.template = [tuple(b) for b in t] if t else None
         self.profile = state.get("profile")
+        self.strip_profile = state.get("strip_profile")
         self.strip_box = tuple(state["strip_box"]) if state.get("strip_box") else None  # median taught strip box
 
     def _now(self) -> str:
@@ -126,14 +128,15 @@ class Station:
                     img = paint(img, lay.pockets[p], kind, lay.strip_box, rng)
                 embs.append(self.judge.pocket_embeddings(img, lay)[torch.as_tensor(chosen)])
             protos[kind] = F.normalize(torch.cat(embs).mean(0), dim=0).cpu()
-        profile = teach_profile(images, layouts)
+        profile, strip_profile = teach_profile(images, layouts), teach_strip(layouts)
         self.judge.save(self.dir / "model.pt")
         self.taught_at = self.clock()
         state = torch.load(self.dir / "model.pt", map_location="cpu")
         state.update(prototypes=protos, taught_at=self.taught_at, template=[list(b) for b in template],
-                     strip_box=list(strip_box), profile=profile)
+                     strip_box=list(strip_box), profile=profile, strip_profile=strip_profile)
         torch.save(state, self.dir / "model.pt")
         self.prototypes, self.template, self.strip_box, self.profile = protos, template, strip_box, profile
+        self.strip_profile = strip_profile
         return info
 
     def _reason(self, check, pocket=None):
@@ -187,6 +190,11 @@ class Station:
                 v.skipped.append("tablet measurements")
         else:
             v.skipped.append("tablet measurements")
+        if lay.pills and self.strip_profile:
+            if strip_check(lay, self.strip_profile):
+                self._find("strip_cut", listed, unlisted)
+        else:
+            v.skipped.append("strip size")
         failing = [i for i, s in enumerate(v.pocket_scores) if s > self.judge.pocket_threshold and i not in measured]
         if failing:
             embs = self.judge.pocket_embeddings(image, lay).cpu()
@@ -231,6 +239,14 @@ class Station:
                     if i // per in (0, cl["rows"] - 1) or i % per in (0, per - 1)]
             measuring = bool(lay.pills and self.profile)
             for kind in cl["reject_if"] + ([] if "empty_pocket" in cl["reject_if"] else ["empty_pocket"]):  # Rule 1
+                if kind == "strip_cut":  # painted once on the whole strip; pocket choice ignored
+                    if not (lay.pills and self.strip_profile):
+                        skipped.append(kind)
+                        continue
+                    v = self._judge(paint(good_image, lay.pockets[0], kind, lay.strip_box, rng), None, None)
+                    results.append({"kind": kind, "pocket": None, "caught": v.status == "REJECT",
+                                    "named_right": any(r["check"] == kind for r in v.reasons)})
+                    continue
                 if kind in MEASURED and not measuring:  # no SAM pills or no profile: it cannot be seen, so it is skipped
                     skipped.append(kind)
                     continue

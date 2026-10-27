@@ -21,8 +21,8 @@ def features(image, pocket, pill) -> dict | None:
     """None when the box cannot be measured (zero size, or outside the image)."""
     kw, kh = pocket[2] - pocket[0], pocket[3] - pocket[1]
     pw, ph = pill[2] - pill[0], pill[3] - pill[1]
-    if min(kw, kh, pw, ph) <= 0:
-        return None
+    if min(kw, kh, pw, ph) <= 0 or pill[0] < 0 or pill[1] < 0 or pill[2] > image.shape[1] or pill[3] > image.shape[0]:
+        return None  # zero size, or cut off by the image edge (it would be measured on a sliver)
     core, wide = _centre(image, pill, 0.5), _centre(image, pill, 0.7)
     if core.size == 0 or wide.size == 0:
         return None
@@ -69,3 +69,36 @@ def pocket_check(image, pocket, pills, profile) -> str | None:
             or _delta_e(f["lab"], profile["lab_med"]) > profile["colour_tol"]):
         return "wrong_tablet"
     return "tablet_spot" if f["spot"] > profile["spot_max"] else None
+
+
+def strip_features(lay) -> dict | None:
+    """Strip aspect and the gaps (left, top, right, bottom) between the pill bounds and the strip box, as fractions."""
+    if not lay.pills:
+        return None
+    sx0, sy0, sx1, sy1 = lay.strip_box
+    w, h = sx1 - sx0, sy1 - sy0
+    if min(w, h) <= 0:
+        return None
+    px0, py0 = min(p[0] for p in lay.pills), min(p[1] for p in lay.pills)
+    px1, py1 = max(p[2] for p in lay.pills), max(p[3] for p in lay.pills)
+    return {"aspect": max(w, h) / min(w, h),
+            "margins": [(px0 - sx0) / w, (py0 - sy0) / h, (sx1 - px1) / w, (sy1 - py1) / h]}
+
+
+def teach_strip(layouts) -> dict | None:
+    fs = [strip_features(l) for l in layouts]
+    if not fs or any(f is None for f in fs):
+        return None
+    a, m = np.array([f["aspect"] for f in fs]), np.array([f["margins"] for f in fs])
+    return {"aspect_med": float(np.median(a)), "aspect_tol": float(max(0.06 * np.median(a), 3 * a.std())),
+            "margin_med": [float(v) for v in np.median(m, axis=0)],
+            "margin_tol": [float(max(0.04, 3 * v)) for v in m.std(axis=0)]}
+
+
+def strip_check(lay, sprofile) -> bool:
+    """True when the strip is the wrong size or cut wrong (aspect or any margin out of range)."""
+    f = strip_features(lay)
+    if f is None:
+        return False
+    return (abs(f["aspect"] - sprofile["aspect_med"]) > sprofile["aspect_tol"]
+            or any(abs(a - b) > t for a, b, t in zip(f["margins"], sprofile["margin_med"], sprofile["margin_tol"])))

@@ -52,3 +52,13 @@ def test_tablet_kinds_change_only_inside_pocket(kind, pocket):
     inside[y0:y1, x0:x1] = True
     assert (diff[inside] > 20).sum() >= 50, "the defect must be clearly visible"
     assert (diff[~inside] > 0).sum() == 0
+
+
+def test_paint_strip_cut_changes_end_only():
+    img = make_strip()
+    out = paint(img, pocket_box(0), "strip_cut", STRIP_BOX, np.random.default_rng(1))
+    diff = np.abs(out.astype(int) - img.astype(int)).max(axis=2)
+    cut = STRIP_BOX[2] - 0.15 * (STRIP_BOX[2] - STRIP_BOX[0])
+    assert (diff[:, :int(cut) - 1] > 0).sum() == 0, "only the end changes"
+    assert (diff[:, int(cut):] > 20).sum() >= 300
+    assert abs(out[STRIP_BOX[1]:STRIP_BOX[3], int(cut) + 2:STRIP_BOX[2]].mean() - np.median(img[:20])) < 15

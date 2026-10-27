@@ -84,6 +84,16 @@ def paint(image, pocket_box, kind, strip_box, rng):
         _fill(out, region > 0, _background_colour(image, strip_box), rng)
         return out
 
+    if kind == "strip_cut":  # the last 15% of the long side is gone: the strip looks shorter
+        sx0, sy0, sx1, sy1 = strip_box
+        region = np.zeros(shape, bool)
+        if sx1 - sx0 >= sy1 - sy0:
+            region[max(sy0, 0):sy1, int(sx1 - 0.15 * (sx1 - sx0)):sx1] = True
+        else:
+            region[int(sy1 - 0.15 * (sy1 - sy0)):sy1, max(sx0, 0):sx1] = True
+        _fill(out, region, _background_colour(image, strip_box), rng)
+        return out
+
     if kind in ("double_tablet", "wrong_tablet", "tablet_spot"):
         foil = _foil_colour(image, pocket_box, strip_box)
         tablet = np.zeros(shape, np.uint8)

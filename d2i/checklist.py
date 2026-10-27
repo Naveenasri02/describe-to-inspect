@@ -3,7 +3,7 @@ import json
 from datetime import datetime
 from pathlib import Path
 
-CHECKS = ["empty_pocket", "broken_tablet", "double_tablet", "wrong_tablet", "tablet_spot", "foil_damage"]
+CHECKS = ["empty_pocket", "broken_tablet", "double_tablet", "wrong_tablet", "tablet_spot", "foil_damage", "strip_cut"]
 
 RULE_TEXT = {
     "empty_pocket": "no pocket may be empty",
@@ -12,6 +12,7 @@ RULE_TEXT = {
     "wrong_tablet": "every {item} must match the taught {item} (size, shape, colour)",
     "tablet_spot": "no spots or specks on any {item}",
     "foil_damage": "foil must not be torn, cut or missing",
+    "strip_cut": "strip size and cut must match the taught strip",
 }
 
 SCHEMA = {
@@ -32,7 +33,7 @@ SYSTEM = (
     "You set up a packaging-line QA bench for tablet blister strips. The worker describes a GOOD strip, "
     "in any language. Fill the schema in English: product name, rows of pockets, pockets per row, the item "
     "in each pocket (singular, e.g. 'tablet' or 'capsule'), and which checks to reject on "
-    "(empty_pocket, broken_tablet, double_tablet, wrong_tablet, tablet_spot, foil_damage); "
+    "(empty_pocket, broken_tablet, double_tablet, wrong_tablet, tablet_spot, foil_damage, strip_cut); "
     "the standard checks are always on, so list all of them. Never invent numbers: if the sentence does not give "
     "rows or pockets per row, use 0 and add a short question to 'unclear'. Anything else you are unsure "
     "about also goes to 'unclear' as a short question."

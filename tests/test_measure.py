@@ -1,7 +1,7 @@
 import cv2
 import numpy as np
 
-from d2i.measure import features, pills_in, pocket_check, teach_profile
+from d2i.measure import features, pills_in, pocket_check, strip_check, strip_features, teach_profile, teach_strip
 from d2i.pockets import Layout
 
 POCKET = (20, 20, 120, 120)   # 100 x 100
@@ -91,3 +91,43 @@ def test_features_degenerate_box_returns_none():
     assert features(img, POCKET, (200, 200, 230, 230)) is None   # outside the image
     assert features(img, POCKET, (50, 70, 90, 70)) is None       # zero height
     assert pocket_check(img, POCKET, [(200, 200, 230, 230)], profile()) is None
+
+
+STRIP = (0, 0, 400, 100)  # aspect 4
+
+
+def slay(left=0.1, top=0.2, right=0.1, bottom=0.2, strip=STRIP):
+    w, h = strip[2] - strip[0], strip[3] - strip[1]
+    pill = (strip[0] + left * w, strip[1] + top * h, strip[2] - right * w, strip[3] - bottom * h)
+    return Layout(strip, [], "sam", True, "", [pill])
+
+
+def test_strip_features_margins():
+    f = strip_features(slay())
+    assert abs(f["aspect"] - 4) < 1e-9
+    assert all(abs(a - b) < 1e-9 for a, b in zip(f["margins"], (0.1, 0.2, 0.1, 0.2)))
+    assert strip_features(Layout(STRIP, [], "grid", True)) is None
+
+
+def test_teach_strip_floors():
+    p = teach_strip([slay() for _ in range(5)])
+    assert abs(p["aspect_tol"] - 0.06 * 4) < 1e-9 and p["margin_tol"] == [0.04] * 4
+    assert abs(p["aspect_med"] - 4) < 1e-9 and len(p["margin_med"]) == 4
+    assert teach_strip([slay(), Layout(STRIP, [], "grid", True)]) is None
+
+
+def test_short_strip_is_cut():
+    p = teach_strip([slay() for _ in range(5)])
+    assert not strip_check(slay(), p)
+    assert strip_check(slay(strip=(0, 0, 320, 100)), p)  # aspect -20%
+
+
+def test_shifted_pattern_is_cut():
+    p = teach_strip([slay() for _ in range(5)])
+    assert strip_check(slay(left=0.2), p)
+
+
+def test_features_box_partly_outside_returns_none():
+    img = foil()  # 140 x 140
+    for box in [(-10, 40, 30, 80), (40, 120, 80, 150), (40, -50, 80, -10)]:
+        assert features(img, POCKET, box) is None, box
