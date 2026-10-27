@@ -94,3 +94,29 @@ def test_no_tracks_for_any_prompt_gives_one_hold(tmp_path):
     (v,) = inspect_clip(_clip(tmp_path), FakeStation(), client)
     assert client.prompts == ["blister strip", "blister pack", "pill pack"]
     assert v.status == "HOLD" and "by hand" in v.reasons[0]["text"]
+
+
+def _held(pts, tmp_path, frames=3):
+    path = tmp_path / "f.mp4"
+    vw = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"mp4v"), 15, SIZE)
+    for _ in range(frames):
+        vw.write(np.zeros((SIZE[1], SIZE[0], 3), np.uint8))
+    vw.release()
+    client = FakeClient(pts)
+    client.prompts = ["x"]
+    return inspect_clip(path, FakeStation(), client)
+
+
+def test_unreadable_frame_is_held_per_strip(tmp_path):
+    out = _held([SamTrackPoint(1, 40, (10, 10, 50, 60), 0.9)], tmp_path)  # frame 40 not in a 3-frame clip
+    assert [(v.strip_id, v.status) for v in out] == [(1, "HOLD")] and "by hand" in out[0].reasons[0]["text"]
+
+
+def test_empty_crop_is_held(tmp_path):
+    out = _held([SamTrackPoint(1, 1, (10, 10, 10, 10), 0.9)], tmp_path)  # zero-area box
+    assert out[0].status == "HOLD" and "by hand" in out[0].reasons[0]["text"]
+
+
+def test_missing_clip_file_is_held(tmp_path):
+    (v,) = inspect_clip(tmp_path / "nope.mp4", FakeStation(), FakeClient([]))
+    assert v.status == "HOLD" and "tray clip not checked (" in v.reasons[0]["text"]

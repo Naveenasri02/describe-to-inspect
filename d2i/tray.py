@@ -17,7 +17,7 @@ def record_clip(source, seconds: float, path: Path, fps: int = 15) -> Path:
     vw, last, n = None, None, 0
     want, end = max(int(seconds * fps), SAM_MIN_FRAMES), time.time() + seconds
     while n < want:
-        ok, frame = cap.read() if time.time() < end or isinstance(source, str) else (False, None)
+        ok, frame = cap.read() if time.time() < end or not isinstance(source, int) else (False, None)
         if ok:
             last = frame
         elif last is None:
@@ -50,33 +50,35 @@ def _hold(strip_id, check, text) -> Verdict:
 
 
 def inspect_clip(path: Path, station, client) -> list[Verdict]:
-    mp4 = Path(path).read_bytes()
     points = []
     try:
+        mp4 = Path(path).read_bytes()
         for prompt in STRIP_PROMPTS:  # each call is billed >= 50 frames: stop at the first that finds tracks
             points = client.sam_video(mp4, prompt)
             if points:
                 break
-    except (MetaError, BudgetExceeded) as e:
+    except (MetaError, BudgetExceeded, OSError) as e:
         return [_hold(None, "clip_error", f"tray clip not checked ({e}) — check by hand")]
     if not points:
         return [_hold(None, "no_strips", "no strips found in the tray clip — check by hand")]
     cap = cv2.VideoCapture(str(path))
-    size = (int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)))
-    chosen, verdicts = best_frames(points, size), []
-    for tid in sorted({p.id for p in points}):
-        if tid not in chosen:
-            verdicts.append(_hold(tid, "not_seen_clearly", f"strip {tid} not seen clearly — check by hand"))
-            continue
-        frame_no = chosen[tid]
-        cap.set(cv2.CAP_PROP_POS_FRAMES, frame_no)
-        ok, frame = cap.read()
-        box = next(p.box for p in points if p.id == tid and p.frame == frame_no)
-        if not ok:
-            raise ValueError(f"cannot read frame {frame_no} of {path}")
-        x0, y0, x1, y1 = box
-        px, py = int((x1 - x0) * PAD), int((y1 - y0) * PAD)
-        crop = frame[max(y0 - py, 0):min(y1 + py, size[1]), max(x0 - px, 0):min(x1 + px, size[0])]
-        verdicts.append(station.inspect(crop, strip_id=tid))
-    cap.release()
-    return verdicts
+    try:
+        size = (int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)))
+        chosen, verdicts = best_frames(points, size), []
+        for tid in sorted({p.id for p in points}):
+            if tid not in chosen:
+                verdicts.append(_hold(tid, "not_seen_clearly", f"strip {tid} not seen clearly — check by hand"))
+                continue
+            frame_no = chosen[tid]
+            cap.set(cv2.CAP_PROP_POS_FRAMES, frame_no)
+            ok, frame = cap.read()
+            x0, y0, x1, y1 = next(p.box for p in points if p.id == tid and p.frame == frame_no)
+            px, py = int((x1 - x0) * PAD), int((y1 - y0) * PAD)
+            crop = frame[max(y0 - py, 0):min(y1 + py, size[1]), max(x0 - px, 0):min(x1 + px, size[0])] if ok else None
+            if crop is None or crop.size == 0:
+                verdicts.append(_hold(tid, "frame_unreadable", f"strip {tid} frame unreadable — check by hand"))
+                continue
+            verdicts.append(station.inspect(crop, strip_id=tid))
+        return verdicts
+    finally:
+        cap.release()
