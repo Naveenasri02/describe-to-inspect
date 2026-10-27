@@ -61,6 +61,13 @@ def test_spark_json_sends_schema_and_settles(tmp_path):
     assert client.budget.spent == pytest.approx(100 * 1.25e-6 + 10 * 4.25e-6)
 
 
+def test_spark_json_defaults_low_effort_and_room(tmp_path):
+    http = FakeHTTP([chat_body('{"a": 1}')])
+    client = MetaClient(budget(tmp_path), key="k", http=http)
+    client.spark_json("sys", "user", {"type": "object", "properties": {}, "required": []})
+    assert http.calls[0]["json"]["reasoning_effort"] == "low" and http.calls[0]["json"]["max_tokens"] == 4000
+
+
 def test_spark_json_missing_required_key_raises(tmp_path):
     http = FakeHTTP([chat_body('{"b": 1}')])
     client = MetaClient(budget(tmp_path), key="k", http=http)

@@ -99,10 +99,11 @@ class MetaClient:
             raise MetaError(f"Meta API {r.status_code}: {r.text[:300]}")
         return r.json()
 
-    def spark_json(self, system: str, user: str, schema: dict, name: str = "result", max_out: int = 2000) -> dict:
+    def spark_json(self, system: str, user: str, schema: dict, name: str = "result", max_out: int = 4000,
+                   effort: str = "low") -> dict:
         worst = (len(system) + len(user) + len(json.dumps(schema))) / 2 * SPARK_IN + max_out * SPARK_OUT
         body = self._post("/chat/completions", worst, json={
-            "model": SPARK_MODEL, "max_tokens": max_out,
+            "model": SPARK_MODEL, "max_tokens": max_out, "reasoning_effort": effort,
             "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
             "response_format": {"type": "json_schema",
                                 "json_schema": {"name": name, "schema": schema, "strict": True}}})
