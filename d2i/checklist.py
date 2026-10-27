@@ -36,7 +36,7 @@ SYSTEM = (
 
 
 def make_checklist(sentence: str, client) -> dict:
-    a = client.spark_json(SYSTEM, sentence, SCHEMA, name="checklist", max_out=600)
+    a = client.spark_json(SYSTEM, sentence, SCHEMA, name="checklist")
     rows, per_row = int(a["rows"]), int(a["per_row"])
     if not (1 <= rows <= 10 and 1 <= per_row <= 20):
         raise ValueError(f"The sentence needs clear numbers (rows 1-10, pockets per row 1-20); "
