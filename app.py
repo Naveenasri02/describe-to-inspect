@@ -134,6 +134,10 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
         except Exception:
             return None, True  # unknown is shown, never hidden
 
+    def sync_lock():  # PLC coil 1 = the station's real lock state
+        if plc:
+            plc.set_locked(st.locked)
+
     def publish(verdicts):
         """Each verdict to the PLC in order; the last one is shown on the screen."""
         for v in verdicts:
@@ -180,6 +184,8 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
             reason = st.lock_reason if cl else NO_CHECKLIST
         except Exception as ex:  # unreadable self-test log: stay locked
             locked, reason = True, f"Cannot read self-test log: {ex}"
+        if plc:
+            plc.set_locked(locked)  # every poll, so shift expiry reaches coil 1
         held, (qn, qerr) = held_now(), quarantine_count()
         if held:
             banner, text = "HOLD", "Line held by the Shift Supervisor — QA must resume." + (f" {reason}" if locked else "")
@@ -232,6 +238,7 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
                     return {"error": "Enter the approver's name."}
                 st.checklist = approve(state["pending"], by, product_dir / "checklists.jsonl")
                 state["pending"] = None
+                sync_lock()
                 audit.append("checklist_approve", who(request)[0], {"approved_by": by, "version": st.checklist["version"]})
                 return {"checklist": st.checklist}
         return paid(run)
@@ -263,6 +270,7 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
         def run():
             with lock:
                 out = {"taught": len(imgs), "skipped": skipped, "info": st.teach(imgs)}
+                sync_lock()
                 audit.append("teach", who(request)[0], {"photos": len(imgs)})
             with sup_lock:
                 if not inv["running"]:
@@ -280,6 +288,7 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
                 return {"error": "No good strip in view."}
             with lock:
                 r = st.self_test(im)
+                sync_lock()
                 audit.append("selftest", who(request)[0], {"passed": r.get("passed")})
                 return r
         return paid(run)
@@ -449,7 +458,10 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
     def approve_request(body: dict, request: Request):
         def run():
             with lock:
-                return get_sup().approve(str(body.get("id", "")), users, qa(request), str(body.get("password", "")))
+                try:
+                    return get_sup().approve(str(body.get("id", "")), users, qa(request), str(body.get("password", "")))
+                finally:
+                    sync_lock()  # a re-teach locks the station until a self-test passes
         return paid(run)
 
     @app.post("/hold")

@@ -250,18 +250,11 @@ def test_status_flags_unreadable_quarantine(tmp_path, monkeypatch):
     assert s["quarantine_count"] is None and s["quarantine_error"] is True
 
 
-class HoldPlc:
-    held = False
-
-    def set_hold(self, on):
-        self.held = on
-
-
 def test_hold_endpoint_holds_line(tmp_path):
-    plc = HoldPlc()
+    plc = Plc(host="127.0.0.1", port=0)
     c, p = bench(tmp_path, plc=plc)
     assert c.post("/hold", json={}).json() == {"held": True}
-    assert plc.held is True and c.get("/status").json()["held"] is True
+    assert plc.coils[2] is True and c.get("/status").json()["held"] is True
     rows = [json.loads(l) for l in (p / "audit.jsonl").read_text(encoding="utf-8").splitlines()]
     assert rows[-1]["action"] == "hold_line" and rows[-1]["reason"] == "operator voice command"
 
@@ -335,3 +328,16 @@ def test_command_endpoint_error_is_plain(tmp_path):
     r = c.post("/command", files={"audio": ("a.wav", b"x")})
     assert r.status_code == 200 and r.json() == {"error": "voice is down"}
     assert "error" in c.post("/command", files={"other": ("a.txt", b"x")}).json()
+
+
+def test_plc_lock_coil_follows_station_lock(tmp_path):
+    plc = Plc(host="127.0.0.1", port=0)
+    c, p = bench(tmp_path, plc=plc)
+    assert plc.coils[1] is False
+    c.post("/teach", json={})  # re-taught: locked until a self-test passes
+    assert plc.coils[1] is True
+    c.post("/selftest", files=up(make_strip(seed=12)))
+    assert plc.coils[1] is False
+    c.app.state.station.clock = lambda: time.time() + 9 * 3600  # the shift runs out; only /status sees it
+    c.get("/status")
+    assert plc.coils[1] is True

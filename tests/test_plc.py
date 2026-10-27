@@ -60,6 +60,14 @@ def test_stop_closes_open_connections():
         s.close()
 
 
+def test_set_locked_drives_coil_1():
+    plc = Plc(host="127.0.0.1", port=0)
+    plc.set_locked(True)
+    assert plc.coils == [False, True, False]
+    plc.set_locked(False)
+    assert plc.coils[1] is False
+
+
 def test_supervisor_hold_survives_verdicts():
     plc = Plc(host="127.0.0.1", port=0)
     plc.set_hold(True)

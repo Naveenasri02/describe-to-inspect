@@ -68,6 +68,11 @@ class Plc:
         with self._lock:
             self._agent_hold = on
 
+    def set_locked(self, on: bool):
+        """Coil 1 = the station's real lock state (self-test, teach, approval, shift expiry), not only the last verdict."""
+        with self._lock:
+            self._locked = on
+
     def set_verdict(self, v):
         with self._lock:
             self._locked = v.status == "LOCKED"
