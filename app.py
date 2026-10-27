@@ -1,5 +1,6 @@
 """Bench web app: python app.py --source 0|<video>|<photo folder> --product blister --port 8000"""
 import argparse
+import html
 import json
 import threading
 import time
@@ -9,11 +10,12 @@ from pathlib import Path
 import cv2
 import numpy as np
 from fastapi import FastAPI, File, Request, UploadFile
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import HTMLResponse, StreamingResponse
 
 from d2i import record
 from d2i.checklist import approve, make_checklist
-from d2i.meta_api import Budget, BudgetExceeded, MetaClient, MetaError
+from d2i.meta_api import Budget, MetaClient
 from d2i.pockets import find_layout
 from d2i.station import Station
 
@@ -70,7 +72,8 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
     st = Station(product_dir, client=client, clock=clock)
     spend_path = product_dir / "meta_spend.json"
     src = FrameSource(source) if source is not None else None
-    lock = threading.RLock()  # one station operation at a time
+    lock = threading.RLock()  # one slow station operation at a time
+    meta = threading.RLock()  # short: checklist / pending / last-verdict references
     state = {"pending": None, "last": None, "client": client, "overlay": (0.0, [])}
     app.state.station, app.state.source = st, src
 
@@ -79,16 +82,16 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
             state["client"] = MetaClient(Budget(spend_path))
         return state["client"]
 
-    async def image_from(upload: UploadFile | None):
+    def image_from(upload: UploadFile | None):
         if upload is not None:
-            return cv2.imdecode(np.frombuffer(await upload.read(), np.uint8), cv2.IMREAD_COLOR)
+            return cv2.imdecode(np.frombuffer(upload.file.read(), np.uint8), cv2.IMREAD_COLOR)
         return src.get() if src else None
 
-    def paid(fn):
+    def paid(fn):  # the screen never sees a 500: any failure becomes plain text
         try:
             return fn()
-        except (MetaError, BudgetExceeded, ValueError) as ex:
-            return {"error": str(ex)}
+        except Exception as ex:
+            return {"error": str(ex) or type(ex).__name__}
 
     @app.get("/", response_class=HTMLResponse)
     def index():
@@ -101,15 +104,26 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
     @app.get("/status")
     def status():
         counts = {}
-        log = product_dir / "log.jsonl"
-        if log.exists():
-            for line in log.read_text(encoding="utf-8").splitlines():
-                if line.strip():
-                    s = json.loads(line)["status"]
-                    counts[s] = counts.get(s, 0) + 1
-        spent = json.loads(spend_path.read_text())["spent_usd"] if spend_path.exists() else 0.0
-        last, locked = state["last"], st.locked
-        reason = st.lock_reason if st.checklist else NO_CHECKLIST
+        try:
+            for line in (product_dir / "log.jsonl").read_text(encoding="utf-8", errors="replace").splitlines():
+                try:
+                    k = json.loads(line)["status"]
+                    counts[k] = counts.get(k, 0) + 1
+                except Exception:
+                    pass  # unreadable line: skip
+        except OSError:
+            pass
+        try:
+            spent = float(json.loads(spend_path.read_text())["spent_usd"]) if spend_path.exists() else 0.0
+        except Exception:
+            spent = None
+        with meta:
+            cl, pending, last = st.checklist, state["pending"], state["last"]
+        try:
+            locked = st.locked
+            reason = st.lock_reason if cl else NO_CHECKLIST
+        except Exception as ex:  # unreadable self-test log: stay locked
+            locked, reason = True, f"Cannot read self-test log: {ex}"
         if locked:
             banner, text = "LOCKED", reason
         elif last and last["status"] in ("REJECT", "HOLD"):
@@ -117,10 +131,9 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
         else:
             banner, text = "READY", ""
         return {"locked": locked, "lock_reason": reason if locked else "",
-                "checklist_version": st.checklist and st.checklist["version"], "spent_usd": spent,
+                "checklist_version": cl and cl["version"], "spent_usd": spent,
                 "counts": counts, "last_verdict": last, "state": banner, "text": text,
-                "rules": st.checklist["rules"] if st.checklist else [],
-                "pending": state["pending"]["rules"] if state["pending"] else None}
+                "rules": cl["rules"] if cl else [], "pending": pending["rules"] if pending else None}
 
     @app.post("/describe")
     async def describe(request: Request):
@@ -128,27 +141,38 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
             c = get_client()
             if audio is not None:
                 text = c.transcribe(audio, languages=langs)
-            state["pending"] = make_checklist(text, c)
-            return {"checklist": state["pending"], "transcript": text}
-        if "multipart" in request.headers.get("content-type", ""):
-            form = await request.form()
-            audio = await form["audio"].read()
-            lang = form.get("languages")
-            return paid(lambda: run(None, audio, [lang] if lang in LANGS else None))
-        body = await request.json()
-        return paid(lambda: run(str(body.get("text", "")), None, None))
+            cl = make_checklist(text, c)
+            with meta:
+                state["pending"] = cl
+            return {"checklist": cl, "transcript": text}
+        try:
+            if "multipart" in request.headers.get("content-type", ""):
+                form = await request.form()
+                if "audio" not in form:
+                    return {"error": "No audio was received."}
+                audio = await form["audio"].read()
+                lang = form.get("languages")
+                args = (None, audio, [lang] if lang in LANGS else None)
+            else:
+                args = (str((await request.json()).get("text", "")), None, None)
+        except Exception as ex:
+            return {"error": f"Could not read the request: {ex}"}
+        return await run_in_threadpool(paid, lambda: run(*args))
 
     @app.post("/approve")
     def approve_ep(body: dict):
         by = str(body.get("by", "")).strip()
-        if not state["pending"]:
-            return {"error": "Nothing to approve: describe the good strip first."}
-        if not by:
-            return {"error": "Enter the approver's name."}
-        with lock:
-            st.checklist = approve(state["pending"], by, product_dir / "checklists.jsonl")
-            state["pending"] = None
-        return {"checklist": st.checklist}
+
+        def run():
+            with meta:  # check and set together
+                if not state["pending"]:
+                    return {"error": "Nothing to approve: describe the good strip first."}
+                if not by:
+                    return {"error": "Enter the approver's name."}
+                st.checklist = approve(state["pending"], by, product_dir / "checklists.jsonl")
+                state["pending"] = None
+                return {"checklist": st.checklist}
+        return paid(run)
 
     @app.post("/teach")
     def teach(body: dict | None = None):
@@ -164,37 +188,57 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
             return {"saved": len(files), "need": NEED_GOOD}
         if not st.checklist:
             return {"error": NO_CHECKLIST}
-        with lock:
-            return paid(lambda: {"taught": len(files), "info": st.teach([cv2.imread(str(p)) for p in files])})
+        imgs, skipped = [], []
+        for p in files:
+            im = cv2.imread(str(p))
+            if im is None:
+                skipped.append(p.name)
+            else:
+                imgs.append(im)
+        if len(imgs) < NEED_GOOD:
+            return {"error": f"Only {len(imgs)} readable photos; need {NEED_GOOD}.", "skipped": skipped}
+
+        def run():
+            with lock:
+                return {"taught": len(imgs), "skipped": skipped, "info": st.teach(imgs)}
+        return paid(run)
 
     @app.post("/selftest")
-    async def selftest(image: UploadFile | None = File(None)):
-        im = await image_from(image)
-        if not st.checklist:
-            return {"error": NO_CHECKLIST}
-        if im is None:
-            return {"error": "No good strip in view."}
-        with lock:
-            return paid(lambda: st.self_test(im))
+    def selftest(image: UploadFile | None = File(None)):
+        def run():
+            im = image_from(image)
+            if not st.checklist:
+                return {"error": NO_CHECKLIST}
+            if im is None:
+                return {"error": "No good strip in view."}
+            with lock:
+                return st.self_test(im)
+        return paid(run)
 
     @app.post("/inspect")
-    async def inspect(image: UploadFile | None = File(None)):
-        im = await image_from(image)
-        if not st.checklist:
-            return {"status": "NO_CHECKLIST", "reasons": [{"text": NO_CHECKLIST}]}
-        if im is None:
-            return {"error": "No image."}
-        with lock:
-            v = st.inspect(im)
-        if plc:
-            plc.set_verdict(v)
-        state["last"] = asdict(v)
-        return state["last"]
+    def inspect(image: UploadFile | None = File(None)):
+        def run():
+            im = image_from(image)
+            if not st.checklist:
+                return {"status": "NO_CHECKLIST", "reasons": [{"text": NO_CHECKLIST}]}
+            if im is None:
+                return {"error": "No image."}
+            with lock:  # inspect and publish together so verdicts land in order
+                v = st.inspect(im)
+                with meta:
+                    state["last"] = asdict(v)
+                if plc:
+                    plc.set_verdict(v)
+                return state["last"]
+        return paid(run)
 
     @app.get("/record", response_class=HTMLResponse)
     def shift_record(batch: str = "", operator: str = "", hours: float = 8.0):
-        now = clock()
-        return record.shift_record(product_dir, now - hours * 3600, now, batch, operator, state["client"])
+        try:
+            now = clock()
+            return record.shift_record(product_dir, now - hours * 3600, now, batch, operator, state["client"])
+        except Exception as ex:
+            return f"<!doctype html><meta charset='utf-8'><p>The shift record could not be made: {html.escape(str(ex))}</p>"
 
     @app.post("/ask")
     def ask(body: dict):
@@ -203,9 +247,11 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
     def overlay_boxes(frame):
         """Pocket boxes for the stream, recomputed at most once a second, without paid calls."""
         t, boxes = state["overlay"]
-        if st.checklist and time.time() - t > 1:
+        with meta:
+            cl, tpl = st.checklist, st.template
+        if cl and time.time() - t > 1:
             try:
-                lay = find_layout(frame, st.checklist, None, st.template)
+                lay = find_layout(frame, cl, None, tpl)
                 boxes = lay.pockets if lay.ok else []
             except Exception:
                 boxes = []

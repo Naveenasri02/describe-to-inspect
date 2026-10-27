@@ -28,7 +28,7 @@ def test_describe_without_key_returns_error_not_500(tmp_path, monkeypatch):
     assert r.status_code == 200 and "nokey.txt" in r.json()["error"]
 
 
-def test_inspect_without_checklist_is_clear(tmp_path):
+def test_inspect_without_checklist_says_no_checklist(tmp_path):
     c = TestClient(app_mod.create_app(tmp_path, None))
     r = c.post("/inspect", files={"image": ("a.jpg", jpg(make_strip()), "image/jpeg")})
     assert r.status_code == 200 and r.json()["status"] == "NO_CHECKLIST"
@@ -50,3 +50,32 @@ def test_inspect_upload_returns_verdict(tmp_path):
     s = c.get("/status").json()
     assert s["counts"]["REJECT"] == 1 and s["state"] == "REJECT"
     assert "Packaging-line QA bench" in c.get("/").text
+
+
+class FakeClient:
+    def spark_json(self, system, user, schema, name="result", **kw):
+        return {"product": "vit C", "rows": 2, "per_row": 5, "item": "tablet",
+                "reject_if": ["empty_pocket"], "unclear": []}
+
+
+def test_describe_then_approve_flow(tmp_path):
+    c = TestClient(app_mod.create_app(tmp_path, None, client=FakeClient()))
+    assert c.post("/approve", json={"by": "QA1"}).json()["error"]
+    r = c.post("/describe", json={"text": "ten tablets"}).json()
+    assert r["checklist"]["count"] == 10
+    assert c.get("/status").json()["pending"]
+    assert c.post("/approve", json={"by": "QA1"}).json()["checklist"]["version"] == 1
+    assert c.get("/status").json()["checklist_version"] == 1
+
+
+def test_status_survives_corrupt_log_line(tmp_path):
+    (tmp_path / "log.jsonl").write_text('{"status": "PASS"}\nnot json\n', encoding="utf-8")
+    (tmp_path / "meta_spend.json").write_text("garbage")
+    s = TestClient(app_mod.create_app(tmp_path, None)).get("/status")
+    assert s.status_code == 200 and s.json()["counts"] == {"PASS": 1} and s.json()["spent_usd"] is None
+
+
+def test_describe_multipart_without_audio_returns_error(tmp_path):
+    c = TestClient(app_mod.create_app(tmp_path, None, client=FakeClient()))
+    r = c.post("/describe", files={"other": ("a.txt", b"x")})
+    assert r.status_code == 200 and "audio" in r.json()["error"]
