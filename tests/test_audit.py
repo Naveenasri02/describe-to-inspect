@@ -105,3 +105,16 @@ def test_append_refuses_on_damaged_log(tmp_path):
     _garble(tmp_path)
     with pytest.raises(ValueError, match="damaged at entry 2"):
         log.append("act", "u", {})
+
+
+def test_verify_survives_cut_multibyte_char(tmp_path):
+    from d2i.record import shift_record
+    log = AuditLog(tmp_path / "a.jsonl")
+    log.append("act", "u", {})
+    log.append("act", "u", {}, reason="சோதனை")
+    log.append("act", "u", {})
+    lines = (tmp_path / "a.jsonl").read_bytes().split(b"\n")
+    lines[1] = lines[1][:lines[1].index("சோ".encode()) + 1]  # cut inside the first Tamil character
+    (tmp_path / "a.jsonl").write_bytes(b"\n".join(lines))
+    assert log.verify() == (False, 2)
+    assert "BROKEN" in shift_record(tmp_path, 0, 4_000_000_000, "B", "A", audit=log)

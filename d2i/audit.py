@@ -20,7 +20,7 @@ class AuditLog:
     def _rows(self) -> list[dict]:
         if not self.path.exists():
             return []
-        return [self._parse(x) for x in self.path.read_text(encoding="utf-8").splitlines() if x.strip()]
+        return [self._parse(x) for x in self.path.read_text(encoding="utf-8", errors="replace").splitlines() if x.strip()]
 
     @staticmethod
     def _parse(line: str):
