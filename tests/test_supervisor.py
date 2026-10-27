@@ -123,7 +123,8 @@ def test_real_defects_keep_hold_no_reteach(bench):
     assert cmp["score"] > cmp["threshold"]
     assert Path(cmp["evidence"]).parent == st.dir / "evidence" and Path(cmp["evidence"]).exists()
     assert Path(dev["path"]).parent == st.dir / "deviations"
-    assert Path(dev["path"]).read_text(encoding="utf-8").startswith("# DRAFT — needs QA review")
+    note = Path(dev["path"]).read_text(encoding="utf-8")
+    assert note.startswith("# DRAFT — needs QA review") and "Built with Muse Spark Open" in note
     assert out["conclusion"] == "Real defects: pocket 7 is empty on 3 strips under rule 2 and the image is healthy."
     assert not any(p["kind"] == "reteach" for p in out["pending"])
     assert bench.plc.coils[2] is True
@@ -171,20 +172,28 @@ def test_primary_error_uses_fallback(tmp_path, monkeypatch):
 class Endless:
     last_platform = "Baseten (open weights)"
 
-    def __init__(self):
-        self.n = 0
+    def __init__(self, *pairs):
+        self.n, self.pairs = 0, pairs
 
     def complete(self, messages, tools):
         self.n += 1
-        return calls(("no_such_tool", {}), ("compare_to_last_good", "{not json"))
+        return calls(*self.pairs)
 
 
 def test_step_cap_12(bench):
-    chat = Endless()
+    chat = Endless(("no_such_tool", {}))
     out = supervisor(bench, chat, make_strip(seed=12)).investigate("rejects rose")
     assert chat.n == MAX_STEPS == 12 and out["conclusion"] == STEP_LIMIT
-    assert len(out["steps"]) == 24 and all("error" in s["result"] for s in out["steps"])
+    assert len(out["steps"]) == 12 and all("error" in s["result"] for s in out["steps"])
     assert bench.plc.coils[2] is True
+
+
+def test_tool_call_cap_20(bench):
+    chat = Endless(("no_such_tool", {}), ("compare_to_last_good", "{not json"))  # two calls per step
+    out = supervisor(bench, chat, make_strip(seed=12)).investigate("rejects rose")
+    assert out["conclusion"] == "investigation stopped: too many tool calls — call QA"
+    assert len(out["steps"]) == 20 and chat.n == 11 and bench.plc.coils[2] is True
+    assert bench.audit.entries()[-1]["details"]["conclusion"] == out["conclusion"]
 
 
 def test_resume_refused_while_locked(bench):

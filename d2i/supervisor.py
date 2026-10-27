@@ -22,7 +22,9 @@ SYSTEM = ("You supervise a blister-strip inspection bench on a packaging line. I
           "concluding. You never change a verdict or the checklist. To re-teach, resume or release quarantine, call "
           "the request_ tool; a QA person decides. End with one sentence naming the cause and the evidence.")
 MAX_STEPS = 12
+MAX_TOOL_CALLS = 20  # per investigation, on top of MAX_STEPS (one step may ask for several tools)
 STEP_LIMIT = "Step limit reached — line held, call QA"
+TOO_MANY = "investigation stopped: too many tool calls — call QA"
 MODEL_DOWN = "Model unavailable — line held, call QA"
 GLARE_FLOOR = 0.001  # a few hot pixels on a glare-free baseline are not drift
 
@@ -147,7 +149,7 @@ class Supervisor:
         self._set_hold(True, "supervisor")  # held for the whole investigation; only QA releases it
         self._trigger, self._steps, self._new = trigger, [], []
         messages = [{"role": "system", "content": SYSTEM}, {"role": "user", "content": f"Trigger: {trigger}"}]
-        conclusion, platform = STEP_LIMIT, "none"
+        conclusion, platform, over = STEP_LIMIT, "none", False
         for _ in range(MAX_STEPS):
             try:
                 msg = self.chat.complete(messages, TOOLS)
@@ -158,6 +160,9 @@ class Supervisor:
                     break
                 messages.append({"role": "assistant", "content": msg.get("content"), "tool_calls": calls})
                 for c in calls:
+                    if len(self._steps) >= MAX_TOOL_CALLS:
+                        over = True
+                        break
                     fn = c.get("function") or {}
                     name = fn.get("name")
                     if not isinstance(name, str):
@@ -170,6 +175,10 @@ class Supervisor:
                     messages.append({"role": "tool", "tool_call_id": c.get("id"), "content": text})
             except Exception:  # model down (both platforms, timeout, spend stop) or a malformed reply: stay held
                 conclusion = MODEL_DOWN
+                break
+            if over:
+                self._set_hold(True, "supervisor")
+                conclusion = TOO_MANY
                 break
         fallback = conclusion == MODEL_DOWN
         self.audit.append("agent_conclusion", "supervisor",
@@ -249,7 +258,7 @@ class Supervisor:
         steps = "\n".join(f"{n}. {s['tool']} {json.dumps(s['args'])} -> {json.dumps(s['result'], default=str)[:300]}"
                           for n, s in enumerate(self._steps, 1))
         path.write_text(f"# DRAFT — needs QA review\n\nTrigger: {self._trigger}\n\nSummary: {summary}\n\n"
-                        f"## Steps\n\n{steps}\n", encoding="utf-8")
+                        f"## Steps\n\n{steps}\n\nBuilt with Muse Spark Open\n", encoding="utf-8")
         return {"path": str(path)}
 
     def _stamped(self, folder, suffix) -> Path:
