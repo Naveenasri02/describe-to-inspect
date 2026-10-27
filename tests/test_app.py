@@ -44,11 +44,14 @@ def test_inspect_without_checklist_says_no_checklist(tmp_path):
 
 
 def test_inspect_upload_returns_verdict(tmp_path):
-    approve(CHECKLIST, "Priya", tmp_path / "checklists.jsonl")
-    (tmp_path / "good").mkdir()
+    p = tmp_path / "p"
+    approve(CHECKLIST, "Priya", p / "checklists.jsonl")
+    (p / "good").mkdir()
     for i in range(6):
-        (tmp_path / "good" / f"{i}.jpg").write_bytes(jpg(make_strip(seed=i, shift=(i, 0))))
-    c = TestClient(app_mod.create_app(tmp_path, None))
+        (p / "good" / f"{i}.jpg").write_bytes(jpg(make_strip(seed=i, shift=(i, 0))))
+    Users(tmp_path / "users.json").add("qa1", "qa", "pw-qa")
+    c = TestClient(app_mod.create_app(p, None))
+    login(c, "qa1", "pw-qa")
     assert c.post("/teach", json={}).json().get("error") is None
     up = lambda img: {"image": ("a.jpg", jpg(img), "image/jpeg")}
     assert c.post("/selftest", files=up(make_strip(seed=12))).json()["passed"] is True
@@ -66,15 +69,38 @@ class FakeClient:
         return {"product": "vit C", "rows": 2, "per_row": 5, "item": "tablet",
                 "reject_if": ["empty_pocket"], "unclear": []}
 
+    def sam_image(self, image, prompt):
+        raise meta_api.MetaError("offline")  # the bench finds pockets with the checklist grid
+
 
 def test_describe_then_approve_flow(tmp_path):
-    c = TestClient(app_mod.create_app(tmp_path, None, client=FakeClient()))
-    assert c.post("/approve", json={"by": "QA1"}).json()["error"]
+    Users(tmp_path / "users.json").add("qa1", "qa", "pw-qa")
+    c = TestClient(app_mod.create_app(tmp_path / "p", None, client=FakeClient()))
+    login(c, "qa1", "pw-qa")
+    assert c.post("/approve", json={}).json()["error"]
     r = c.post("/describe", json={"text": "ten tablets"}).json()
     assert r["checklist"]["count"] == 10
     assert c.get("/status").json()["pending"]
-    assert c.post("/approve", json={"by": "QA1"}).json()["checklist"]["version"] == 1
+    cl = c.post("/approve", json={}).json()["checklist"]
+    assert cl["version"] == 1 and cl["approved_by"] == "qa1"
     assert c.get("/status").json()["checklist_version"] == 1
+    e = json.loads((tmp_path / "p" / "audit.jsonl").read_text(encoding="utf-8").splitlines()[-1])
+    assert (e["action"], e["user"], e["details"]["approved_by"]) == ("checklist_approve", "qa1", "qa1")
+
+
+def test_approve_and_teach_need_a_qa_login(tmp_path):
+    c, p = bench(tmp_path, client=FakeClient())
+    c.post("/describe", json={"text": "ten tablets"})
+    for user in (None, ("op", "pw-op")):
+        if user:
+            login(c, *user)
+        assert c.post("/approve", json={"by": "Anyone"}).json() == {"error": "Log in as a QA user first"}
+        assert c.post("/teach", json={"capture": True}).json() == {"error": "Log in as a QA user first"}
+    assert c.get("/status").json()["checklist_version"] == 1 and len(list((p / "good").glob("*.jpg"))) == 6
+    login(c, "qa1", "pw-qa")
+    assert c.post("/teach", json={}).json().get("error") is None
+    e = json.loads((p / "audit.jsonl").read_text(encoding="utf-8").splitlines()[-1])
+    assert (e["action"], e["user"], e["details"]["taught_by"]) == ("teach", "qa1", "qa1")
 
 
 def test_status_survives_corrupt_log_line(tmp_path):
@@ -112,8 +138,10 @@ def bench(tmp_path, chat=None, client=None, plc=None):
     users.add("qa1", "qa", "pw-qa")
     users.add("op", "operator", "pw-op")
     c = TestClient(app_mod.create_app(p, None, chat=chat, client=client, plc=plc))
+    login(c, "qa1", "pw-qa")  # QA teaches
     assert c.post("/teach", json={}).json().get("error") is None
     c.post("/selftest", files={"image": ("a.jpg", jpg(make_strip(seed=12)), "image/jpeg")})
+    c.post("/logout")
     return c, p
 
 
@@ -334,6 +362,7 @@ def test_plc_lock_coil_follows_station_lock(tmp_path):
     plc = Plc(host="127.0.0.1", port=0)
     c, p = bench(tmp_path, plc=plc)
     assert plc.coils[1] is False
+    login(c, "qa1", "pw-qa")
     c.post("/teach", json={})  # re-taught: locked until a self-test passes
     assert plc.coils[1] is True
     c.post("/selftest", files=up(make_strip(seed=12)))

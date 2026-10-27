@@ -53,7 +53,7 @@ td,th{font-size:12px;padding:2px 6px;text-align:left}
   <button id="vcmd" title="Say: self test, teach, inspect, hold, record" onclick="toggleRec('command')">Voice command</button>
   <div id="heard" class="small"></div></div>
   <div id="pending"></div>
-  <div><input id="by" placeholder="Approver name"><button onclick="approve()">Approve</button></div>
+  <div><button onclick="approve()">Approve</button> <span id="qahint" class="small">Log in as QA to approve</span></div>
   <div id="msg"></div>
   <hr>
   <input id="batch" placeholder="Batch"><input id="op" placeholder="Operator">
@@ -88,7 +88,7 @@ async function post(url,b){show("Working...");show(await j(url,b))}
 async function inspectNow(){show("Working...");const v=await (await fetch("/inspect",{method:"POST"})).json();show(v.error?v:v.status+" "+(v.reasons||[]).map(r=>r.text).join("; "))}
 async function describe(){show("Working...");const r=await j("/describe",{text:$("text").value});shown(r)}
 function shown(r){if(r.error)return show(r);if(r.transcript)$("text").value=r.transcript;show("Check the rules, then Approve.")}
-async function approve(){show(await j("/approve",{by:$("by").value}))}
+async function approve(){show(await j("/approve"))}
 let recId="";
 async function rec(){const q=new URLSearchParams({batch:$("batch").value,operator:$("op").value});
   const r=await fetch("/record?"+q);recId=r.headers.get("X-Record-Id")||"";
@@ -103,7 +103,7 @@ async function refresh(){
   $("rules").innerHTML="";(s.pending||s.rules).forEach(t=>{const li=document.createElement("li");li.textContent=t.replace(/^Rule \d+: /,"");$("rules").appendChild(li)});
   $("pending").textContent=s.pending?"Waiting for approval":"";
   $("who").textContent=s.user?s.user.name+" ("+s.user.role+")":"";
-  $("loginbox").hidden=!!s.user;$("logoutbtn").hidden=!s.user;
+  $("loginbox").hidden=!!s.user;$("logoutbtn").hidden=!s.user;$("qahint").hidden=!!s.user&&s.user.role==="qa";
   quarantine(s.quarantine_count,s.quarantine_error);traceRows();invRefresh();
 }
 const mk=(tag,text,cls)=>{const e=document.createElement(tag);e.textContent=text;if(cls)e.className=cls;return e};

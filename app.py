@@ -226,51 +226,48 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
         return await run_in_threadpool(paid, lambda: run(*args))
 
     @app.post("/approve")
-    def approve_ep(body: dict, request: Request):
-        by = str(body.get("by", "")).strip()
-
+    def approve_ep(request: Request):
         def run():
+            name = qa(request)  # the logged-in QA user is the approver
             with meta:  # check and set together
                 if not state["pending"]:
                     return {"error": "Nothing to approve: describe the good strip first."}
-                if not by:
-                    return {"error": "Enter the approver's name."}
-                st.checklist = approve(state["pending"], by, product_dir / "checklists.jsonl")
+                st.checklist = approve(state["pending"], name, product_dir / "checklists.jsonl")
                 state["pending"] = None
                 sync_lock()
-                audit.append("checklist_approve", who(request)[0], {"approved_by": by, "version": st.checklist["version"]})
+                audit.append("checklist_approve", name, {"approved_by": name, "version": st.checklist["version"]})
                 return {"checklist": st.checklist}
         return paid(run)
 
     @app.post("/teach")
     def teach(request: Request, body: dict | None = None):
-        good = product_dir / "good"
-        good.mkdir(exist_ok=True)
-        if (body or {}).get("capture"):
-            f = src.get() if src else None
-            if f is None:
-                return {"error": "No camera frame to save."}
-            cv2.imwrite(str(good / f"{int(clock() * 1000)}.jpg"), f)
-        files = sorted(good.glob("*.jpg"))
-        if len(files) < NEED_GOOD:
-            return {"saved": len(files), "need": NEED_GOOD}
-        if not st.checklist:
-            return {"error": NO_CHECKLIST}
-        imgs, skipped = [], []
-        for p in files:
-            im = cv2.imread(str(p))
-            if im is None:
-                skipped.append(p.name)
-            else:
-                imgs.append(im)
-        if len(imgs) < NEED_GOOD:
-            return {"error": f"Only {len(imgs)} readable photos; need {NEED_GOOD}.", "skipped": skipped}
-
         def run():
+            name = qa(request)  # QA teaches, including saving the photos
+            good = product_dir / "good"
+            good.mkdir(exist_ok=True)
+            if (body or {}).get("capture"):
+                f = src.get() if src else None
+                if f is None:
+                    return {"error": "No camera frame to save."}
+                cv2.imwrite(str(good / f"{int(clock() * 1000)}.jpg"), f)
+            files = sorted(good.glob("*.jpg"))
+            if len(files) < NEED_GOOD:
+                return {"saved": len(files), "need": NEED_GOOD}
+            if not st.checklist:
+                return {"error": NO_CHECKLIST}
+            imgs, skipped = [], []
+            for p in files:
+                im = cv2.imread(str(p))
+                if im is None:
+                    skipped.append(p.name)
+                else:
+                    imgs.append(im)
+            if len(imgs) < NEED_GOOD:
+                return {"error": f"Only {len(imgs)} readable photos; need {NEED_GOOD}.", "skipped": skipped}
             with lock:
                 out = {"taught": len(imgs), "skipped": skipped, "info": st.teach(imgs)}
                 sync_lock()
-                audit.append("teach", who(request)[0], {"photos": len(imgs)})
+                audit.append("teach", name, {"photos": len(imgs), "taught_by": name})
             with sup_lock:
                 if not inv["running"]:
                     inv["sup"] = None  # rebuilt from the new good photos at the next use
