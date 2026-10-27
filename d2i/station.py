@@ -9,6 +9,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
+from d2i import trace
 from d2i.checklist import current, rule_number
 from d2i.defects import paint
 from d2i.judge import Judge
@@ -56,8 +57,16 @@ class Station:
         return [json.loads(x) for x in path.read_text(encoding="utf-8").splitlines() if x.strip()] if path.exists() else []
 
     @property
+    def _template(self):
+        """The taught pocket pattern, unless the checklist changed since (then it no longer fits)."""
+        stale = self.template and self.checklist and len(self.template) != self.checklist["count"]
+        return None if stale else self.template
+
+    @property
     def lock_reason(self) -> str:
         """Empty string when the station is unlocked."""
+        if self.template and self._template is None:
+            return "Checklist changed — teach the station again"
         tests = self._selftests()
         if tests and not tests[-1]["passed"]:
             return "Self-test missed: " + (", ".join(tests[-1]["failed"]) or "see result")
@@ -73,11 +82,27 @@ class Station:
     def locked(self) -> bool:
         return bool(self.lock_reason)
 
-    def teach(self, images: list) -> dict:
+    def crosscheck(self, image) -> dict:
+        """Two models count the pockets: SAM 3.1 outlines vs Muse Spark pointing. Paid, so never inside inspect."""
+        if self.client is None:
+            raise ValueError("crosscheck needs the Meta client")
+        sam = len(find_layout(image, self.checklist, self.client).pockets)
+        spark = self.client.spark_count(image, self.checklist["item"])
+        return {"sam": sam, "spark": spark, "agree": sam == spark}
+
+    def teach(self, images: list, crosscheck: bool = False) -> dict:
         if not self.checklist:
             raise ValueError("Approve a checklist before teaching.")
+        if crosscheck:
+            for n, im in enumerate(images, 1):
+                c = self.crosscheck(im)
+                if not c["agree"]:
+                    raise ValueError(f"photo {n}: SAM 3.1 found {c['sam']} pockets, Muse Spark counted {c['spark']}")
         layouts = [find_layout(im, self.checklist, self.client) for im in images]
+        t0 = time.perf_counter()
         info = self.judge.teach(images, layouts)  # refuses photos whose layout is not ok
+        for _ in images:
+            trace.record("dinov2-small", "local", "teach", (time.perf_counter() - t0) * 1000 / len(images))
         template = template_from(layouts)
         protos = {}
         for kind in POCKET_KINDS:
@@ -117,9 +142,16 @@ class Station:
             unlisted.append(self._unlisted(pocket))
 
     def _judge(self, image, strip_id, image_name) -> Verdict:
+        t0 = time.perf_counter()
+        try:
+            return self._judge_one(image, strip_id, image_name)
+        finally:
+            trace.record("dinov2-small", "local", "judge", (time.perf_counter() - t0) * 1000)
+
+    def _judge_one(self, image, strip_id, image_name) -> Verdict:
         cl = self.checklist
         v = Verdict("PASS", strip_id=strip_id, image_name=image_name, at=self._now())
-        lay = find_layout(image, cl, self.client, self.template)
+        lay = find_layout(image, cl, self.client, self._template)
         if lay.note == "no strip":
             v.status = "NO_STRIP"
             return v
@@ -153,7 +185,7 @@ class Station:
     def self_test(self, good_image, rng_seed: int | None = None) -> dict:
         cl = self.checklist
         rng = np.random.default_rng(rng_seed)
-        lay = find_layout(good_image, cl, self.client, self.template)
+        lay = find_layout(good_image, cl, self.client, self._template)
         results = []
         if lay.ok:
             per = cl["per_row"]

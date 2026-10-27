@@ -18,6 +18,8 @@ import cv2
 import numpy as np
 import meta_sam_parser as sam
 
+from d2i import trace
+
 API = "https://api.meta.ai/v1"
 KEY_FILE = Path.home() / ".secrets" / "meta_model_api_key.txt"
 LIMIT_USD = 50.0
@@ -28,6 +30,23 @@ SPARK_IN, SPARK_OUT = 1.25e-6, 4.25e-6       # USD per token
 SAM_IMAGE = 2.50 / 1000                        # USD per image
 SAM_FRAME, SAM_MIN_FRAMES = 0.20 / 1000, 50    # USD per video frame, billed minimum
 VOICE_HOUR = 0.18                              # USD per audio hour
+
+
+def _traced(model):
+    """Record one trace event per public call: real cost on success, zero when it raises."""
+    def deco(fn):
+        def wrapper(self, *a, **kw):
+            t0, spent = time.perf_counter(), self.budget.spent
+            try:
+                out = fn(self, *a, **kw)
+            except BaseException:
+                trace.record(model, "Meta API", fn.__name__, (time.perf_counter() - t0) * 1000, 0.0, False)
+                raise
+            trace.record(model, "Meta API", fn.__name__, (time.perf_counter() - t0) * 1000, self.budget.spent - spent)
+            return out
+        wrapper.__name__ = fn.__name__
+        return wrapper
+    return deco
 
 
 class BudgetExceeded(RuntimeError):
@@ -99,12 +118,31 @@ class MetaClient:
             raise MetaError(f"Meta API {r.status_code}: {r.text[:300]}")
         return r.json()
 
+    @_traced(SPARK_MODEL)
     def spark_json(self, system: str, user: str, schema: dict, name: str = "result", max_out: int = 4000,
                    effort: str = "low") -> dict:
+        return self._spark(system, user, schema, name, max_out, effort)
+
+    @_traced(SPARK_MODEL)
+    def spark_count(self, image: np.ndarray, item: str) -> int:
+        schema = {"type": "object", "additionalProperties": False, "required": ["count", "points"],
+                  "properties": {"count": {"type": "integer"},
+                                 "points": {"type": "array", "items": {"type": "array", "items": {"type": "number"},
+                                                                       "minItems": 2, "maxItems": 2}}}}
+        text = f"Point at every {item} in this blister strip and count them."
+        return int(self._spark("", text, schema, "pocket_count", image=image)["count"])
+
+    def _spark(self, system, user, schema, name, max_out=4000, effort="low", image=None):
         worst = (len(system) + len(user) + len(json.dumps(schema))) / 2 * SPARK_IN + max_out * SPARK_OUT
+        content = user
+        if image is not None:
+            ok, jpg = cv2.imencode(".jpg", image, [cv2.IMWRITE_JPEG_QUALITY, 92])
+            url = "data:image/jpeg;base64," + base64.b64encode(jpg.tobytes()).decode()
+            content = [{"type": "text", "text": user}, {"type": "image_url", "image_url": {"url": url}}]
+        messages = ([{"role": "system", "content": system}] if system else []) + [{"role": "user", "content": content}]
         body = self._post("/chat/completions", worst, json={
             "model": SPARK_MODEL, "max_tokens": max_out, "reasoning_effort": effort,
-            "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
+            "messages": messages,
             "response_format": {"type": "json_schema",
                                 "json_schema": {"name": name, "schema": schema, "strict": True}}})
         u = body.get("usage", {})
@@ -128,6 +166,7 @@ class MetaClient:
         return "".join(c.get("text", "") for item in body.get("output", [])
                        for c in item.get("content", []) if c.get("type") == "output_text")
 
+    @_traced("sam-3.1")
     def sam_image(self, image: np.ndarray, prompt: str) -> list[SamObject]:
         ok, jpg = cv2.imencode(".jpg", image, [cv2.IMWRITE_JPEG_QUALITY, 92])
         url = "data:image/jpeg;base64," + base64.b64encode(jpg.tobytes()).decode()
@@ -152,6 +191,7 @@ class MetaClient:
             out.append(SamObject(int(r.object_id), box, score, full))
         return out
 
+    @_traced("sam-3.1")
     def sam_video(self, mp4: bytes, prompt: str) -> list[SamTrackPoint]:
         with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as f:
             f.write(mp4)
@@ -168,6 +208,7 @@ class MetaClient:
         return [SamTrackPoint(int(r.object_id), r.frame.frame_index if r.frame else 0, _box(r, sx, sy), r.confidence)
                 for r in _parse(sam.video_segmentation_format(), text) if r.kind == "box"]
 
+    @_traced("muse-voice-transcribe-1.0")
     def transcribe(self, wav: bytes, keywords=(), languages: list[str] | None = None) -> str:
         with wave.open(io.BytesIO(wav)) as wf:
             seconds = wf.getnframes() / wf.getframerate()

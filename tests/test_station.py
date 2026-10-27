@@ -155,3 +155,33 @@ def test_station_inspect_uses_saved_template(tmp_path):
     v = st.inspect(make_strip(seed=13, missing=(6,)))
     assert v.status == "REJECT"
     assert any(r["text"] == "Rule 2 failed: pocket 7 is empty" for r in v.reasons), v.reasons
+
+
+class CountClient(ContourSam):
+    def __init__(self, spark, skip=()):
+        super().__init__(skip)
+        self.spark = spark
+
+    def spark_count(self, image, item):
+        return self.spark
+
+
+def test_crosscheck_disagreement_blocks_teach(tmp_path):
+    approve(CHECKLIST, "Priya", tmp_path / "checklists.jsonl")
+    st = Station(tmp_path, client=CountClient(9), clock=lambda: T0)
+    assert st.crosscheck(make_strip()) == {"sam": 10, "spark": 9, "agree": False}
+    with pytest.raises(ValueError, match="photo 1: SAM 3.1 found 10 pockets, Muse Spark counted 9"):
+        st.teach([make_strip(seed=i) for i in range(6)], crosscheck=True)
+    assert st.taught_at is None
+    st.client = CountClient(10)
+    st.teach([make_strip(seed=i) for i in range(6)], crosscheck=True)
+    assert st.taught_at == T0
+
+
+def test_stale_template_after_checklist_change_locks(tmp_path):
+    approve(CHECKLIST, "Priya", tmp_path / "checklists.jsonl")
+    Station(tmp_path, client=ContourSam(), clock=lambda: T0).teach([make_strip(seed=i, shift=(i, 0)) for i in range(6)])
+    approve(dict(CHECKLIST, per_row=4, count=8), "Priya", tmp_path / "checklists.jsonl")
+    st = Station(tmp_path, client=ContourSam(), clock=lambda: T0)
+    assert st.lock_reason == "Checklist changed — teach the station again"
+    assert st.inspect(make_strip()).status == "LOCKED"

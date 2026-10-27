@@ -137,3 +137,27 @@ def test_transcribe_multipart(tmp_path):
     assert http.calls[0]["url"].endswith("/asr/transcribe")
     client.transcribe(wav_bytes())
     assert "languageBias" not in json.loads(http.calls[1]["files"]["request"][1])
+
+
+def test_trace_records_meta_calls(tmp_path):
+    from d2i import trace
+    trace.clear()
+    http = FakeHTTP([chat_body(json.dumps({"x": 1}))])
+    MetaClient(budget(tmp_path), key="k", http=http).spark_json("s", "u", {"type": "object", "required": ["x"]})
+    ev = trace.recent()[-1]
+    assert ev["model"] == "muse-spark-1.3" and ev["platform"] == "Meta API" and ev["job"] == "spark_json"
+    assert ev["ok"] and ev["usd"] > 0
+    with pytest.raises(MetaError):
+        MetaClient(budget(tmp_path), key="k", http=FakeHTTP([(500, "boom")])).sam_image(
+            np.zeros((8, 8, 3), np.uint8), "x")
+    ev = trace.recent()[-1]
+    assert ev["model"] == "sam-3.1" and not ev["ok"] and ev["usd"] == 0
+
+
+def test_spark_count_parses(tmp_path):
+    http = FakeHTTP([chat_body(json.dumps({"count": 10, "points": [[1, 2]] * 10}))])
+    n = MetaClient(budget(tmp_path), key="k", http=http).spark_count(np.zeros((8, 8, 3), np.uint8), "tablet")
+    assert n == 10
+    content = http.calls[0]["json"]["messages"][-1]["content"]
+    assert content[0]["text"] == "Point at every tablet in this blister strip and count them."
+    assert content[1]["image_url"]["url"].startswith("data:image/jpeg;base64,")
