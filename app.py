@@ -193,8 +193,10 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
         try:
             locked = st.locked
             reason = st.lock_reason if cl else NO_CHECKLIST
+            tests = st._selftests()
+            uncovered = tests[-1].get("skipped", []) if tests else []
         except Exception as ex:  # unreadable self-test log: stay locked
-            locked, reason = True, f"Cannot read self-test log: {ex}"
+            locked, reason, uncovered = True, f"Cannot read self-test log: {ex}", []
         if plc:
             plc.set_locked(locked)  # every poll, so shift expiry reaches coil 1
         (held, by), (qn, qerr) = hold_state(product_dir), quarantine_count()
@@ -212,7 +214,7 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
             banner, text = "READY", ""
         return {"locked": locked, "lock_reason": reason if locked else "",
                 "checklist_version": cl and cl["version"], "spent_usd": spent,
-                "counts": counts, "batch": open_batch, "last_verdict": last, "state": banner, "text": text,
+                "counts": counts, "batch": open_batch, "last_verdict": last, "selftest_skipped": uncovered, "state": banner, "text": text,
                 "rules": cl["rules"] if cl else [], "pending": pending["rules"] if pending else None,
                 "held": held, "quarantine_count": qn, "quarantine_error": qerr,
                 "user": dict(zip(("name", "role"), who(request))) if request.cookies.get("d2i_session") in sessions else None}

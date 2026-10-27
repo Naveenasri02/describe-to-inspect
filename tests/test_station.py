@@ -147,6 +147,8 @@ def test_shift_expiry_locks(station):
 class ContourSam:
     """Fake SAM: strip from the contour finder, a pill in every pocket except `skip`."""
 
+    bare_filter = True
+
     def __init__(self, skip=()):
         self.skip = skip
 
@@ -157,7 +159,7 @@ class ContourSam:
         boxes = [pocket_box(i, strip=strip) for i in range(10) if i not in self.skip]
         # a real SAM finds no pill where the pocket shows bare foil
         return [SamObject(i, b, 0.9, None) for i, b in enumerate(boxes)
-                if image[(b[1] + b[3]) // 2 - 4:(b[1] + b[3]) // 2 + 4, (b[0] + b[2]) // 2 - 4:(b[0] + b[2]) // 2 + 4].mean() > 200]
+                if not self.bare_filter or image[(b[1] + b[3]) // 2 - 4:(b[1] + b[3]) // 2 + 4, (b[0] + b[2]) // 2 - 4:(b[0] + b[2]) // 2 + 4].mean() > 200]
 
 
 def test_station_inspect_uses_saved_template(tmp_path):
@@ -262,3 +264,58 @@ def test_grid_fallback_marks_measurements_skipped(station):
     v = st.inspect(make_strip(seed=13))
     assert v.status == "PASS" and v.skipped == ["tablet measurements"]
     assert json.loads((st.dir / "log.jsonl").read_text().splitlines()[-1])["skipped"] == ["tablet measurements"]
+
+
+class ImageSam(ContourSam):
+    """Fake SAM that looks at the pixels: one box around the bright blob in each pocket window, split in two
+    when the blob is clearly wider than tall (what a real SAM does with two touching tablets)."""
+
+    bare_filter = False
+
+    def sam_image(self, image, prompt):
+        objs = super().sam_image(image, prompt)
+        if prompt == "blister strip":
+            return objs
+        out = []
+        for o in objs:
+            x0, y0, x1, y1 = o.box
+            ex, ey = int((x1 - x0) * 0.1), int((y1 - y0) * 0.1)
+            ox, oy = x0 - ex, y0 - ey
+            ys, xs = np.nonzero(image[oy:y1 + ey, ox:x1 + ex].min(axis=2) > 200)
+            if len(xs) == 0:
+                continue
+            bx0, bx1, by0, by1 = xs.min() + ox, xs.max() + ox, ys.min() + oy, ys.max() + oy
+            if (bx1 - bx0) > 1.1 * (by1 - by0):
+                mid = (bx0 + bx1) // 2
+                boxes = [(bx0, by0, mid, by1), (mid, by0, bx1, by1)]
+            else:
+                boxes = [(bx0, by0, bx1, by1)]
+            for b in boxes:  # a SAM box hugs the pocket, a little wider than the tablet
+                cx, cy, w, h = (b[0] + b[2]) / 2, (b[1] + b[3]) / 2, (b[2] - b[0]) * 1.3, (b[3] - b[1]) * 1.3
+                out.append(SamObject(len(out), (int(cx - w / 2), int(cy - h / 2), int(cx + w / 2), int(cy + h / 2)), 0.9, None))
+        return out
+
+
+NEW3 = ["double_tablet", "wrong_tablet", "tablet_spot"]
+
+
+def test_selftest_catches_and_names_new_kinds(tmp_path):
+    cl = dict(CHECKLIST, reject_if=NEW3)
+    approve(cl, "Priya", tmp_path / "checklists.jsonl")
+    st = Station(tmp_path, client=ImageSam(), clock=lambda: T0)
+    st.teach([make_strip(seed=i, shift=(i, 0)) for i in range(6)])
+    assert st.profile is not None
+    r = st.self_test(make_strip(seed=12), rng_seed=5)
+    assert r["skipped"] == [] and r["passed"], r
+    got = {x["kind"]: x for x in r["results"]}
+    assert set(NEW3) <= set(got) and all(got[k]["caught"] and got[k]["named_right"] for k in NEW3), r
+
+
+def test_selftest_lists_skipped_kinds_without_profile(station):
+    st, _ = station
+    st.checklist = dict(st.checklist, reject_if=NEW3)
+    assert st.profile is None
+    r = st.self_test(make_strip(seed=12), rng_seed=5)
+    assert r["skipped"] == NEW3 and r["passed"], r
+    assert [x["kind"] for x in r["results"]] == ["empty_pocket"]
+    assert json.loads((st.dir / "selftests.jsonl").read_text().splitlines()[-1])["skipped"] == NEW3

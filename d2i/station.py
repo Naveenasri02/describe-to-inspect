@@ -13,7 +13,7 @@ from d2i import trace
 from d2i.checklist import current, rule_number
 from d2i.defects import paint
 from d2i.judge import Judge
-from d2i.measure import pocket_check, teach_profile
+from d2i.measure import features, pills_in, pocket_check, teach_profile
 from d2i.pockets import find_layout, template_from
 
 MEASURED = ("double_tablet", "wrong_tablet", "tablet_spot")  # decided by measure.py on SAM pill boxes
@@ -175,11 +175,16 @@ class Station:
         v.pocket_scores = self.judge.score_pockets(image, lay)
         listed, unlisted, measured = [], [], set()
         if lay.pills and self.profile:
+            usable = 0
             for i, pocket in enumerate(lay.pockets):
+                mine = pills_in(pocket, lay.pills)
+                usable += len(mine) > 1 or (len(mine) == 1 and features(image, pocket, mine[0]) is not None)
                 kind = pocket_check(image, pocket, lay.pills, self.profile)
                 if kind:
                     self._find(kind, listed, unlisted, i)
                     measured.add(i)
+            if not usable:
+                v.skipped.append("tablet measurements")
         else:
             v.skipped.append("tablet measurements")
         failing = [i for i, s in enumerate(v.pocket_scores) if s > self.judge.pocket_threshold and i not in measured]
@@ -219,7 +224,7 @@ class Station:
         cl = self.checklist
         rng = np.random.default_rng(rng_seed)
         lay = find_layout(good_image, cl, self.client, self._template)
-        results = []
+        results, skipped = [], []
         if lay.ok:
             per = cl["per_row"]
             edge = [i for i in range(len(lay.pockets))
@@ -227,6 +232,7 @@ class Station:
             measuring = bool(lay.pills and self.profile)
             for kind in cl["reject_if"] + ([] if "empty_pocket" in cl["reject_if"] else ["empty_pocket"]):  # Rule 1
                 if kind in MEASURED and not measuring:  # no SAM pills or no profile: it cannot be seen, so it is skipped
+                    skipped.append(kind)
                     continue
                 # shortcut: wrong_tablet self-test changes size only (SAM may miss recoloured pills); the colour path is covered by unit tests
                 p = int(rng.choice(edge if kind == "foil_damage" else len(lay.pockets)))
@@ -238,7 +244,7 @@ class Station:
         if not good_passed:
             failed.append("good strip not passed")
         out = {"passed": not failed, "results": results, "good_passed": good_passed, "failed": failed,
-               "strip_found": lay.ok}
+               "strip_found": lay.ok, "skipped": skipped}
         if record is True or (record == "failures" and failed and lay.ok):
             _append(self.dir / "selftests.jsonl", dict(out, time=self.clock(), at=self._now(),
                                                        checklist_version=cl["version"], taught_at=self.taught_at))

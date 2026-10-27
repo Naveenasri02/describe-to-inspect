@@ -84,3 +84,10 @@ def test_normal_pill_is_none():
 def test_no_pill_is_none():
     assert pocket_check(foil(), POCKET, [], profile()) is None
     assert pills_in(POCKET, [(200, 200, 220, 220)]) == []
+
+
+def test_features_degenerate_box_returns_none():
+    img, _ = one()
+    assert features(img, POCKET, (200, 200, 230, 230)) is None   # outside the image
+    assert features(img, POCKET, (50, 70, 90, 70)) is None       # zero height
+    assert pocket_check(img, POCKET, [(200, 200, 230, 230)], profile()) is None

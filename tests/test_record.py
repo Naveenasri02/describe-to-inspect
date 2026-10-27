@@ -192,3 +192,9 @@ def test_totals_list_checks_not_run():
     from d2i.record import _totals_section
     html = _totals_section([{"status": "PASS", "skipped": ["tablet measurements"]}, {"status": "PASS"}])
     assert "Not checked" in html and "tablet measurements</td><td>1<" in html
+
+
+def test_selftest_section_lists_uncovered_kinds():
+    from d2i.record import _selftest_section
+    t = {"at": "x", "results": [], "passed": True, "skipped": ["double_tablet"]}
+    assert "did not cover: double_tablet" in _selftest_section([t])

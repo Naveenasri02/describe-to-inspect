@@ -17,11 +17,17 @@ def _centre(image, pill, frac):
     return image[max(0, int(y0 + dy)):max(1, int(y1 - dy)), max(0, int(x0 + dx)):max(1, int(x1 - dx))]
 
 
-def features(image, pocket, pill) -> dict:
+def features(image, pocket, pill) -> dict | None:
+    """None when the box cannot be measured (zero size, or outside the image)."""
     kw, kh = pocket[2] - pocket[0], pocket[3] - pocket[1]
     pw, ph = pill[2] - pill[0], pill[3] - pill[1]
-    lab = _lab(_centre(image, pill, 0.5)).reshape(-1, 3).mean(0)
-    ell = _lab(_centre(image, pill, 0.7))[..., 0]
+    if min(kw, kh, pw, ph) <= 0:
+        return None
+    core, wide = _centre(image, pill, 0.5), _centre(image, pill, 0.7)
+    if core.size == 0 or wide.size == 0:
+        return None
+    lab = _lab(core).reshape(-1, 3).mean(0)
+    ell = _lab(wide)[..., 0]
     return {"size": float(np.sqrt((pw / kw) * (ph / kh))), "aspect": pw / ph, "area": (pw * ph) / (kw * kh),
             "lab": [float(v) for v in lab], "spot": float((ell < np.median(ell) - 35).mean())}
 
@@ -33,6 +39,7 @@ def _delta_e(a, b) -> float:
 def teach_profile(images, layouts) -> dict | None:
     fs = [features(im, pk, pills_in(pk, lay.pills)[0]) for im, lay in zip(images, layouts)
           for pk in lay.pockets if len(pills_in(pk, lay.pills)) == 1]
+    fs = [f for f in fs if f]
     if len(fs) < 5:
         return None
     col = lambda k: np.array([f[k] for f in fs])
@@ -53,6 +60,8 @@ def pocket_check(image, pocket, pills, profile) -> str | None:
     if len(mine) >= 2:
         return "double_tablet"
     f = features(image, pocket, mine[0])
+    if f is None:
+        return None
     if f["area"] >= 1.7 * profile["area_med"]:
         return "double_tablet"
     if (abs(f["size"] - profile["size_med"]) > profile["size_tol"]

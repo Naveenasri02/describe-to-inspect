@@ -82,6 +82,9 @@ def _selftest_section(tests: list[dict]) -> str:
              ", ".join(f"{r['kind']}: caught {'yes' if r['caught'] else 'no'}, named {'yes' if r['named_right'] else 'no'}"
                        for r in t["results"]) or "none",
              "PASS" if t["passed"] else "FAIL", "no" if t["passed"] else "yes"] for t in tests]
+    for row, t in zip(rows, tests):
+        if t.get("skipped"):
+            row[3] += " (did not cover: " + ", ".join(t["skipped"]) + ")"
     return "<h2>Self-tests</h2>" + _table(["Time", "Kinds", "Caught / named", "Result", "Station locked?"], rows)
 
 
