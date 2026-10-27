@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 import app as app_mod
 from d2i.audit import Users
 from d2i.checklist import approve
+from d2i.plc import Plc
 from tests.conftest import make_strip
 from tests.test_station import CHECKLIST
 
@@ -262,6 +263,23 @@ def test_hold_endpoint_holds_line(tmp_path):
     assert plc.held is True and c.get("/status").json()["held"] is True
     rows = [json.loads(l) for l in (p / "audit.jsonl").read_text(encoding="utf-8").splitlines()]
     assert rows[-1]["action"] == "hold_line" and rows[-1]["reason"] == "operator voice command"
+
+
+def up(img):
+    return {"image": ("a.jpg", jpg(img), "image/jpeg")}
+
+
+def test_held_line_turns_pass_into_hold(tmp_path):
+    plc = Plc(host="127.0.0.1", port=0)
+    c, p = bench(tmp_path, plc=plc)
+    good = make_strip(seed=15, shift=(2, 1))
+    assert c.post("/inspect", files=up(good)).json()["status"] == "PASS" and plc.regs[0] == 1
+    c.post("/hold", json={})
+    v = c.post("/inspect", files=up(good)).json()
+    assert v["status"] == "HOLD" and [r["text"] for r in v["reasons"]] == ["Line held — QA must resume"]
+    assert json.loads((p / "log.jsonl").read_text(encoding="utf-8").splitlines()[-1])["status"] == "HOLD"
+    assert plc.regs[0] == 1 and plc.regs[2] == 1 and c.get("/status").json()["counts"] == {"PASS": 1, "HOLD": 1}
+    assert c.post("/inspect", files=up(make_strip(missing=(0,), seed=13))).json()["status"] == "REJECT"
 
 
 class VoiceClient:

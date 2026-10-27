@@ -21,6 +21,7 @@ TEXT = {
     "broken_tablet": "pocket {n} has a broken {item}",
     "foil_damage": "foil is damaged",
 }
+LINE_HELD = "Line held — QA must resume"
 
 
 @dataclass
@@ -173,12 +174,19 @@ class Station:
         v.status = "REJECT" if listed else "HOLD" if unlisted else "PASS"
         return v
 
-    def inspect(self, image, strip_id=None, image_name=None) -> Verdict:
+    def inspect(self, image, strip_id=None, image_name=None, held: bool = False) -> Verdict:
         if self.locked:
             v = Verdict("LOCKED", [{"rule": None, "check": "locked", "pocket": None, "text": self.lock_reason}],
                         strip_id=strip_id, image_name=image_name, at=self._now())
         else:
             v = self._judge(image, strip_id, image_name)
+        return self.log(v, held)
+
+    def log(self, v: Verdict, held: bool = False) -> Verdict:
+        """Append one verdict to log.jsonl. held: the line is held, so a PASS is logged (and returned) as HOLD."""
+        if held and v.status == "PASS":
+            v.status, v.reasons = "HOLD", [{"rule": None, "check": "line_held", "pocket": None, "text": LINE_HELD}]
+        v.at = v.at or self._now()
         _append(self.dir / "log.jsonl", dict(asdict(v), checklist_version=self.checklist["version"]))
         return v
 

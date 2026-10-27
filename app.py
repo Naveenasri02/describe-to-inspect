@@ -282,7 +282,7 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
             if im is None:
                 return {"error": "No image."}
             with lock:  # inspect and publish together so verdicts land in order
-                v = st.inspect(im)
+                v = st.inspect(im, held=held_now())
                 with meta:
                     state["last"] = asdict(v)
                 if plc:
