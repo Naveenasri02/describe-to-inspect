@@ -14,3 +14,8 @@ def test_match_tamil():
 
 def test_no_match_returns_none():
     assert match("good morning") is None and match("") is None
+
+
+def test_whole_words_only():
+    assert match("the teacher is here") is None and match("inspection report later") == "record"
+    assert match("teach this strip") == "teach" and match("self-test, please") == "self_test"
