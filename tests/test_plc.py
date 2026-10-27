@@ -41,3 +41,20 @@ def test_modbus_read_after_reject():
         assert _regs(plc.port) == [0, 1, 1, 2]
     finally:
         plc.stop()
+
+
+def test_stop_closes_open_connections():
+    plc = Plc(host="127.0.0.1", port=0)
+    plc.start()
+    s = socket.create_connection(("127.0.0.1", plc.port), timeout=1)
+    try:
+        s.sendall(struct.pack(">HHHB", 1, 0, 6, 1) + struct.pack(">BHH", 1, 0, 3))
+        assert len(s.recv(64)) > 0
+        plc.stop()
+        try:
+            s.sendall(struct.pack(">HHHB", 2, 0, 6, 1) + struct.pack(">BHH", 1, 0, 3))
+            assert s.recv(64) == b""
+        except OSError:
+            pass
+    finally:
+        s.close()

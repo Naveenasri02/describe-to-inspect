@@ -1,4 +1,5 @@
 """Modbus TCP outputs for the packing machine's PLC (read-only FC1 and FC3)."""
+import socket
 import socketserver
 import struct
 import threading
@@ -10,6 +11,8 @@ PULSE_S = 0.5
 class _Handler(socketserver.BaseRequestHandler):
     def handle(self):
         plc = self.server.plc
+        with plc._lock:
+            plc._conns.add(self.request)
         while True:
             head = self._read(7)
             if head is None:
@@ -20,7 +23,11 @@ class _Handler(socketserver.BaseRequestHandler):
             pdu = self._read(length - 1)
             if pdu is None:
                 return
-            self.request.sendall(struct.pack(">HHHB", tid, 0, len(out := plc._answer(pdu)) + 1, unit) + out)
+            out = plc._answer(pdu)
+            try:
+                self.request.sendall(struct.pack(">HHHB", tid, 0, len(out) + 1, unit) + out)
+            except OSError:
+                return
 
     def _read(self, n):
         buf = b""
@@ -48,6 +55,8 @@ class Plc:
         self._locked = self._hold = False
         self.regs = [0, 0, 0, 0]
         self._server = None
+        self._thread = None
+        self._conns = set()
 
     @property
     def coils(self):
@@ -88,10 +97,20 @@ class Plc:
         self._server = _Server((self.host, self.port), _Handler)
         self._server.plc = self
         self.port = self._server.server_address[1]
-        threading.Thread(target=self._server.serve_forever, daemon=True).start()
+        self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
+        self._thread.start()
 
     def stop(self):
         if self._server:
             self._server.shutdown()
             self._server.server_close()
+            self._thread.join()
+            with self._lock:
+                conns, self._conns = list(self._conns), set()
+            for c in conns:
+                try:
+                    c.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
+                c.close()
             self._server = None
