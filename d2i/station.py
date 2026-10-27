@@ -182,8 +182,10 @@ class Station:
         _append(self.dir / "log.jsonl", dict(asdict(v), checklist_version=self.checklist["version"]))
         return v
 
-    def self_test(self, good_image, rng_seed: int | None = None, record: bool = True) -> dict:
-        """record=False: a diagnostic run that writes nothing and so never changes the lock."""
+    def self_test(self, good_image, rng_seed: int | None = None, record: bool | str = True) -> dict:
+        """record=False: a diagnostic run that writes nothing. record="failures": a failed run is written like any
+        failed self-test (it locks and opens quarantine), a pass never is (so it cannot unlock), and with no strip
+        in view nothing is written."""
         cl = self.checklist
         rng = np.random.default_rng(rng_seed)
         lay = find_layout(good_image, cl, self.client, self._template)
@@ -201,8 +203,9 @@ class Station:
         failed = [r["kind"] for r in results if not (r["caught"] and r["named_right"])]
         if not good_passed:
             failed.append("good strip not passed")
-        out = {"passed": not failed, "results": results, "good_passed": good_passed, "failed": failed}
-        if record:
+        out = {"passed": not failed, "results": results, "good_passed": good_passed, "failed": failed,
+               "strip_found": lay.ok}
+        if record is True or (record == "failures" and failed and lay.ok):
             _append(self.dir / "selftests.jsonl", dict(out, time=self.clock(), at=self._now(),
                                                        checklist_version=cl["version"], taught_at=self.taught_at))
         return out

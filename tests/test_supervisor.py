@@ -227,12 +227,36 @@ def test_approve_requires_qa_password(bench):
     assert bench.audit.entries()[-1]["details"]["approved_by"] == "qa1"
 
 
-def test_agent_self_test_does_not_record_or_unlock(bench):
+def test_agent_self_test_pass_does_not_record_or_unlock(bench):
     chat = ScriptedChat(calls(("run_self_test", {})), say("Self-test looks fine."))
     out = supervisor(bench, chat, make_strip(seed=12)).investigate("shift start")
     assert out["steps"][0]["result"] == {"passed": True, "missed": [],
                                          "note": "diagnostic only — does not unlock the station"}
     assert not (bench.st.dir / "selftests.jsonl").exists() and bench.st.lock_reason == "No self-test this shift"
+    assert bench.st.self_test(make_strip(seed=12), rng_seed=5)["passed"]  # a person unlocks it
+    supervisor(bench, ScriptedChat(calls(("run_self_test", {})), say("Fine.")), make_strip(seed=12)).investigate("x")
+    assert len((bench.st.dir / "selftests.jsonl").read_text().splitlines()) == 1 and not bench.st.locked
+
+
+def test_agent_self_test_miss_locks_and_opens_quarantine(bench, monkeypatch):
+    from d2i.audit import quarantine_list
+    assert bench.st.self_test(make_strip(seed=12), rng_seed=5)["passed"] and not bench.st.locked
+    monkeypatch.setattr(bench.st.judge, "pocket_threshold", 10.0)  # blind judge: every painted defect is missed
+    monkeypatch.setattr(bench.st.judge, "border_threshold", 10.0)
+    chat = ScriptedChat(calls(("run_self_test", {})), say("Self-test missed."))
+    res = supervisor(bench, chat, make_strip(seed=12)).investigate("rejects fell")["steps"][0]["result"]
+    assert res["passed"] is False and "empty_pocket" in res["missed"]
+    rows = [json.loads(x) for x in (bench.st.dir / "selftests.jsonl").read_text().splitlines()]
+    assert len(rows) == 2 and rows[-1]["passed"] is False
+    assert bench.st.locked and bench.st.lock_reason.startswith("Self-test missed: ")
+    assert quarantine_list(bench.st.dir, bench.audit)["failed_at"] == rows[-1]["at"]
+
+
+def test_agent_self_test_without_strip_records_nothing(bench):
+    chat = ScriptedChat(calls(("run_self_test", {})), say("No strip."))
+    out = supervisor(bench, chat, np.full((360, 640, 3), 128, np.uint8)).investigate("x")
+    assert out["steps"][0]["result"] == "no good strip under the camera"
+    assert not (bench.st.dir / "selftests.jsonl").exists()
 
 
 def test_malformed_tool_call_holds_and_calls_qa(bench):

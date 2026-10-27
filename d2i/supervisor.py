@@ -169,8 +169,12 @@ class Supervisor:
         return dict(camera_shift(lay, self.ref_box), note=lay.note)
 
     def _self_test(self):
-        r = self.station.self_test(self.get_frame(), record=False)  # the operator has placed a known-good strip
-        return {"passed": r["passed"], "missed": r["failed"], "note": "diagnostic only — does not unlock the station"}
+        r = self.station.self_test(self.get_frame(), record="failures")  # the operator has placed a known-good strip
+        if not r["strip_found"]:
+            return "no good strip under the camera"
+        note = ("diagnostic only — does not unlock the station" if r["passed"]
+                else "recorded as a failed self-test — station locked, quarantine open")
+        return {"passed": r["passed"], "missed": r["failed"], "note": note}
 
     def _reject_stats(self, window):
         rows = _lines(self.station.dir / "log.jsonl")[-max(1, int(window)):]
