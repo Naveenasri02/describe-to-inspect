@@ -140,7 +140,7 @@ class Station:
                 "text": f"{where} looks unusual — check by hand"}
 
     def _find(self, check, listed, unlisted, pocket=None):
-        if check in self.checklist["reject_if"]:
+        if check in self.checklist["reject_if"] or check == "empty_pocket":  # empty = Rule 1, always a reject
             listed.append(self._reason(check, pocket))
         else:
             unlisted.append(self._unlisted(pocket))
@@ -205,7 +205,7 @@ class Station:
             per = cl["per_row"]
             edge = [i for i in range(len(lay.pockets))
                     if i // per in (0, cl["rows"] - 1) or i % per in (0, per - 1)]
-            for kind in cl["reject_if"]:
+            for kind in cl["reject_if"] + ([] if "empty_pocket" in cl["reject_if"] else ["empty_pocket"]):  # Rule 1
                 p = int(rng.choice(edge if kind == "foil_damage" else len(lay.pockets)))
                 v = self._judge(paint(good_image, lay.pockets[p], kind, lay.strip_box, rng), None, None)
                 results.append({"kind": kind, "pocket": p + 1, "caught": v.status == "REJECT",

@@ -54,7 +54,9 @@ def make_checklist(sentence: str, client) -> dict:
 
 
 def rule_number(cl: dict, check: str) -> int:
-    return 1 if check == "count" else cl["reject_if"].index(check) + 2
+    if check == "count" or (check == "empty_pocket" and check not in cl["reject_if"]):
+        return 1  # an empty pocket always breaks Rule 1 (the count), listed or not
+    return cl["reject_if"].index(check) + 2
 
 
 def _lines(path: Path) -> list[dict]:

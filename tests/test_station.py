@@ -111,8 +111,19 @@ def test_unlisted_defect_is_held_not_passed(station):
     st, _ = station
     st.self_test(make_strip(seed=12), rng_seed=5)
     st.checklist = dict(st.checklist, reject_if=["foil_damage"])
+    v = st.inspect(make_strip(seed=14, cracked=(2,)))
+    assert v.status == "HOLD" and v.reasons[0] == {"rule": None, "check": "unlisted_anomaly", "pocket": 3,
+                                                   "text": "Pocket 3 looks unusual — check by hand"}
+
+
+def test_empty_pocket_always_breaks_rule_1(station):
+    st, _ = station
+    st.checklist = dict(st.checklist, reject_if=["broken_tablet"])
+    r = st.self_test(make_strip(seed=12), rng_seed=5)
+    assert [x["kind"] for x in r["results"]] == ["broken_tablet", "empty_pocket"] and r["passed"], r
     v = st.inspect(make_strip(seed=17, missing=(1,)))
-    assert v.status == "HOLD" and v.reasons[0]["pocket"] == 2
+    assert v.status == "REJECT"
+    assert {"rule": 1, "check": "empty_pocket", "pocket": 2, "text": "Rule 1 failed: pocket 2 is empty"} in v.reasons
 
 
 def test_broken_judge_fails_self_test_and_locks(station, monkeypatch):
