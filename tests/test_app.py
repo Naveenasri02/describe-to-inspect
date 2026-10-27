@@ -1,4 +1,7 @@
+import hashlib
 import json
+import re
+import threading
 import time
 
 import cv2
@@ -126,7 +129,8 @@ def test_release_requires_qa_login(tmp_path):
     assert c.post("/release", json={"password": "bad", "reason": "x"}).json()["error"]
     assert c.post("/release", json={"password": "pw-qa", "reason": "strips re-checked"}).json()["action"] == "release_quarantine"
     assert c.post("/challenge", json={"strip_label": "C-1", "ejected": True}).json()["user"] == "qa1"
-    assert c.post("/sign", json={"password": "pw-qa"}).json()["signed_by"] == "qa1"
+    rid = c.get("/record").headers["X-Record-Id"]
+    assert c.post("/sign", json={"password": "pw-qa", "record_id": rid}).json()["signed_by"] == "qa1"
 
 
 def test_trace_endpoint_lists_events(tmp_path):
@@ -186,3 +190,59 @@ def test_status_shows_held(tmp_path):
     c = TestClient(app_mod.create_app(tmp_path, None))
     s = c.get("/status").json()
     assert s["held"] is True and s["state"] == "HOLD" and s["quarantine_count"] == 0
+
+
+def test_sign_signs_the_record_that_was_viewed(tmp_path):
+    c, p = bench(tmp_path)
+    login(c, "qa1", "pw-qa")
+    r = c.get("/record")
+    rid, shown = r.headers["X-Record-Id"], re.search(r"SHA-256 of the record above: (\w{64})", r.text).group(1)
+    with (p / "log.jsonl").open("a", encoding="utf-8") as f:  # the log changes after QA opened the record
+        f.write(json.dumps({"status": "REJECT", "reasons": [], "time": time.time()}) + "\n")
+    signed = c.post("/sign", json={"password": "pw-qa", "record_id": rid}).json()
+    assert signed["record_sha256"] == shown
+    assert c.post("/sign", json={"password": "pw-qa", "record_id": "nope"}).json()["error"].startswith("Record expired")
+
+
+class GateChat(ScriptChat):
+    def __init__(self, *replies):
+        super().__init__(*replies)
+        self.gate = threading.Event()
+
+    def complete(self, messages, tools):
+        assert self.gate.wait(10)
+        return super().complete(messages, tools)
+
+
+def test_second_investigate_while_running_returns_error(tmp_path):
+    chat = GateChat({"content": "Done."})
+    c, p = bench(tmp_path, chat)
+    assert c.post("/investigate", json={}).json()["id"]
+    assert c.post("/investigate", json={}).json() == {"error": "an investigation is already running"}
+    chat.gate.set()
+    assert wait_done(c)["result"]["conclusion"] == "Done."
+
+
+def test_answer_to_closed_question_is_rejected(tmp_path):
+    chat = ScriptChat(call("ask_operator", {"question": "Did the lamp move?"}), {"content": "Noted."})
+    c, p = bench(tmp_path, chat)
+    assert c.post("/ask-operator-answer", json={"id": "x", "answer": "late"}).json()["error"] == "That question is closed"
+    c.post("/investigate", json={})
+    for _ in range(100):
+        q = c.get("/investigation").json()["question"]
+        if q:
+            break
+        time.sleep(0.05)
+    assert q["text"] == "Did the lamp move?"
+    assert c.post("/ask-operator-answer", json={"id": "wrong", "answer": "no"}).json()["error"] == "That question is closed"
+    assert c.post("/ask-operator-answer", json={"id": q["id"], "answer": "yes"}).json() == {"ok": True}
+    steps = wait_done(c)["steps"]
+    assert steps[0]["result"] == "yes"
+    assert c.post("/ask-operator-answer", json={"id": q["id"], "answer": "again"}).json()["error"] == "That question is closed"
+
+
+def test_status_flags_unreadable_quarantine(tmp_path, monkeypatch):
+    c = TestClient(app_mod.create_app(tmp_path, None))
+    monkeypatch.setattr(app_mod, "quarantine_list", lambda *a, **k: 1 / 0)
+    s = c.get("/status").json()
+    assert s["quarantine_count"] is None and s["quarantine_error"] is True

@@ -87,8 +87,11 @@ async function inspectNow(){show("Working...");const v=await (await fetch("/insp
 async function describe(){show("Working...");const r=await j("/describe",{text:$("text").value});shown(r)}
 function shown(r){if(r.error)return show(r);if(r.transcript)$("text").value=r.transcript;show("Check the rules, then Approve.")}
 async function approve(){show(await j("/approve",{by:$("by").value}))}
-function rec(){const q=new URLSearchParams({batch:$("batch").value,operator:$("op").value});window.open("/record?"+q)}
-async function ask(){const r=await j("/ask",{question:$("q").value});show(r.error?r:r.answer)}
+let recId="";
+async function rec(){const q=new URLSearchParams({batch:$("batch").value,operator:$("op").value});
+  const r=await fetch("/record?"+q);recId=r.headers.get("X-Record-Id")||"";
+  window.open(URL.createObjectURL(new Blob([await r.text()],{type:"text/html"})))}
+async function ask(){const r=await j("/ask",{question:$("q").value});show(r.error?r:r.answer+"\n(written by the model — check before acting)")}
 async function refresh(){
   const s=await (await fetch("/status")).json();
   $("banner").style.background=col[s.state]||"#888";
@@ -99,7 +102,7 @@ async function refresh(){
   $("pending").textContent=s.pending?"Waiting for approval":"";
   $("who").textContent=s.user?s.user.name+" ("+s.user.role+")":"";
   $("loginbox").hidden=!!s.user;$("logoutbtn").hidden=!s.user;
-  quarantine(s.quarantine_count);traceRows();invRefresh();
+  quarantine(s.quarantine_count,s.quarantine_error);traceRows();invRefresh();
 }
 const mk=(tag,text,cls)=>{const e=document.createElement(tag);e.textContent=text;if(cls)e.className=cls;return e};
 const MODEL_NOTE="written by the model — check before acting";
@@ -107,9 +110,10 @@ async function login(){show(await j("/login",{name:$("ln").value,password:$("lp"
 async function logout(){await j("/logout");refresh()}
 async function challenge(){show(await j("/challenge",{strip_label:$("cl").value,ejected:$("ce").checked}))}
 async function release(){show(await j("/release",{password:$("rp").value,reason:$("rr").value}));$("rp").value=""}
-async function sign(){const r=await j("/sign",{password:$("sp").value,batch:$("batch").value,operator:$("op").value});$("sp").value="";show(r)}
-async function quarantine(n){
-  $("qbanner").hidden=!n;if(!n)return;
+async function sign(){const r=await j("/sign",{password:$("sp").value,record_id:recId});$("sp").value="";show(r)}
+async function quarantine(n,err){
+  $("qbanner").hidden=!n&&!err;if(err){$("qtext").textContent="Quarantine status unknown — check the record";$("qlist").replaceChildren();return}
+  if(!n)return;
   $("qtext").textContent="Quarantine: "+n+" strips since the last passed self-test — QA release needed";
   const q=await (await fetch("/quarantine")).json(),ul=$("qlist");ul.replaceChildren();
   (q.strips||[]).slice(-10).forEach(v=>ul.appendChild(mk("li",(v.at||"")+" "+v.status)));
@@ -120,16 +124,16 @@ async function traceRows(){
     [e.model+" — "+e.platform,e.job+(e.ok?"":" (failed)"),e.ms,(e.usd||0).toFixed(4)].forEach(t=>tr.appendChild(mk("td",t)));tb.appendChild(tr)});
 }
 async function investigate(){const r=await j("/investigate",{trigger:$("trig").value});if(r.error)show(r);invRefresh()}
-async function answer(){show(await j("/ask-operator-answer",{answer:$("ans").value}));$("ans").value=""}
+async function answer(){show(await j("/ask-operator-answer",{id:qId,answer:$("ans").value}));$("ans").value=""}
 async function approveReq(id,pw){show(await j("/approve-request",{id:id,password:pw.value}));pw.value=""}
 async function resumeLine(){show(await j("/resume",{password:$("rsp").value,reason:$("rsr").value}));$("rsp").value=""}
-let reqSig="";
+let reqSig="",qId="";
 async function invRefresh(){
   const i=await (await fetch("/investigation")).json();
   $("invstate").textContent=i.running?"Investigating...":(i.result?(i.result.error||"Done"):"");
   const ol=$("steps");ol.replaceChildren();
   i.steps.forEach(t=>ol.appendChild(mk("li",t.tool+" "+JSON.stringify(t.args)+" → "+JSON.stringify(t.result).slice(0,160))));
-  $("askbox").hidden=!i.question;if(i.question)$("askq").textContent=i.question;
+  $("askbox").hidden=!i.question;if(i.question){qId=i.question.id;$("askq").textContent=i.question.text}
   const c=$("concl");c.replaceChildren();
   if(i.result&&i.result.conclusion){c.appendChild(mk("div",i.result.conclusion));c.appendChild(mk("div",MODEL_NOTE,"model"))}
   const r=$("reqs"),sig=JSON.stringify(i.pending);if(sig===reqSig)return;reqSig=sig;r.replaceChildren();  // keep a typed password while polling

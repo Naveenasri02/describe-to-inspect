@@ -274,3 +274,19 @@ def test_hold_survives_restart(bench):
     supervisor(bench, ScriptedChat(), make_strip(seed=12))
     assert bench.plc.coils[2] is False
     assert json.loads((bench.st.dir / "hold.json").read_text(encoding="utf-8"))["by"] == "qa1"
+
+
+def test_supervisor_tool_lock_is_used(bench):
+    class Rec:
+        n = 0
+
+        def __enter__(self):
+            Rec.n += 1
+
+        def __exit__(self, *a):
+            return False
+    chat = ScriptedChat(calls(("image_health", {}), ("reject_stats", {"window": 5})), say("Fine."))
+    sup = Supervisor(bench.st, bench.plc, bench.audit, chat, lambda q: "no", baseline_from(GOOD), STRIP_BOX,
+                     lambda: make_strip(seed=12), bench.good, tool_lock=Rec())
+    sup.investigate("check")
+    assert Rec.n == 2 and [s["tool"] for s in sup.steps] == ["image_health", "reject_stats"]

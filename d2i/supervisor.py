@@ -5,6 +5,7 @@ release are only requests until a QA person approves them with their password (`
 """
 import json
 import uuid
+from contextlib import nullcontext
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
@@ -77,10 +78,12 @@ def camera_shift(layout, ref_box) -> dict:
 
 
 class Supervisor:
-    def __init__(self, station, plc, audit, chat, ask_operator, baseline, ref_box, get_frame, good_dir):
+    def __init__(self, station, plc, audit, chat, ask_operator, baseline, ref_box, get_frame, good_dir,
+                 tool_lock=None):
         self.station, self.plc, self.audit, self.chat = station, plc, audit, chat
         self.ask, self.baseline, self.ref_box = ask_operator, baseline, ref_box
         self.get_frame, self.good_dir = get_frame, Path(good_dir)
+        self.tool_lock = tool_lock  # any context manager; held around each tool call except ask_operator (it waits)
         self.pending = {}  # request id -> request, until QA approves it
         self._trigger, self._steps, self._new = "", [], []
         self._hold_file = self.station.dir / "hold.json"
@@ -105,6 +108,10 @@ class Supervisor:
             "request_release_quarantine": lambda reason: self._request("release_quarantine", reason),
             "draft_deviation": self._draft,
         }
+
+    @property
+    def steps(self) -> list:
+        return list(self._steps)
 
     def investigate(self, trigger: str) -> dict:
         self._set_hold(True, "supervisor")  # held for the whole investigation; only QA releases it
@@ -149,7 +156,8 @@ class Supervisor:
         if name not in self._tools:
             return args, {"error": f"unknown tool {name!r}"}
         try:
-            return args, self._tools[name](**args)
+            with (nullcontext() if name == "ask_operator" or self.tool_lock is None else self.tool_lock):
+                return args, self._tools[name](**args)
         except Exception as e:
             return args, {"error": f"{type(e).__name__}: {e}"}
 

@@ -1,6 +1,7 @@
 """Bench web app: python app.py --source 0|<video>|<photo folder> --product blister --port 8000"""
 import argparse
 import html
+import hashlib
 import json
 import secrets
 import threading
@@ -73,14 +74,12 @@ class FrameSource:
             self.stop.wait(0.03)
 
 
+RECORD_EXPIRED = "Record expired — open it again before signing"
+
+
 class _NoPlc:  # no PLC attached (tests): the hold still lives in hold.json
     def set_hold(self, on):
         pass
-
-
-def _locked(lock, fn, kw):
-    with lock:
-        return fn(**kw)
 
 
 def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time, chat=None) -> FastAPI:
@@ -91,6 +90,9 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
     audit, users = AuditLog(product_dir / "audit.jsonl"), Users(product_dir.parent / "users.json")
     sessions = {}  # token -> (name, role); in memory, lost on restart
     inv = {"running": False, "question": None, "result": None, "answer": None, "event": threading.Event(), "sup": None}
+    sup_lock = threading.RLock()  # supervisor build/cache and the running flag, together
+    q_lock = threading.Lock()  # the open operator question, its answer and the Event, together
+    records = {}  # record id -> (html, sha256) of what /record served; last 20
     st = Station(product_dir, client=client, clock=clock)
     spend_path = product_dir / "meta_spend.json"
     src = FrameSource(source) if source is not None else None
@@ -125,9 +127,9 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
 
     def quarantine_count():
         try:
-            return len(quarantine_list(product_dir, audit)["strips"])
+            return len(quarantine_list(product_dir, audit)["strips"]), False
         except Exception:
-            return None
+            return None, True  # unknown is shown, never hidden
 
     def paid(fn):  # the screen never sees a 500: any failure becomes plain text
         try:
@@ -166,7 +168,7 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
             reason = st.lock_reason if cl else NO_CHECKLIST
         except Exception as ex:  # unreadable self-test log: stay locked
             locked, reason = True, f"Cannot read self-test log: {ex}"
-        held = held_now()
+        held, (qn, qerr) = held_now(), quarantine_count()
         if held:
             banner, text = "HOLD", "Line held by the Shift Supervisor — QA must resume." + (f" {reason}" if locked else "")
         elif locked:
@@ -179,7 +181,7 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
                 "checklist_version": cl and cl["version"], "spent_usd": spent,
                 "counts": counts, "last_verdict": last, "state": banner, "text": text,
                 "rules": cl["rules"] if cl else [], "pending": pending["rules"] if pending else None,
-                "held": held, "quarantine_count": quarantine_count(),
+                "held": held, "quarantine_count": qn, "quarantine_error": qerr,
                 "user": dict(zip(("name", "role"), who(request))) if request.cookies.get("d2i_session") in sessions else None}
 
     @app.post("/describe")
@@ -250,7 +252,10 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
             with lock:
                 out = {"taught": len(imgs), "skipped": skipped, "info": st.teach(imgs)}
                 audit.append("teach", who(request)[0], {"photos": len(imgs)})
-                return out
+            with sup_lock:
+                if not inv["running"]:
+                    inv["sup"] = None  # rebuilt from the new good photos at the next use
+            return out
         return paid(run)
 
     @app.post("/selftest")
@@ -291,7 +296,13 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
     @app.get("/record", response_class=HTMLResponse)
     def shift_record(batch: str = "", operator: str = "", hours: float = 8.0):
         try:
-            return make_record(batch, operator, hours)
+            body = make_record(batch, operator, hours)
+            sha, rid = hashlib.sha256(body.encode("utf-8")).hexdigest(), uuid.uuid4().hex[:8]
+            records[rid] = (body, sha)
+            while len(records) > 20:
+                records.pop(next(iter(records)))
+            note = f"<p>Record id: {rid} · SHA-256 of the record above: {sha}</p>"
+            return HTMLResponse(body.replace("</body>", note + "</body>"), headers={"X-Record-Id": rid})
         except Exception as ex:
             return f"<!doctype html><meta charset='utf-8'><p>The shift record could not be made: {html.escape(str(ex))}</p>"
 
@@ -342,8 +353,13 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
 
     @app.post("/sign")
     def sign(body: dict, request: Request):
-        return paid(lambda: sign_record(make_record(str(body.get("batch", "")), str(body.get("operator", "")), 8.0),
-                                        audit, users, qa(request), str(body.get("password", ""))))
+        def run():
+            name = qa(request)
+            rec = records.get(str(body.get("record_id", "")))
+            if rec is None:
+                return {"error": RECORD_EXPIRED}
+            return sign_record(rec[0], audit, users, name, str(body.get("password", "")))
+        return paid(run)
 
     @app.get("/trace")
     def trace_ep():
@@ -351,40 +367,41 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
 
     # --- Shift Supervisor: runs in a background thread; the screen polls /investigation ---
     def ask_operator(question):
-        inv["answer"] = None
-        inv["event"].clear()
-        inv["question"] = question
+        with q_lock:
+            qid = uuid.uuid4().hex[:8]
+            inv.update(question={"id": qid, "text": question}, answer=None)
+            inv["event"].clear()
         try:
             if not inv["event"].wait(ANSWER_WAIT):
                 raise TimeoutError("no answer")
-            return inv["answer"]
+            with q_lock:
+                return inv["answer"]
         finally:
-            inv["question"] = None
+            with q_lock:
+                inv["question"] = None
 
     def get_sup():
-        if inv["sup"] is None:
-            good = [im for im in (cv2.imread(str(p)) for p in sorted((product_dir / "good").glob("*.jpg")))
-                    if im is not None]
-            if not good or not st.checklist:
-                raise ValueError(NEED_TEACH)
-            boxes = [l.strip_box for l in (find_layout(im, st.checklist, None, st.template) for im in good) if l.ok]
-            if not boxes:
-                raise ValueError(NEED_TEACH)
-            sup = Supervisor(st, plc or _NoPlc(), audit, chat or ToolChat(Budget(spend_path)), ask_operator,
-                             baseline_from(good), tuple(float(v) for v in np.median(boxes, axis=0)),
-                             lambda: src.get() if src else None, product_dir / "good")
-            for name in ("camera_shift", "run_self_test", "compare_to_last_good"):  # station work never alongside /inspect
-                sup._tools[name] = (lambda fn: lambda **kw: _locked(lock, fn, kw))(sup._tools[name])
-            inv["sup"] = sup
-        return inv["sup"]
+        with sup_lock:
+            if inv["sup"] is None:
+                good = [im for im in (cv2.imread(str(p)) for p in sorted((product_dir / "good").glob("*.jpg")))
+                        if im is not None]
+                if not good or not st.checklist:
+                    raise ValueError(NEED_TEACH)
+                boxes = [l.strip_box for l in (find_layout(im, st.checklist, None, st.template) for im in good) if l.ok]
+                if not boxes:
+                    raise ValueError(NEED_TEACH)
+                inv["sup"] = Supervisor(st, plc or _NoPlc(), audit, chat or ToolChat(Budget(spend_path)), ask_operator,
+                                        baseline_from(good), tuple(float(v) for v in np.median(boxes, axis=0)),
+                                        lambda: src.get() if src else None, product_dir / "good", tool_lock=lock)
+            return inv["sup"]
 
     @app.post("/investigate")
     def investigate(body: dict):
         def run():
-            sup = get_sup()  # slow the first time: kept outside `meta`
-            with meta:
+            with sup_lock:  # build, check and set `running` as one step
                 if inv["running"]:
                     return {"error": "an investigation is already running"}
+                sup = get_sup()
                 inv.update(running=True, result=None)
 
             def work():
@@ -400,15 +417,17 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
     @app.get("/investigation")
     def investigation():
         sup = inv["sup"]
-        return {"running": inv["running"], "steps": list(sup._steps) if sup else [], "question": inv["question"],
+        return {"running": inv["running"], "steps": sup.steps if sup else [], "question": inv["question"],
                 "pending": list(sup.pending.values()) if sup else [], "result": inv["result"]}
 
     @app.post("/ask-operator-answer")
     def operator_answer(body: dict):
-        if inv["question"] is None:
-            return {"error": "The agent is not asking anything."}
-        inv["answer"] = str(body.get("answer", ""))
-        inv["event"].set()
+        with q_lock:
+            q = inv["question"]
+            if q is None or q["id"] != body.get("id"):
+                return {"error": "That question is closed"}
+            inv["answer"] = str(body.get("answer", ""))
+            inv["event"].set()
         return {"ok": True}
 
     @app.post("/approve-request")
