@@ -1,0 +1,16 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Stack light</title>
+<style>
+html,body{margin:0;height:100%;font-family:system-ui,sans-serif;color:#fff}
+#l{height:100%;display:flex;align-items:center;justify-content:center;font-size:12vw;font-weight:700;text-align:center;background:#888}
+</style></head><body><div id="l">...</div>
+<script>
+const col={READY:"#118a3a",REJECT:"#c4161c",LOCKED:"#c4161c",HOLD:"#e59a00"};
+async function tick(){
+  try{const s=await (await fetch("/status")).json();
+    const l=document.getElementById("l");l.style.background=col[s.state]||"#888";l.textContent=s.state;
+  }catch(e){}
+}
+tick();setInterval(tick,1000);
+</script></body></html>

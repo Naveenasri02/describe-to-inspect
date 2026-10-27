@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Describe-to-Inspect</title>
+<style>
+body{margin:0;font-family:system-ui,sans-serif;background:#f3f4f6;color:#111}
+header{padding:8px 16px;background:#1f2937;color:#fff}
+header small{opacity:.7;margin-left:12px}
+#banner{padding:24px;text-align:center;font-size:44px;font-weight:700;color:#fff;background:#888}
+#banner div{font-size:22px;font-weight:400;margin-top:6px}
+main{display:flex;flex-wrap:wrap;gap:16px;padding:16px}
+section{background:#fff;border-radius:8px;padding:12px;flex:1 1 360px}
+img#cam{width:100%;background:#000;min-height:200px}
+button,select,input,textarea{font:inherit;padding:8px 12px;margin:3px 0}
+button{cursor:pointer}
+textarea{width:100%;box-sizing:border-box}
+#msg{white-space:pre-wrap;margin-top:8px}
+.small{font-size:13px;color:#555}
+</style></head><body>
+<header>Describe-to-Inspect <small>Packaging-line QA bench</small></header>
+<div id="banner">...<div id="why"></div></div>
+<main>
+<section><img id="cam" src="/stream" alt="camera">
+  <div><button onclick="inspectNow()">Inspect strip</button>
+  <button title="Per-shift functional check — runs on top of the physical challenge strip" onclick="post('/selftest')">Self-test</button>
+  <button onclick="post('/teach',{capture:true})">Teach: save this strip</button>
+  <button onclick="post('/teach',{})">Teach from saved photos</button></div>
+  <div class="small">Spent: $<span id="spent">0</span> · Checklist v<span id="ver">-</span> · <span id="counts"></span></div>
+</section>
+<section>
+  <b>Rules for a good strip</b>
+  <ol id="rules"></ol>
+  <textarea id="text" rows="3" placeholder="Describe the good strip, e.g. ten tablets in two rows of five; reject empty or broken"></textarea>
+  <div><button onclick="describe()">Make checklist</button>
+  <select id="lang"><option>Auto</option><option>English</option><option>Tamil</option><option>Hindi</option></select>
+  <button id="rec" onclick="toggleRec()">Speak rule</button></div>
+  <div id="pending"></div>
+  <div><input id="by" placeholder="Approver name"><button onclick="approve()">Approve</button></div>
+  <div id="msg"></div>
+  <hr>
+  <input id="batch" placeholder="Batch"><input id="op" placeholder="Operator">
+  <a href="#" onclick="rec();return false">Shift record</a>
+  <div><input id="q" placeholder="Ask about the records"><button onclick="ask()">Ask</button></div>
+  <div class="small"><a href="/lamp" target="_blank">Stack-light page</a></div>
+</section>
+</main>
+<script>
+const $=id=>document.getElementById(id);
+const col={READY:"#118a3a",REJECT:"#c4161c",LOCKED:"#c4161c",HOLD:"#e59a00"};
+const show=o=>{$("msg").textContent=typeof o==="string"?o:(o.error||JSON.stringify(o,null,1));refresh()};
+async function j(url,body){const r=await fetch(url,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body||{})});return r.json()}
+async function post(url,b){show("Working...");show(await j(url,b))}
+async function inspectNow(){show("Working...");const v=await (await fetch("/inspect",{method:"POST"})).json();show(v.error?v:v.status+" "+(v.reasons||[]).map(r=>r.text).join("; "))}
+async function describe(){show("Working...");const r=await j("/describe",{text:$("text").value});shown(r)}
+function shown(r){if(r.error)return show(r);if(r.transcript)$("text").value=r.transcript;show("Check the rules, then Approve.")}
+async function approve(){show(await j("/approve",{by:$("by").value}))}
+function rec(){const q=new URLSearchParams({batch:$("batch").value,operator:$("op").value});window.open("/record?"+q)}
+async function ask(){const r=await j("/ask",{question:$("q").value});show(r.error?r:r.answer)}
+async function refresh(){
+  const s=await (await fetch("/status")).json();
+  $("banner").style.background=col[s.state]||"#888";
+  $("banner").firstChild.textContent=s.state;$("why").textContent=s.text;
+  $("spent").textContent=s.spent_usd.toFixed(2);$("ver").textContent=s.checklist_version??"-";
+  $("counts").textContent=Object.entries(s.counts).map(([k,v])=>k+" "+v).join(" · ");
+  $("rules").innerHTML="";(s.pending||s.rules).forEach(t=>{const li=document.createElement("li");li.textContent=t.replace(/^Rule \d+: /,"");$("rules").appendChild(li)});
+  $("pending").textContent=s.pending?"Waiting for approval":"";
+}
+// Speak rule: mono audio, downsampled to 16 kHz 16-bit PCM WAV
+let ctx,proc,chunks=[],recording=false;
+async function toggleRec(){
+  if(recording){recording=false;proc.disconnect();ctx.close();$("rec").textContent="Speak rule";return send(wav(chunks,ctx.sampleRate))}
+  const stream=await navigator.mediaDevices.getUserMedia({audio:true});
+  ctx=new AudioContext();chunks=[];
+  const srcN=ctx.createMediaStreamSource(stream);proc=ctx.createScriptProcessor(4096,1,1);
+  proc.onaudioprocess=e=>chunks.push(new Float32Array(e.inputBuffer.getChannelData(0)));
+  srcN.connect(proc);proc.connect(ctx.destination);recording=true;$("rec").textContent="Stop";
+}
+function wav(chunks,rate){
+  const n=chunks.reduce((a,c)=>a+c.length,0),all=new Float32Array(n);let o=0;chunks.forEach(c=>{all.set(c,o);o+=c.length});
+  const ratio=rate/16000,len=Math.floor(n/ratio),pcm=new DataView(new ArrayBuffer(44+len*2));
+  const w=(p,s)=>[...s].forEach((c,i)=>pcm.setUint8(p+i,c.charCodeAt(0)));
+  w(0,"RIFF");pcm.setUint32(4,36+len*2,true);w(8,"WAVEfmt ");pcm.setUint32(16,16,true);pcm.setUint16(20,1,true);pcm.setUint16(22,1,true);
+  pcm.setUint32(24,16000,true);pcm.setUint32(28,32000,true);pcm.setUint16(32,2,true);pcm.setUint16(34,16,true);w(36,"data");pcm.setUint32(40,len*2,true);
+  for(let i=0;i<len;i++){const s=Math.max(-1,Math.min(1,all[Math.floor(i*ratio)]));pcm.setInt16(44+i*2,s<0?s*0x8000:s*0x7fff,true)}
+  return new Blob([pcm],{type:"audio/wav"});
+}
+async function send(blob){
+  show("Working...");const f=new FormData();f.append("audio",blob,"rule.wav");
+  const l=$("lang").value;if(l!=="Auto")f.append("languages",l);
+  shown(await (await fetch("/describe",{method:"POST",body:f})).json());
+}
+refresh();setInterval(refresh,2000);
+</script></body></html>
