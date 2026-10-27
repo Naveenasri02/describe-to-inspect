@@ -88,18 +88,23 @@ class Batches:
         m, e = parse_month(mfg), parse_month(exp)
         if e <= m:
             raise ValueError("Expiry must be after the manufacturing month")
-        num = re.search(r"\d+(?:\.\d+)?|\.\d+", str(mrp))  # "Rs. 45" -> 45
-        price = float(num.group()) if num else 0.0
+        clean = re.sub(r"rs\.?|₹|/-|[\s,]", "", str(mrp), flags=re.I)  # "Rs. 1,250/-" -> 1250
+        price = float(clean) if re.fullmatch(r"\d+(\.\d+)?|\.\d+", clean) else 0.0
         if price <= 0:
-            raise ValueError("MRP must be a number above zero, e.g. 45")
+            raise ValueError("MRP must be one price, e.g. 24.50")
         cur = self.open
         if cur:
             raise ValueError(f"A batch is already open: {cur['batch']}")
+        if any(r["event"] == "start" and r["batch"] == no for r in self.rows):
+            raise ValueError(f"Batch no. {no} was already used")
         last = (self.clearances() or [None])[-1]
         if last is None:
             raise ValueError("Run line clearance first")
         if not last["clear"]:
             raise ValueError("The last line clearance was not clear — clear the table and run it again")
+        ends = [r["time"] for r in self.rows if r["event"] == "end"]
+        if ends and last["time"] <= ends[-1]:  # one clearance per batch
+            raise ValueError("Run line clearance again for this batch")
         if now - last["time"] > CLEARANCE_MAX_AGE_S:
             raise ValueError("Line clearance is older than 30 minutes — run it again")
         return self._write("batches.jsonl", {"event": "start", "batch": no, "mfg": "%02d/%d" % (m[1], m[0]),

@@ -57,6 +57,7 @@ def test_one_batch_at_a_time(tmp_path):
         b.start("B2", "01/2026", "01/2028", "45", "qa1", 1061.0)
     b.end("qa1", 1100.0)
     assert b.open is None
+    b.clearance({"clear": True, "found": []}, "qa1", 1150.0)  # one clearance per batch
     b.start("B2", "01/2026", "01/2028", "45", "qa1", 1200.0)
     assert b.open["batch"] == "B2" and len(b.rows) == 3
 
@@ -98,3 +99,38 @@ def test_clearance_without_client_refuses():
     for c in (None, Down()):
         with pytest.raises(ValueError, match="Line clearance needs SAM 3.1"):
             line_clearance(None, c)
+
+
+@pytest.mark.parametrize("raw,want", [("1,250", "1250.00"), ("Rs. 45", "45.00"), ("₹ 24.50", "24.50"), ("45/-", "45.00")])
+def test_mrp_thousands_and_symbols(tmp_path, raw, want):
+    assert clear_batches(tmp_path).start("B1", "01/2026", "01/2028", raw, "qa1", 1060.0)["mrp"] == want
+
+
+@pytest.mark.parametrize("raw", ["45-50", "abc", "0", "4 5 x", "1.2.3"])
+def test_mrp_refuses_ranges_and_text(tmp_path, raw):
+    with pytest.raises(ValueError, match="MRP must be one price, e.g. 24.50"):
+        clear_batches(tmp_path).start("B1", "01/2026", "01/2028", raw, "qa1", 1060.0)
+
+
+def test_clearance_age_exactly_1800_accepted(tmp_path):
+    b = clear_batches(tmp_path)
+    assert b.start("B1", "01/2026", "01/2028", "45", "qa1", 1000.0 + CLEARANCE_MAX_AGE_S)["batch"] == "B1"
+
+
+def test_clearance_before_last_batch_end_refused(tmp_path):
+    b = clear_batches(tmp_path)
+    b.start("B1", "01/2026", "01/2028", "45", "qa1", 1060.0)
+    b.end("qa1", 1100.0)
+    with pytest.raises(ValueError, match="Run line clearance again for this batch"):
+        b.start("B2", "01/2026", "01/2028", "45", "qa1", 1200.0)
+    b.clearance({"clear": True, "found": []}, "qa1", 1300.0)
+    assert b.start("B2", "01/2026", "01/2028", "45", "qa1", 1310.0)["batch"] == "B2"
+
+
+def test_batch_number_cannot_repeat(tmp_path):
+    b = clear_batches(tmp_path)
+    b.start("B1", "01/2026", "01/2028", "45", "qa1", 1060.0)
+    b.end("qa1", 1100.0)
+    b.clearance({"clear": True, "found": []}, "qa1", 1300.0)
+    with pytest.raises(ValueError, match="Batch no. B1 was already used"):
+        b.start("b 1", "01/2026", "01/2028", "45", "qa1", 1310.0)
