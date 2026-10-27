@@ -132,6 +132,23 @@ class MetaClient:
         text = f"Point at every {item} in this blister strip and count them."
         return int(self._spark("", text, schema, "pocket_count", image=image)["count"])
 
+    @_traced(SPARK_MODEL)
+    def chat_tools(self, messages: list[dict], tools: list[dict]) -> dict:
+        """One tool-calling step; returns the assistant message. Meta accepts only tool_choice "auto", so none is sent."""
+        max_out = 4000  # reasoning tokens count against max_tokens
+        worst = (len(json.dumps(messages)) + len(json.dumps(tools))) / 2 * SPARK_IN + max_out * SPARK_OUT
+        body = self._post("/chat/completions", worst, json={
+            "model": SPARK_MODEL, "max_tokens": max_out, "reasoning_effort": "low", "messages": messages, "tools": tools})
+        u = body.get("usage", {})
+        self.budget.settle(worst, u.get("prompt_tokens", 0) * SPARK_IN + u.get("completion_tokens", 0) * SPARK_OUT)
+        try:
+            msg = body["choices"][0]["message"]
+        except (KeyError, IndexError, TypeError) as e:
+            raise MetaError(f"Muse Spark returned no message: {str(body)[:300]}") from e
+        if not isinstance(msg, dict) or not (msg.get("content") or msg.get("tool_calls")):
+            raise MetaError(f"Muse Spark gave no answer and no tool call: {str(body)[:300]}")
+        return msg
+
     def _spark(self, system, user, schema, name, max_out=4000, effort="low", image=None):
         worst = (len(system) + len(user) + len(json.dumps(schema))) / 2 * SPARK_IN + max_out * SPARK_OUT
         content = user

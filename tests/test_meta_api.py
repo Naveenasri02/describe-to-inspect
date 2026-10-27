@@ -161,3 +161,23 @@ def test_spark_count_parses(tmp_path):
     content = http.calls[0]["json"]["messages"][-1]["content"]
     assert content[0]["text"] == "Point at every tablet in this blister strip and count them."
     assert content[1]["image_url"]["url"].startswith("data:image/jpeg;base64,")
+
+
+def test_chat_tools_sends_tools_and_returns_message(tmp_path):
+    from d2i import trace
+    trace.clear()
+    msg = {"content": None, "tool_calls": [{"id": "c1", "type": "function",
+                                            "function": {"name": "image_health", "arguments": "{}"}}]}
+    http = FakeHTTP([{"choices": [{"message": msg}], "usage": {"prompt_tokens": 100, "completion_tokens": 10}},
+                     {"choices": [{"message": {"content": None}}]}])
+    client = MetaClient(budget(tmp_path), key="k", http=http)
+    tools = [{"type": "function", "function": {"name": "image_health", "parameters": {"type": "object"}}}]
+    assert client.chat_tools([{"role": "user", "content": "go"}], tools) == msg
+    body = http.calls[0]["json"]
+    assert body["model"] == "muse-spark-1.3" and body["tools"] == tools and body["reasoning_effort"] == "low"
+    assert body["max_tokens"] == 4000 and "tool_choice" not in body
+    assert client.budget.spent == pytest.approx(100 * 1.25e-6 + 10 * 4.25e-6)
+    ev = trace.recent()[-1]
+    assert ev["platform"] == "Meta API" and ev["model"] == "muse-spark-1.3" and ev["job"] == "chat_tools"
+    with pytest.raises(MetaError, match="no answer"):
+        client.chat_tools([{"role": "user", "content": "go"}], tools)

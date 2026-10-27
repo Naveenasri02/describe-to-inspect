@@ -58,3 +58,14 @@ def test_stop_closes_open_connections():
             pass
     finally:
         s.close()
+
+
+def test_supervisor_hold_survives_verdicts():
+    plc = Plc(host="127.0.0.1", port=0)
+    plc.set_hold(True)
+    plc.set_verdict(Verdict("PASS", [], []))
+    assert plc.coils[2] is True
+    plc.set_hold(False)
+    assert plc.coils[2] is False
+    plc.set_verdict(Verdict("HOLD", [], []))
+    assert plc.coils[2] is True

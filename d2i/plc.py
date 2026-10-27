@@ -52,7 +52,7 @@ class Plc:
         self.host, self.port = host, port
         self._lock = threading.Lock()
         self._reject_until = 0.0
-        self._locked = self._hold = False
+        self._locked = self._hold = self._agent_hold = False
         self.regs = [0, 0, 0, 0]
         self._server = None
         self._thread = None
@@ -61,7 +61,12 @@ class Plc:
     @property
     def coils(self):
         with self._lock:
-            return [time.monotonic() < self._reject_until, self._locked, self._hold]
+            return [time.monotonic() < self._reject_until, self._locked, self._hold or self._agent_hold]
+
+    def set_hold(self, on: bool):
+        """Shift Supervisor hold on coil 2; verdicts never clear it, only a QA-approved resume does."""
+        with self._lock:
+            self._agent_hold = on
 
     def set_verdict(self, v):
         with self._lock:

@@ -1,0 +1,227 @@
+"""Shift Supervisor agent: when rejects rise or a self-test fails it measures, asks the operator and holds the line.
+
+The model never decides pass/fail and never changes a verdict or the checklist. Re-teach, resume and quarantine
+release are only requests until a QA person approves them with their password (`approve`).
+"""
+import json
+import uuid
+from collections import Counter
+from datetime import datetime
+from pathlib import Path
+
+import cv2
+import numpy as np
+
+from d2i.audit import release_quarantine
+from d2i.judge import POCKET_SIZE, _crop
+from d2i.pockets import find_layout
+from d2i.record import _lines
+
+SYSTEM = ("You supervise a blister-strip inspection bench on a packaging line. Investigate with tools before "
+          "concluding. You never change a verdict or the checklist. To re-teach, resume or release quarantine, call "
+          "the request_ tool; a QA person decides. End with one sentence naming the cause and the evidence.")
+MAX_STEPS = 12
+STEP_LIMIT = "Step limit reached — line held, call QA"
+MODEL_DOWN = "Model unavailable — line held, call QA"
+GLARE_FLOOR = 0.001  # a few hot pixels on a glare-free baseline are not drift
+
+
+def _tool(name, description, **params):
+    return {"type": "function", "function": {"name": name, "description": description, "parameters": {
+        "type": "object", "properties": {k: {"type": t} for k, t in params.items()}, "required": list(params)}}}
+
+
+TOOLS = [
+    _tool("image_health", "Brightness, focus and glare of the current camera frame against the good teaching photos."),
+    _tool("camera_shift", "How far the strip has moved in the camera frame since teaching."),
+    _tool("run_self_test", "Self-test on the known-good strip now under the camera: painted fake defects must all "
+                           "be caught and the good strip must pass."),
+    _tool("reject_stats", "Verdict counts and failed rules over the last `window` strips.", window="integer"),
+    _tool("compare_to_last_good", "Score of one pocket (1 = top left) on the current frame against its threshold; "
+                                  "saves a side-by-side crop with a good photo for QA.", pocket="integer"),
+    _tool("ask_operator", "Ask the operator at the bench one short question; returns their answer.", question="string"),
+    _tool("hold_line", "Hold the line now (the safe direction).", reason="string"),
+    _tool("request_reteach", "Ask QA to approve re-teaching from the good photos.", reason="string"),
+    _tool("request_resume", "Ask QA to approve resuming the line.", reason="string"),
+    _tool("request_release_quarantine", "Ask QA to approve releasing the quarantined strips.", reason="string"),
+    _tool("draft_deviation", "Write a draft deviation note for QA review.", summary="string"),
+]
+
+
+def _measure(image) -> dict:
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    return {"brightness": float(gray.mean()), "focus": float(cv2.Laplacian(gray, cv2.CV_64F).var()),
+            "glare": float((gray > 250).mean())}
+
+
+def baseline_from(images) -> dict:
+    """Mean brightness, focus (Laplacian variance) and glare fraction over the good teaching photos."""
+    m = [_measure(im) for im in images]
+    return {k: float(np.mean([x[k] for x in m])) for k in m[0]}
+
+
+def image_health(frame, baseline: dict) -> dict:
+    now = _measure(frame)
+    change = {k: round(100 * (now[k] / baseline[k] - 1), 1) if baseline[k] else None for k in now}
+    drift = (abs(change["brightness"] or 0) > 15 or (change["focus"] or 0) < -40
+             or now["glare"] > max(2 * baseline["glare"], GLARE_FLOOR))
+    return {**{k: round(v, 4) for k, v in now.items()}, "change": change, "drift": bool(drift)}
+
+
+def camera_shift(layout, ref_box) -> dict:
+    """Strip-centre movement against the taught strip box; drift past 5 % of the strip width."""
+    (x0, y0, x1, y1), (r0, s0, r1, s1) = layout.strip_box, ref_box
+    dx, dy = (x0 + x1 - r0 - r1) / 2, (y0 + y1 - s0 - s1) / 2
+    limit = 0.05 * (r1 - r0)
+    return {"dx": dx, "dy": dy, "drift": abs(dx) > limit or abs(dy) > limit}
+
+
+class Supervisor:
+    def __init__(self, station, plc, audit, chat, ask_operator, baseline, ref_box, get_frame, good_dir):
+        self.station, self.plc, self.audit, self.chat = station, plc, audit, chat
+        self.ask, self.baseline, self.ref_box = ask_operator, baseline, ref_box
+        self.get_frame, self.good_dir = get_frame, Path(good_dir)
+        self.pending = {}  # request id -> request, until QA approves it
+        self._trigger, self._steps, self._new = "", [], []
+        self._tools = {
+            "image_health": lambda: image_health(self.get_frame(), self.baseline),
+            "camera_shift": self._camera_shift,
+            "run_self_test": self._self_test,
+            "reject_stats": self._reject_stats,
+            "compare_to_last_good": self._compare,
+            "ask_operator": self._ask,
+            "hold_line": self._hold,
+            "request_reteach": lambda reason: self._request("reteach", reason),
+            "request_resume": lambda reason: self._request("resume", reason),
+            "request_release_quarantine": lambda reason: self._request("release_quarantine", reason),
+            "draft_deviation": self._draft,
+        }
+
+    def investigate(self, trigger: str) -> dict:
+        self.plc.set_hold(True)  # held for the whole investigation; only a QA-approved resume releases it
+        self._trigger, self._steps, self._new = trigger, [], []
+        messages = [{"role": "system", "content": SYSTEM}, {"role": "user", "content": f"Trigger: {trigger}"}]
+        conclusion, fallback = STEP_LIMIT, False
+        for _ in range(MAX_STEPS):
+            try:
+                msg = self.chat.complete(messages, TOOLS)
+            except Exception:  # any model failure (both platforms down, timeout, spend stop): stay held
+                conclusion, fallback = MODEL_DOWN, True
+                break
+            calls = msg.get("tool_calls") or []
+            if not calls:
+                conclusion = msg.get("content") or MODEL_DOWN
+                break
+            messages.append({"role": "assistant", "content": msg.get("content"), "tool_calls": calls})
+            for c in calls:
+                fn = c.get("function") or {}
+                args, result = self._run(fn.get("name"), fn.get("arguments"))
+                text = json.dumps(result, default=str)
+                self._steps.append({"tool": fn.get("name"), "args": args, "result": result})
+                self.audit.append("agent_step", "supervisor",
+                                  {"tool": fn.get("name"), "args": args, "result_summary": text[:300]})
+                messages.append({"role": "tool", "tool_call_id": c.get("id"), "content": text})
+        platform = self.chat.last_platform or "none"
+        self.audit.append("agent_conclusion", "supervisor",
+                          {"trigger": trigger, "conclusion": conclusion, "platform": platform, "fallback": fallback})
+        return {"steps": self._steps, "conclusion": conclusion, "pending": self._new, "fallback": fallback,
+                "platform": platform}
+
+    def _run(self, name, raw):
+        """(args, result); bad arguments, unknown tools and tool errors go back to the model as an error result."""
+        try:
+            args = raw if isinstance(raw, dict) else json.loads(raw or "{}")
+        except (TypeError, ValueError):
+            return {}, {"error": f"arguments are not valid JSON: {str(raw)[:200]}"}
+        if name not in self._tools:
+            return args, {"error": f"unknown tool {name!r}"}
+        try:
+            return args, self._tools[name](**args)
+        except Exception as e:
+            return args, {"error": f"{type(e).__name__}: {e}"}
+
+    def _layout(self, frame):
+        return find_layout(frame, self.station.checklist, None, self.station.template)  # offline, no paid call
+
+    def _camera_shift(self):
+        lay = self._layout(self.get_frame())
+        return dict(camera_shift(lay, self.ref_box), note=lay.note)
+
+    def _self_test(self):
+        r = self.station.self_test(self.get_frame())  # the operator has placed a known-good strip
+        return {"passed": r["passed"], "missed": r["failed"]}
+
+    def _reject_stats(self, window):
+        rows = _lines(self.station.dir / "log.jsonl")[-max(1, int(window)):]
+        rules = Counter(f"rule {r['rule']}" for v in rows if v["status"] == "REJECT"
+                        for r in v["reasons"] if r.get("rule") is not None)
+        return {"strips": len(rows), "status": dict(Counter(v["status"] for v in rows)), "reject_rules": dict(rules)}
+
+    def _compare(self, pocket):
+        frame, st, i = self.get_frame(), self.station, int(pocket) - 1
+        lay = self._layout(frame)
+        if not lay.ok or not 0 <= i < len(lay.pockets):
+            return {"error": lay.note or f"pocket must be 1 to {len(lay.pockets)}"}
+        good = cv2.imread(str(sorted(self.good_dir.glob("*.jpg"))[0]))
+        side = np.hstack([_crop(frame, lay.pockets[i], POCKET_SIZE),
+                          _crop(good, self._layout(good).pockets[i], POCKET_SIZE)])
+        path = self._stamped("evidence", f"-pocket{i + 1}.jpg")
+        cv2.imwrite(str(path), side)
+        return {"pocket": i + 1, "score": round(st.judge.score_pockets(frame, lay)[i], 4),
+                "threshold": round(st.judge.pocket_threshold, 4), "evidence": str(path)}
+
+    def _ask(self, question):
+        try:
+            return self.ask(question)  # the screen's callable raises TimeoutError after 120 s
+        except TimeoutError:
+            return "no answer"
+
+    def _hold(self, reason):
+        self.plc.set_hold(True)
+        return {"held": True}
+
+    def _request(self, kind, reason):
+        req = {"id": uuid.uuid4().hex[:8], "kind": kind, "reason": reason}
+        self.pending[req["id"]] = req
+        self._new.append(req)
+        return {"id": req["id"], "status": "waiting for a QA person to approve"}
+
+    def _draft(self, summary):
+        path = self._stamped("deviations", ".md")
+        steps = "\n".join(f"{n}. {s['tool']} {json.dumps(s['args'])} -> {json.dumps(s['result'], default=str)[:300]}"
+                          for n, s in enumerate(self._steps, 1))
+        path.write_text(f"# DRAFT — needs QA review\n\nTrigger: {self._trigger}\n\nSummary: {summary}\n\n"
+                        f"## Steps\n\n{steps}\n", encoding="utf-8")
+        return {"path": str(path)}
+
+    def _stamped(self, folder, suffix) -> Path:
+        d = self.station.dir / folder
+        d.mkdir(exist_ok=True)
+        return d / f"{datetime.now():%Y%m%d-%H%M%S-%f}{suffix}"
+
+    def approve(self, request_id: str, users, name: str, password: str) -> dict:
+        """QA only. A request is approved once; a refused resume stays pending until the station unlocks."""
+        if users.check(name, password) != "qa":
+            raise PermissionError("QA login required")
+        req = self.pending.get(request_id)
+        if req is None:
+            raise ValueError(f"no pending request {request_id}")
+        kind, st = req["kind"], self.station
+        if kind == "resume" and st.locked:
+            out = {"approved": False, "message": f"Station locked: {st.lock_reason}"}
+        else:
+            if kind == "reteach":
+                photos = [cv2.imread(str(p)) for p in sorted(self.good_dir.glob("*.jpg"))]
+                st.teach([im for im in photos if im is not None])
+                message = "Re-taught; the station stays locked until a self-test passes"
+            elif kind == "resume":
+                self.plc.set_hold(False)
+                message = "Line resumed"
+            else:
+                release_quarantine(st.dir, self.audit, users, name, password, req["reason"])
+                message = "Quarantine released"
+            del self.pending[request_id]
+            out = {"approved": True, "message": message}
+        out = {"id": request_id, "kind": kind, **out}
+        self.audit.append("agent_approve", name, out, req["reason"])
+        return out
