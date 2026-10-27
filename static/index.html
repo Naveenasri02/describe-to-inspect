@@ -81,7 +81,7 @@ td,th{font-size:12px;padding:2px 6px;text-align:left}
 <footer>Built with Muse Spark Open</footer>
 <script>
 const $=id=>document.getElementById(id);
-const col={READY:"#118a3a",REJECT:"#c4161c",LOCKED:"#c4161c",HOLD:"#e59a00"};
+const col={READY:"#118a3a",PASS:"#118a3a",REJECT:"#c4161c",LOCKED:"#c4161c",HOLD:"#e59a00","NO STRIP":"#888"};
 const show=o=>{$("msg").textContent=typeof o==="string"?o:(o.error||JSON.stringify(o,null,1));refresh()};
 async function j(url,body){const r=await fetch(url,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body||{})});return r.json()}
 async function post(url,b){show("Working...");show(await j(url,b))}

@@ -341,3 +341,15 @@ def test_plc_lock_coil_follows_station_lock(tmp_path):
     c.app.state.station.clock = lambda: time.time() + 9 * 3600  # the shift runs out; only /status sees it
     c.get("/status")
     assert plc.coils[1] is True
+
+
+def test_banner_ready_then_no_strip_grey_then_pass(tmp_path):
+    import numpy as np
+    plc = Plc(host="127.0.0.1", port=0)
+    c, p = bench(tmp_path, plc=plc)
+    assert c.get("/status").json()["state"] == "READY"
+    assert c.post("/inspect", files=up(np.full((360, 640, 3), 128, np.uint8))).json()["status"] == "NO_STRIP"
+    assert c.get("/status").json()["state"] == "NO STRIP"
+    assert plc.regs == [0, 0, 0, 0] and plc.coils[0] is False  # no reject pulse, no pass counted
+    c.post("/inspect", files=up(make_strip(seed=15, shift=(2, 1))))
+    assert c.get("/status").json()["state"] == "PASS" and plc.regs[0] == 1

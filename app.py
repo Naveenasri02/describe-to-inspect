@@ -193,7 +193,9 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
             banner, text = "LOCKED", reason
         elif last and last["status"] in ("REJECT", "HOLD"):
             banner, text = last["status"], " ".join(r["text"] for r in last["reasons"])
-        else:
+        elif last and last["status"] in ("PASS", "NO_STRIP"):
+            banner, text = last["status"].replace("_", " "), ""  # NO STRIP is grey, never green
+        else:  # unlocked (so taught and self-tested), not held, no strip judged yet this session
             banner, text = "READY", ""
         return {"locked": locked, "lock_reason": reason if locked else "",
                 "checklist_version": cl and cl["version"], "spent_usd": spent,
