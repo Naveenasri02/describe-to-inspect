@@ -132,7 +132,11 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
 
     def sync_lock():  # PLC coil 1 = the station's real lock state
         if plc:
-            plc.set_locked(st.locked)
+            try:
+                locked = st.locked
+            except Exception:  # unreadable self-test log: locked (the safe direction)
+                locked = True
+            plc.set_locked(locked)
 
     def publish(verdicts):
         """Each verdict to the PLC in order; the last one is shown on the screen."""
