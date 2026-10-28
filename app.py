@@ -7,6 +7,7 @@ import secrets
 import threading
 import time
 import uuid
+from datetime import date, datetime
 from dataclasses import asdict
 from pathlib import Path
 
@@ -24,6 +25,7 @@ from d2i.batch import Batches, line_clearance
 from d2i.checklist import approve, make_checklist
 from d2i.llm import ToolChat
 from d2i.meta_api import Budget, MetaClient
+from d2i.printcheck import check_print, read_print
 from d2i.pockets import find_layout
 from d2i.station import NEED_TEACH, Station, Verdict
 from d2i.supervisor import Supervisor, baseline_from, hold_line, hold_state, resume_line
@@ -328,6 +330,27 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
                     st.log(v, batch=no)
                     return out
                 return publish([v])
+        return paid(run)
+
+    @app.post("/print")
+    def print_check(request: Request, image: UploadFile | None = File(None)):
+        def run():
+            name = who(request)[0] if who(request)[1] else None
+            if name is None:
+                return {"error": "Log in first"}
+            im = image_from(image)
+            if im is None:
+                return {"error": "No camera frame to check."}
+            b = batches.open
+            if not b:
+                return JSONResponse({"error": NO_BATCH}, status_code=409)
+            read = read_print(im, get_client())  # MetaError / BudgetExceeded reach paid(): plain text, nothing logged
+            out = check_print(read, b, date.fromtimestamp(clock()))
+            with meta:
+                batches._write("prints.jsonl", {"at": datetime.fromtimestamp(clock()).isoformat(timespec="seconds"),
+                                                "batch": b["batch"], "read": read, "status": out["status"],
+                                                "reasons": out["reasons"], "by": name})
+            return out
         return paid(run)
 
     @app.post("/tray")

@@ -164,6 +164,9 @@ def _batch_section(product_dir: Path) -> str:
     by_rule = Counter(f"Rule {r['rule']}" if r["rule"] else "Unlisted" for v in vs for r in v["reasons"])
     return ("<h2>Batch</h2>" + _table(["Item", "Value"], fields) + "<h2>Leak test</h2>"
             + _table(["Time", "By", "Result", "Note"], leaks)
+            + "<h2>Print checks</h2>" + _table(["Time", "By", "Result", "Read on strip", "Reasons"], [
+                [r["at"], r["by"], r["status"], f"{r['read'].get('batch')} / {r['read'].get('mfg')} / {r['read'].get('exp')} / {r['read'].get('mrp')}",
+                 "; ".join(r["reasons"])] for r in _lines(Path(product_dir) / "prints.jsonl") if r.get("batch") == start["batch"]])
             + "<h2>Batch verdicts</h2>" + _table(list(STATUSES), [[by_status[s] for s in STATUSES]])
             + _table(["Reason", "Count"], sorted(by_rule.items())))
 

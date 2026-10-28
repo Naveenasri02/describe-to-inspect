@@ -38,6 +38,7 @@ td,th{font-size:12px;padding:2px 6px;text-align:left}
 <main>
 <section><img id="cam" src="/stream" alt="camera">
   <div><button onclick="inspectNow()">Inspect strip</button>
+  <button title="At-line sample check: reads the foil print and compares it with the batch record" onclick="printNow()">Check print (foil side up)</button>
   <button title="Record a short clip of the tray; one verdict per strip" onclick="trayNow()">Tray clip</button>
   <button title="Per-shift functional check — runs on top of the physical challenge strip" onclick="post('/selftest')">Self-test</button>
   <button onclick="post('/teach',{capture:true})">Teach: save this strip</button>
@@ -94,10 +95,13 @@ td,th{font-size:12px;padding:2px 6px;text-align:left}
 <script>
 const $=id=>document.getElementById(id);
 const col={READY:"#118a3a",PASS:"#118a3a",REJECT:"#c4161c",LOCKED:"#c4161c",HOLD:"#e59a00","NO STRIP":"#888"};
-const show=o=>{$("msg").textContent=typeof o==="string"?o:(o.error||JSON.stringify(o,null,1));refresh()};
+const show=o=>{$("msg").style.cssText="";$("msg").textContent=typeof o==="string"?o:(o.error||JSON.stringify(o,null,1));refresh()};
 async function j(url,body){const r=await fetch(url,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body||{})});return r.json()}
 async function post(url,b){show("Working...");show(await j(url,b))}
 async function inspectNow(){show("Working...");const v=await (await fetch("/inspect",{method:"POST"})).json();show(v.error?v:v.status+" "+(v.reasons||[]).map(r=>r.text).join("; "))}
+async function printNow(){show("Reading the print...");const r=await j("/print");
+  if(r.error)return show(r);const m=$("msg");show((r.status==="PRINT_OK"?"PRINT OK":"HOLD")+(r.reasons.length?"\n"+r.reasons.join("\n"):""));
+  m.style.cssText="font-size:28px;font-weight:700;color:#fff;padding:12px;background:"+(r.status==="PRINT_OK"?"#118a3a":"#e59a00")}
 async function trayNow(){show("Working...");const r=await j("/tray");
   show(r.verdicts?r.verdicts.map(v=>"Strip "+(v.strip_id??"-")+": "+v.status+" "+v.reasons.map(x=>x.text).join("; ")).join("\n"):r)}
 async function form(url,o){const r=await fetch(url,{method:"POST",body:new URLSearchParams(o||{})});return r.json()}

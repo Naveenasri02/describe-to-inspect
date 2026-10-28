@@ -145,8 +145,8 @@ class MetaClient:
 
     @_traced(SPARK_MODEL)
     def spark_json(self, system: str, user: str, schema: dict, name: str = "result", max_out: int = 4000,
-                   effort: str = "low") -> dict:
-        return self._spark(system, user, schema, name, max_out, effort)
+                   effort: str = "low", image: np.ndarray | None = None) -> dict:
+        return self._spark(system, user, schema, name, max_out, effort, image)
 
     @_traced(SPARK_MODEL)
     def spark_count(self, image: np.ndarray, item: str) -> int:

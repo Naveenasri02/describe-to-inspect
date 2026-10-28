@@ -534,3 +534,48 @@ def test_batch_endpoints_need_qa(tmp_path):
                       ("/leak", {"result": "pass"}), ("/batch/end", {})):
         assert c.post(url, data=data).json() == {"error": "Log in as a QA user first"}
     assert not (p / "batches.jsonl").exists() and not (p / "clearances.jsonl").exists()
+
+
+class PrintClient(FakeClient):
+    def __init__(self, read=None, boom=None):
+        self.read, self.boom = read, boom
+
+    def spark_json(self, system, user, schema, name="result", **kw):
+        if self.boom:
+            raise self.boom
+        return self.read
+
+
+def _print_bench(tmp_path, **kw):
+    c, p = bench(tmp_path, client=PrintClient(**kw))
+    login(c, "op", "pw-op")
+    return c, p
+
+
+def test_print_without_batch_refused(tmp_path):
+    c, p = bench(tmp_path, client=PrintClient(), batch=False)
+    login(c, "op", "pw-op")
+    r = c.post("/print", files={"image": ("a.jpg", jpg(make_strip(seed=1)), "image/jpeg")})
+    assert r.status_code == 409 and r.json()["error"] == "Start a batch first (QA)"
+    assert not (p / "prints.jsonl").exists()
+
+
+def test_print_logged(tmp_path):
+    read = {"batch": "B1", "mfg": "01/2026", "exp": "01/2028", "mrp": "45", "readable": True}
+    c, p = _print_bench(tmp_path, read=read)
+    r = c.post("/print", files={"image": ("a.jpg", jpg(make_strip(seed=1)), "image/jpeg")})
+    assert r.json()["status"] == "PRINT_OK"
+    row = _lines(p / "prints.jsonl")[0]
+    assert row["batch"] == "B1" and row["by"] == "op" and row["status"] == "PRINT_OK" and row["read"] == read
+
+
+def test_print_needs_login(tmp_path):
+    c, p = bench(tmp_path, client=PrintClient())
+    r = c.post("/print", files={"image": ("a.jpg", jpg(make_strip(seed=1)), "image/jpeg")})
+    assert "error" in r.json() and not (p / "prints.jsonl").exists()
+
+
+def test_print_model_failure_is_plain_error_and_not_logged(tmp_path):
+    c, p = _print_bench(tmp_path, boom=meta_api.MetaError("down"))
+    r = c.post("/print", files={"image": ("a.jpg", jpg(make_strip(seed=1)), "image/jpeg")})
+    assert r.status_code == 200 and "down" in r.json()["error"] and not (p / "prints.jsonl").exists()
