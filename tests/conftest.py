@@ -76,25 +76,32 @@ def pocket_box(i, rows=2, per_row=5, margin=0.06, strip=STRIP_BOX):
             round(x0 + (col + 1 - margin) * cw), round(y0 + (row + 1 - margin) * ch))
 
 
-def make_strip(rows=2, per_row=5, missing=(), cracked=(), torn=False, shift=(0, 0), seed=0):
-    """Synthetic 640x360 blister strip: dark table, silver foil, white tablets in a grid."""
+def make_strip(rows=2, per_row=5, missing=(), cracked=(), torn=False, shift=(0, 0), seed=0, turn=0.0):
+    """Synthetic 640x360 blister strip: dark table, silver foil, white tablets in a grid. turn: degrees the strip is
+    placed turned about its centre, drawn turned (not resampled, so the foil keeps its pixel noise)."""
     rng = np.random.default_rng(seed)
     img = np.full((360, 640, 3), 40, np.uint8)
     x0, y0, x1, y1 = 80 + shift[0], 70 + shift[1], 560 + shift[0], 290 + shift[1]
-    foil = np.clip(rng.normal(170, 3, (y1 - y0, x1 - x0, 3)), 0, 255).astype(np.uint8)
-    strip = np.zeros_like(img)
-    strip[y0:y1, x0:x1] = foil
+    m = cv2.getRotationMatrix2D(((x0 + x1) / 2, (y0 + y1) / 2), turn, 1.0)
+    at = lambda x, y: tuple(int(v) for v in m @ (x, y, 1))
+    foil = np.zeros_like(img)  # the same random draws as before for a straight strip
+    if turn:
+        foil[:] = np.clip(rng.normal(170, 3, img.shape), 0, 255)
+    else:
+        foil[y0:y1, x0:x1] = np.clip(rng.normal(170, 3, (y1 - y0, x1 - x0, 3)), 0, 255)
     shape = np.zeros(img.shape[:2], np.uint8)
     cv2.rectangle(shape, (x0 + 12, y0), (x1 - 12, y1), 255, -1)
     cv2.rectangle(shape, (x0, y0 + 12), (x1, y1 - 12), 255, -1)
     for cx, cy in [(x0 + 12, y0 + 12), (x1 - 12, y0 + 12), (x0 + 12, y1 - 12), (x1 - 12, y1 - 12)]:
         cv2.circle(shape, (cx, cy), 12, 255, -1)
-    img[shape > 0] = strip[shape > 0]
+    if turn:
+        shape = cv2.warpAffine(shape, m, shape.shape[::-1], flags=cv2.INTER_NEAREST)
+    img[shape > 0] = foil[shape > 0]
     cw, ch = (x1 - x0) / per_row, (y1 - y0) / rows
     r = int(min(cw, ch) * 0.32)
     for i in range(rows * per_row):
         row, col = divmod(i, per_row)
-        cx, cy = int(x0 + (col + 0.5) * cw), int(y0 + (row + 0.5) * ch)
+        cx, cy = at(x0 + (col + 0.5) * cw, y0 + (row + 0.5) * ch)
         if i in missing:
             continue
         cv2.circle(img, (cx, cy), r, (235, 235, 235), -1)

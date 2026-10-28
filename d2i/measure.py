@@ -2,6 +2,8 @@
 import cv2
 import numpy as np
 
+from d2i.pockets import upright
+
 
 def pills_in(pocket, pills) -> list:
     return [p for p in pills if pocket[0] <= (p[0] + p[2]) / 2 <= pocket[2] and pocket[1] <= (p[1] + p[3]) / 2 <= pocket[3]]
@@ -56,9 +58,9 @@ def teach_profile(images, layouts) -> dict | None:
             "spot_max": float(max(0.01, 2 * col("spot").max())), "area_med": float(np.median(col("area")))}
 
 
-def pocket_check(image, pocket, pills, profile) -> str | None:
-    """double_tablet, wrong_tablet or tablet_spot; None for no pill (the judge's job) or a normal one."""
-    mine = pills_in(pocket, pills)
+def pocket_check(image, pocket, mine, profile) -> str | None:
+    """double_tablet, wrong_tablet or tablet_spot; None for no pill (the judge's job) or a normal one.
+    pocket: the taught pocket box (the size scale); mine: the pills in this pocket, nearest first."""
     if not mine:
         return None
     if len(mine) >= 2:
@@ -86,8 +88,9 @@ def strip_features(lay) -> dict | None:
         return None
     px0, py0 = min(p[0] for p in lay.pills), min(p[1] for p in lay.pills)
     px1, py1 = max(p[2] for p in lay.pills), max(p[3] for p in lay.pills)
-    one_each = all(len(pills_in(pk, lay.pills)) == 1 for pk in lay.pockets)
-    return {"aspect": max(w, h) / min(w, h),
+    one_each = all(len(m) == 1 for m in lay.in_pocket or [pills_in(pk, lay.pills) for pk in lay.pockets])
+    tw, th = upright(lay.strip_box, lay.angle)  # a hand-placed strip is turned: do not read that as cut wrong
+    return {"aspect": max(tw, th) / min(tw, th),
             "margins": [(px0 - sx0) / w, (py0 - sy0) / h, (sx1 - px1) / w, (sy1 - py1) / h] if one_each else None}
 
 

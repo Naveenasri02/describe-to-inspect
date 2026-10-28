@@ -411,6 +411,15 @@ def sam_station(sam_taught, tmp_path):
     return Station(tmp_path / "p", client=ImageSam(), judge=judge, clock=lambda: T0)
 
 
+def test_turned_and_moved_strip_passes_and_an_empty_pocket_is_still_caught(sam_station):
+    st = sam_station  # taught on straight strips (ImageSam pills), self-test passed
+    for turn in (2.5, -3.0):  # placed by hand: turned and moved
+        v = st.inspect(make_strip(seed=15, shift=(10, 6), turn=turn))
+        assert v.status == "PASS", (turn, v.reasons, [round(s, 3) for s in v.pocket_scores])
+        v = st.inspect(make_strip(seed=13, shift=(10, 6), turn=turn, missing=(6,)))
+        assert v.status == "REJECT" and any(r["check"] == "empty_pocket" and r["pocket"] == 7 for r in v.reasons),             (turn, v.reasons)
+
+
 def test_teach_records_the_layout_source(sam_station, taught):
     st = sam_station
     assert st.layout_source == "sam" and torch.load(st.dir / "model.pt")["layout_source"] == "sam"

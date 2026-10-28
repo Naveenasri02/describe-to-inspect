@@ -11,16 +11,20 @@ STRIP_PROMPTS = ("blister strip", "blister pack", "pill pack")  # "blister strip
 PAD = 0.08  # pill-outline strip: padding as a fraction of the pill bounds
 # shortcut: only white tablets measured (27 Oct); add colour words when a coloured product is taught
 POCKET_PROMPTS = ("pill", "white pill")  # "blister pocket" and "tablet" find nothing
+GROW = 0.5  # a pill follows a taught pocket when its centre is inside that pocket grown by half a pocket each way
 
 
 @dataclass
 class Layout:
     strip_box: tuple
-    pockets: list
+    pockets: list  # what is cropped and judged: the pill found in each pocket, else the taught pocket box
     source: str   # "sam", "sam-pills" (strip = padded pill bounds) or "grid"
     ok: bool
     note: str = ""
     pills: list = field(default_factory=list)  # SAM pill boxes inside the strip (empty on the grid path)
+    slots: list = field(default_factory=list)  # taught pocket boxes on this strip, same order (the measuring scale)
+    in_pocket: list = field(default_factory=list)  # per pocket, the pills that sit in it, nearest first
+    angle: float = 0.0  # radians the strip is turned against the taught pattern, from the pill centres
 
 
 def pill_prompts(item: str) -> tuple:
@@ -49,6 +53,53 @@ def _row_major(boxes):
         rows[-1].append(b)
         last = cy
     return [b for row in rows for b in sorted(row, key=lambda b: b[0])]
+
+
+def _centre(b):
+    return (b[0] + b[2]) / 2, (b[1] + b[3]) / 2
+
+
+def upright(box, angle) -> tuple:
+    """(width, height) of a strip turned by a small angle (radians) inside its upright box; the box's own size when
+    the turn is large or the sizes do not fit one."""
+    w, h = box[2] - box[0], box[3] - box[1]
+    a = angle if abs(angle) < 0.3 else 0.0
+    c, s = abs(np.cos(a)), abs(np.sin(a))
+    tw, th = (w * c - h * s) / (c * c - s * s), (h * c - w * s) / (c * c - s * s)
+    return (tw, th) if min(tw, th) > 0 else (w, h)
+
+
+def _turn(ref, found) -> float:
+    """Least-squares rotation (radians) that turns the reference centres onto the found ones; 0 with fewer than 2."""
+    if len(ref) < 2:
+        return 0.0
+    q, p = np.array(ref, float), np.array(found, float)
+    q, p = q - q.mean(0), p - p.mean(0)
+    return float(np.arctan2((q[:, 0] * p[:, 1] - q[:, 1] * p[:, 0]).sum(), (q * p).sum()))
+
+
+def _follow(slots, pills):
+    """(per slot its pills, nearest first; stray pills). A pill belongs to the slot with the nearest centre when it
+    lies inside that slot grown by GROW. The nearest one is the slot's tablet wherever the strip turned; another one
+    counts only inside the taught box (a second tablet), else it is outside the pocket pattern."""
+    cs = [_centre(s) for s in slots]
+    d2 = lambda b, i: (_centre(b)[0] - cs[i][0]) ** 2 + (_centre(b)[1] - cs[i][1]) ** 2
+    mine, stray = [[] for _ in slots], []
+    for b in pills:
+        i = min(range(len(slots)), key=lambda k: d2(b, k))
+        (x0, y0, x1, y1), (cx, cy) = slots[i], _centre(b)
+        gx, gy = (x1 - x0) * GROW, (y1 - y0) * GROW
+        (mine[i] if x0 - gx <= cx <= x1 + gx and y0 - gy <= cy <= y1 + gy else stray).append(b)
+    for i, m in enumerate(mine):
+        m.sort(key=lambda b: d2(b, i))
+        mine[i] = m[:1] + [b for b in m[1:] if _inside_centre(b, slots[i])]
+        stray += [b for b in m[1:] if not _inside_centre(b, slots[i])]
+    return mine, stray
+
+
+def _inside_centre(b, box):
+    cx, cy = _centre(b)
+    return box[0] <= cx <= box[2] and box[1] <= cy <= box[3]
 
 
 def _inside(box, outer, slack=4):
@@ -122,6 +173,8 @@ def find_layout(image: np.ndarray, cl: dict, client=None, template=None) -> Layo
                 px, py = int((x1 - x0) * PAD), int((y1 - y0) * PAD)
                 strip = (max(0, x0 - px), max(0, y0 - py), min(w, x1 + px), min(h, y1 + py))
                 source = "sam-pills"
+            # a strip box at the frame edge is the frame, not the turned strip's upright box: nothing to straighten
+            framed = strip[0] <= 1 or strip[1] <= 1 or strip[2] >= image.shape[1] - 1 or strip[3] >= image.shape[0] - 1
             centres = [((b[0] + b[2]) / 2, (b[1] + b[3]) / 2) for b in pills]
             pills = [b for b, (cx, cy) in zip(pills, centres)
                      if strip[0] <= cx <= strip[2] and strip[1] <= cy <= strip[3]]
@@ -129,13 +182,16 @@ def find_layout(image: np.ndarray, cl: dict, client=None, template=None) -> Layo
                 pockets = _row_major(pills)
                 ok = len(pockets) == cl["count"]
                 note = "" if ok else f"found {len(pockets)} pills, checklist says {cl['count']}"
-                return Layout(strip, pockets, source, ok, note, pills)
-            pockets = _from_template(strip, template)
-            note = ""
-            if any(not any(p[0] <= (b[0] + b[2]) / 2 <= p[2] and p[1] <= (b[1] + b[3]) / 2 <= p[3]
-                             for p in pockets) for b in pills):
-                note = "object outside the pocket pattern"
-            return Layout(strip, pockets, source, not note, note, pills)
+                cells = grid(strip, cl["rows"], cl["per_row"]) if ok else []  # row-major, like the pills
+                angle = _turn([_centre(c) for c in cells], [_centre(b) for b in pockets]) if ok and not framed else 0.0
+                return Layout(strip, pockets, source, ok, note, pills, angle=angle)
+            slots = _from_template(strip, template)
+            mine, stray = _follow(slots, pills)  # crops follow the real tablets: a turned strip is not judged askew
+            pockets = [m[0] if m else s for s, m in zip(slots, mine)]  # a pocket with no pill keeps its taught box
+            held = [(s, m[0]) for s, m in zip(slots, mine) if m]
+            angle = 0.0 if framed else _turn([_centre(s) for s, _ in held], [_centre(b) for _, b in held])
+            note = "object outside the pocket pattern" if stray else ""
+            return Layout(strip, pockets, source, not note, note, pills, slots, mine, angle)
         except (MetaError, BudgetExceeded):
             pass  # keep inspecting offline with the checklist grid
     strip = _strip_by_contour(image)

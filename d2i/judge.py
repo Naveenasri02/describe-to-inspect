@@ -10,6 +10,8 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
+from d2i.pockets import upright
+
 MEAN = np.array([0.485, 0.456, 0.406], np.float32)
 STD = np.array([0.229, 0.224, 0.225], np.float32)
 POCKET_SIZE, BORDER_SIZE = 224, 448
@@ -17,6 +19,7 @@ WORST = 0.02     # score = mean of the worst 2% of patch distances
 MARGIN = 1.3     # threshold = worst leave-one-photo-out score x 1.3
 OUTLIER, OUTLIER_MIN = 2.0, 0.25  # a teach photo whose worst pocket is > 2x the others' median and > 0.25 is refused
 BLANK = 128      # grey used to hide pockets when judging the border
+TURNED = 0.005   # radians (about 0.3 degrees): below this the strip edges already meet the taught ones
 
 
 def _load_model(name, device):
@@ -36,10 +39,18 @@ def _crop(image, box, size):
 
 
 def _border_crop(image, layout):
-    img = image.copy()
-    for x0, y0, x1, y1 in layout.pockets:
-        img[int(y0):int(y1), int(x0):int(x1)] = BLANK
-    return _crop(img, layout.strip_box, BORDER_SIZE)
+    img, box, pockets = image.copy(), layout.strip_box, layout.pockets
+    if abs(layout.angle) > TURNED:  # turn a hand-placed strip upright, so its edges meet the taught edges
+        cx, cy = (box[0] + box[2]) / 2, (box[1] + box[3]) / 2
+        m = cv2.getRotationMatrix2D((cx, cy), float(np.degrees(layout.angle)), 1.0)
+        img = cv2.warpAffine(img, m, img.shape[1::-1], flags=cv2.INTER_NEAREST, borderMode=cv2.BORDER_REPLICATE)
+        tw, th = upright(box, layout.angle)
+        box = (cx - tw / 2, cy - th / 2, cx + tw / 2, cy + th / 2)
+        moved = [m @ ((b[0] + b[2]) / 2, (b[1] + b[3]) / 2, 1) - ((b[0] + b[2]) / 2, (b[1] + b[3]) / 2) for b in pockets]
+        pockets = [(b[0] + dx, b[1] + dy, b[2] + dx, b[3] + dy) for b, (dx, dy) in zip(pockets, moved)]
+    for x0, y0, x1, y1 in pockets:
+        img[max(int(y0), 0):int(y1), max(int(x0), 0):int(x1)] = BLANK
+    return _crop(img, box, BORDER_SIZE)
 
 
 def _distances(query, bank):
@@ -59,6 +70,12 @@ def _score(dist):
     flat = dist.flatten()
     k = max(1, int(round(flat.numel() * WORST)))
     return float(flat.topk(k).values.mean())
+
+
+def _border_score(dist, layout):
+    """A small error in a turned strip's measured turn tilts its edge into the outer patch ring (table, not torn
+    foil), so that ring is left out; a torn notch reaches further in than one ring."""
+    return _score(dist[1:-1, 1:-1] if abs(layout.angle) > TURNED else dist)
 
 
 class Judge:
@@ -99,7 +116,7 @@ class Judge:
             keep = photo_of != p
             worsts.append(max(_score(_distances(q, pockets[keep])) for q in pockets[~keep]))
             others = torch.tensor([j for j in range(len(images)) if j != p], device=self.device)
-            worst_border = max(worst_border, _score(_distances(borders[p], borders[others])))
+            worst_border = max(worst_border, _border_score(_distances(borders[p], borders[others]), layouts[p]))
         for p, w in enumerate(worsts):  # one odd photo would set the threshold on its own
             if w > OUTLIER * float(np.median(worsts[:p] + worsts[p + 1:])) and w > OUTLIER_MIN:
                 raise ValueError(f"photo {p + 1} does not look like the others (a different strip, a hand or glare "
@@ -114,7 +131,7 @@ class Judge:
         return [_score(_distances(q, self.pocket_bank)) for q in feats]
 
     def score_border(self, image, layout) -> float:
-        return _score(_distances(self._patches([_border_crop(image, layout)])[0], self.border_bank))
+        return _border_score(_distances(self._patches([_border_crop(image, layout)])[0], self.border_bank), layout)
 
     def pocket_embeddings(self, image, layout) -> torch.Tensor:
         """One unit vector per pocket: the mean of its patch features."""

@@ -13,7 +13,7 @@ from d2i import trace
 from d2i.checklist import SEVERITY, current, rule_number
 from d2i.defects import paint
 from d2i.judge import Judge
-from d2i.measure import features, pills_in, pocket_check, strip_check, teach_profile, teach_strip
+from d2i.measure import features, pocket_check, strip_check, teach_profile, teach_strip
 from d2i.pockets import find_layout, template_from
 
 MEASURED = ("double_tablet", "wrong_tablet", "tablet_spot")  # decided by measure.py on SAM pill boxes
@@ -210,10 +210,9 @@ class Station:
             return v
         if lay.pills and self.profile:
             usable = 0
-            for i, pocket in enumerate(lay.pockets):
-                mine = pills_in(pocket, lay.pills)
-                usable += len(mine) > 1 or (len(mine) == 1 and features(image, pocket, mine[0]) is not None)
-                kind = pocket_check(image, pocket, lay.pills, self.profile)
+            for i, (slot, mine) in enumerate(zip(lay.slots, lay.in_pocket)):  # measured on the taught pocket scale
+                usable += len(mine) > 1 or (len(mine) == 1 and features(image, slot, mine[0]) is not None)
+                kind = pocket_check(image, slot, mine, self.profile)
                 if kind:
                     self._find(kind, listed, unlisted, i)
                     measured.add(i)

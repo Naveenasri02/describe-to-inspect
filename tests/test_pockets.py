@@ -177,3 +177,38 @@ def test_template_extra_pill_inside_pocket_is_ok():
     inner = (pocket_box(3)[0] + 8, pocket_box(3)[1] + 8, pocket_box(3)[0] + 30, pocket_box(3)[1] + 30)
     lay = find_layout(make_strip(), CL, FakeSam([(STRIP_BOX, 0.95)], _pills(range(10)) + [(inner, 0.9)]), _template())
     assert lay.ok and lay.note == "" and len(lay.pockets) == 10 and len(lay.pills) == 11
+
+
+def _turned(turn, strip=STRIP_BOX):
+    """(the turned strip's upright box, its pill boxes) for a strip turned by `turn` degrees about its centre."""
+    import cv2
+    m = cv2.getRotationMatrix2D(((strip[0] + strip[2]) / 2, (strip[1] + strip[3]) / 2), turn, 1.0)
+    corners = [m @ (x, y, 1) for x in strip[::2] for y in strip[1::2]]
+    box = tuple(int(f(c[k] for c in corners)) for f, k in ((min, 0), (min, 1), (max, 0), (max, 1)))
+    pills = []
+    for i in range(10):
+        b = pocket_box(i, strip=strip)
+        cx, cy = m @ ((b[0] + b[2]) / 2, (b[1] + b[3]) / 2, 1)
+        hw, hh = (b[2] - b[0]) // 2, (b[3] - b[1]) // 2
+        pills.append(((round(cx) - hw, round(cy) - hh, round(cx) + hw, round(cy) + hh), 0.9))
+    return box, pills
+
+
+def test_turned_strip_pockets_follow_the_pills():
+    """A hand-placed strip turned 3 degrees: each pocket is the pill found in it (as teach cropped it), not the taught
+    box stretched over the upright strip box; the turn is measured from the pill centres."""
+    box, pills = _turned(3.0)
+    lay = find_layout(make_strip(), CL, FakeSam([(box, 0.95)], pills), _template())
+    assert lay.ok and lay.pockets == [b for b, _ in pills] and len(lay.slots) == 10
+    assert lay.in_pocket == [[b] for b, _ in pills] and abs(np.degrees(lay.angle) + 3.0) < 0.2, lay.angle
+    empty = find_layout(make_strip(), CL, FakeSam([(box, 0.95)], pills[:6] + pills[7:]), _template())
+    assert empty.ok and empty.pockets[6] == empty.slots[6] and empty.in_pocket[6] == []  # no pill: the taught box
+
+
+def test_strip_box_at_the_frame_edge_is_not_straightened():
+    """A close-up: SAM's strip box is the photo frame, so it is not the turned strip's upright box."""
+    frame = ((0, 0, 640, 360), 0.95)
+    template = template_from([find_layout(make_strip(), CL, FakeSam([frame], _pills(range(10))))])  # taught on it too
+    _, pills = _turned(3.0)
+    lay = find_layout(make_strip(), CL, FakeSam([frame], pills), template)
+    assert lay.ok and lay.pockets == [b for b, _ in pills] and lay.angle == 0.0
