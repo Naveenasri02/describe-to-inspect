@@ -25,7 +25,8 @@ from d2i.batch import Batches, line_clearance
 from d2i.checklist import approve, make_checklist
 from d2i.llm import ToolChat
 from d2i.meta_api import Budget, MetaClient
-from d2i.printcheck import check_print, read_print
+from d2i.ipqc import DRIFT_REJECTS, reject_run
+from d2i.printcheck import check_print, read_print, wrong_print
 from d2i.pockets import find_layout
 from d2i.station import NEED_TEACH, Station, Verdict
 from d2i.supervisor import Supervisor, baseline_from, hold_line, hold_state, resume_line
@@ -151,6 +152,16 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
         with meta:
             state["last"] = asdict(verdicts[-1])
         return state["last"]
+
+    def station_hold(reason):  # the existing hold (hold.json + PLC coil + audit), raised by the station itself
+        hold_line(product_dir, plc or _NoPlc(), audit, "station", reason)
+
+    def after_verdicts(vs, no):  # call inside `lock`, after the verdicts are logged
+        crit = next((r["text"] for v in vs for r in v.reasons if r.get("severity") == "critical"), None)
+        if crit:
+            station_hold("Critical: " + crit)
+        elif reject_run(record._lines(product_dir / "log.jsonl"), no) >= DRIFT_REJECTS:
+            station_hold("3 rejects in a row — check the machine")
 
     def need_batch():  # inspecting without an open batch would leave verdicts no batch owns: refuse, log nothing
         b = batches.open
@@ -329,7 +340,9 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
                     out = publish([v])  # the hold reaches the PLC even if the log cannot be written either
                     st.log(v, batch=no)
                     return out
-                return publish([v])
+                out = publish([v])
+                after_verdicts([v], no)
+                return out
         return paid(run)
 
     @app.post("/print")
@@ -346,6 +359,10 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
                 return JSONResponse({"error": NO_BATCH}, status_code=409)
             read = read_print(im, get_client())  # MetaError / BudgetExceeded reach paid(): plain text, nothing logged
             out = check_print(read, b, date.fromtimestamp(clock()))
+            bad = wrong_print(out["reasons"])
+            if bad:
+                with lock:
+                    station_hold("Critical: wrong print — " + bad)
             with meta:
                 batches._write("prints.jsonl", {"at": datetime.fromtimestamp(clock()).isoformat(timespec="seconds"),
                                                 "batch": b["batch"], "read": read, "status": out["status"],
@@ -365,9 +382,14 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
             if refused:
                 return refused
             with lock:  # one slow station operation at a time; verdicts land in order
+                if st.locked:  # no paid SAM video call for a locked station
+                    v = st.log(Verdict("LOCKED", [{"rule": None, "check": "locked", "pocket": None, "text": st.lock_reason}]), batch=no)
+                    publish([v])
+                    return {"verdicts": [asdict(v)]}
                 clip = record_clip(int(s) if s.isdigit() else s, TRAY_SECONDS, product_dir / "tray.mp4")
                 vs = inspect_clip(clip, st, get_client(), held=held_now(), batch=no)  # each one is already logged
                 publish(vs)
+                after_verdicts(vs, no)
                 return {"verdicts": [asdict(v) for v in vs]}
         return paid(run)
 

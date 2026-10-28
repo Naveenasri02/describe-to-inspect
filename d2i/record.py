@@ -95,9 +95,14 @@ def _totals_section(verdicts: list[dict]) -> str:
             + (_table(["Not checked", "Strips"], sorted(skipped.items())) if skipped else ""))
 
 
+def _label(r: dict) -> str:
+    tag = f" ({r['severity']})" if r.get("severity") else ""  # rows logged before severity existed have none
+    return f"Rule {r['rule']}{tag}" if r["rule"] else "Unlisted"
+
+
 def _rejects_section(verdicts: list[dict]) -> str:
-    n = Counter(f"Rule {r['rule']}" if r["rule"] else "Unlisted" for v in verdicts if v["status"] == "REJECT" for r in v["reasons"])
-    return "<h2>Rejects per rule</h2>" + _table(["Rule", "Rejects"], [[k, c] for k, c in sorted(n.items(), key=lambda kv: (kv[0] == 'Unlisted', int(kv[0][5:]) if kv[0] != 'Unlisted' else 0))])
+    n = Counter(_label(r) for v in verdicts if v["status"] == "REJECT" for r in v["reasons"])
+    return "<h2>Rejects per rule</h2>" + _table(["Rule", "Rejects"], [[k, c] for k, c in sorted(n.items(), key=lambda kv: (kv[0] == 'Unlisted', int(kv[0].split()[1]) if kv[0] != 'Unlisted' else 0))])
 
 
 def _held_section(verdicts: list[dict]) -> str:
@@ -161,7 +166,7 @@ def _batch_section(product_dir: Path) -> str:
     leaks = [[r["at"], r["by"], r["result"].upper(), r["note"]] for r in mine if r["event"] == "leak"]
     vs = [v for v in _lines(Path(product_dir) / "log.jsonl") if v.get("batch") == start["batch"]]
     by_status = Counter(v["status"] for v in vs)
-    by_rule = Counter(f"Rule {r['rule']}" if r["rule"] else "Unlisted" for v in vs for r in v["reasons"])
+    by_rule = Counter(_label(r) for v in vs for r in v["reasons"])
     return ("<h2>Batch</h2>" + _table(["Item", "Value"], fields) + "<h2>Leak test</h2>"
             + _table(["Time", "By", "Result", "Note"], leaks)
             + "<h2>Print checks</h2>" + _table(["Time", "By", "Result", "Read on strip", "Reasons"], [

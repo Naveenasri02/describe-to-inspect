@@ -71,3 +71,8 @@ def check_print(read: dict, batch: dict, today: date) -> dict:
     if e and e < (today.year, today.month):
         why.append("Strip is past expiry")
     return {"status": "HOLD" if why else "PRINT_OK", "reasons": why}
+
+
+def wrong_print(reasons: list[str]) -> str | None:
+    """The first reason that says the strip carries the wrong print (a mismatch or a bad date); a missing or unreadable field is not one."""
+    return next((r for r in reasons if " on strip is " in r or r in ("Expiry is not after manufacture", "Strip is past expiry")), None)

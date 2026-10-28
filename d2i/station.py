@@ -10,7 +10,7 @@ import torch
 import torch.nn.functional as F
 
 from d2i import trace
-from d2i.checklist import current, rule_number
+from d2i.checklist import SEVERITY, current, rule_number
 from d2i.defects import paint
 from d2i.judge import Judge
 from d2i.measure import features, pills_in, pocket_check, strip_check, teach_profile, teach_strip
@@ -143,13 +143,14 @@ class Station:
         rule = rule_number(self.checklist, check)
         n = pocket + 1 if pocket is not None else None
         text = TEXT[check].format(n=n, item=self.checklist["item"])
-        return {"rule": rule, "check": check, "pocket": n, "text": f"Rule {rule} failed: {text}"}
+        return {"rule": rule, "check": check, "pocket": n, "text": f"Rule {rule} failed: {text}",
+                "severity": SEVERITY[check]}
 
     @staticmethod
     def _unlisted(pocket=None):
         where = f"Pocket {pocket + 1}" if pocket is not None else "Strip edge"
         return {"rule": None, "check": "unlisted_anomaly", "pocket": None if pocket is None else pocket + 1,
-                "text": f"{where} looks unusual — check by hand"}
+                "text": f"{where} looks unusual — check by hand", "severity": "major"}
 
     def _find(self, check, listed, unlisted, pocket=None):
         if check in self.checklist["reject_if"] or check == "empty_pocket":  # empty = Rule 1, always a reject
@@ -173,7 +174,7 @@ class Station:
             return v
         if not lay.ok:
             v.status, v.reasons = "HOLD", [{"rule": 1, "check": "count", "pocket": None,
-                                            "text": f"Rule 1 failed: {lay.note}"}]
+                                            "text": f"Rule 1 failed: {lay.note}", "severity": "major"}]
             return v
         v.pocket_scores = self.judge.score_pockets(image, lay)
         listed, unlisted, measured = [], [], set()

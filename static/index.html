@@ -2,6 +2,7 @@
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Describe-to-Inspect</title>
 <style>
+.crit{color:#b00020;font-weight:600}
 body{margin:0;font-family:system-ui,sans-serif;background:#f3f4f6;color:#111}
 header{padding:8px 16px;background:#1f2937;color:#fff}
 header small{opacity:.7;margin-left:12px}
@@ -95,15 +96,16 @@ td,th{font-size:12px;padding:2px 6px;text-align:left}
 <script>
 const $=id=>document.getElementById(id);
 const col={READY:"#118a3a",PASS:"#118a3a",REJECT:"#c4161c",LOCKED:"#c4161c",HOLD:"#e59a00","NO STRIP":"#888"};
-const show=o=>{$("msg").style.cssText="";$("msg").textContent=typeof o==="string"?o:(o.error||JSON.stringify(o,null,1));refresh()};
+const red=vs=>{if(vs.some(v=>(v.reasons||[]).some(r=>r.severity==="critical")))$("msg").classList.add("crit")};
+const show=o=>{$("msg").className="";$("msg").style.cssText="";$("msg").textContent=typeof o==="string"?o:(o.error||JSON.stringify(o,null,1));refresh()};
 async function j(url,body){const r=await fetch(url,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body||{})});return r.json()}
 async function post(url,b){show("Working...");show(await j(url,b))}
-async function inspectNow(){show("Working...");const v=await (await fetch("/inspect",{method:"POST"})).json();show(v.error?v:v.status+" "+(v.reasons||[]).map(r=>r.text).join("; "))}
+async function inspectNow(){show("Working...");const v=await (await fetch("/inspect",{method:"POST"})).json();show(v.error?v:v.status+" "+(v.reasons||[]).map(r=>r.text+(r.severity?" ["+r.severity+"]":"")).join("; "));red([v])}
 async function printNow(){show("Reading the print...");const r=await j("/print");
   if(r.error)return show(r);const m=$("msg");show((r.status==="PRINT_OK"?"PRINT OK":"HOLD")+(r.reasons.length?"\n"+r.reasons.join("\n"):""));
   m.style.cssText="font-size:28px;font-weight:700;color:#fff;padding:12px;background:"+(r.status==="PRINT_OK"?"#118a3a":"#e59a00")}
 async function trayNow(){show("Working...");const r=await j("/tray");
-  show(r.verdicts?r.verdicts.map(v=>"Strip "+(v.strip_id??"-")+": "+v.status+" "+v.reasons.map(x=>x.text).join("; ")).join("\n"):r)}
+  show(r.verdicts?r.verdicts.map(v=>"Strip "+(v.strip_id??"-")+": "+v.status+" "+v.reasons.map(x=>x.text+(x.severity?" ["+x.severity+"]":"")).join("; ")).join("\n"):r);if(r.verdicts)red(r.verdicts)}
 async function form(url,o){const r=await fetch(url,{method:"POST",body:new URLSearchParams(o||{})});return r.json()}
 async function clearance(){show("Checking the table...");const r=await form("/clearance");
   $("clr").textContent=r.error?"":(r.clear?"Clear":"Not clear: "+r.found.map(f=>f.count+" "+f.prompt).join(", "));show(r.error?r:"Line clearance: "+(r.clear?"clear":"NOT clear"))}
@@ -124,7 +126,7 @@ async function refresh(){
   $("banner").firstChild.textContent=s.state;$("why").textContent=s.text;$("uncovered").textContent=(s.selftest_skipped||[]).length?"Self-test did not cover: "+s.selftest_skipped.join(", "):"";$("skipped").textContent=((s.last_verdict||{}).skipped||[]).length?"Not checked: "+s.last_verdict.skipped.join(", "):"";$("batchline").textContent=s.batch?"Batch "+s.batch.batch:"No batch open";
   $("spent").textContent=s.spent_usd==null?"?":s.spent_usd.toFixed(2);$("ver").textContent=s.checklist_version??"-";
   $("counts").textContent=Object.entries(s.counts).map(([k,v])=>k+" "+v).join(" · ");
-  $("rules").innerHTML="";(s.pending||s.rules).forEach(t=>{const li=document.createElement("li");li.textContent=t.replace(/^Rule \d+: /,"");$("rules").appendChild(li)});
+  $("rules").innerHTML="";(s.pending||s.rules).forEach(t=>{const li=document.createElement("li");li.textContent=t.replace(/^Rule \d+(?: \((\w+)\))?: /,(m,s)=>s?"["+s+"] ":"");if(/^Rule \d+ \(critical\)/.test(t))li.className="crit";$("rules").appendChild(li)});
   $("pending").textContent=s.pending?"Waiting for approval":"";
   $("who").textContent=s.user?s.user.name+" ("+s.user.role+")":"";
   $("loginbox").hidden=!!s.user;$("logoutbtn").hidden=!s.user;$("qahint").hidden=!!s.user&&s.user.role==="qa";

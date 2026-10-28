@@ -1,6 +1,6 @@
 from datetime import date
 
-from d2i.printcheck import READ_SYSTEM, check_print, read_print
+from d2i.printcheck import READ_SYSTEM, check_print, read_print, wrong_print
 
 BATCH = {"batch": "AB123", "mfg": "10/2026", "exp": "10/2027", "mrp": "45.00"}
 GOOD = {"batch": "AB123", "mfg": "10/2026", "exp": "10/2027", "mrp": "45.00", "readable": True}
@@ -69,3 +69,10 @@ def test_prompt_never_contains_expected_values():
     assert out == GOOD and seen[0].startswith(READ_SYSTEM)
     for v in BATCH.values():
         assert v not in seen[0]
+
+
+def test_wrong_print_vs_unreadable_print():
+    assert wrong_print(run(batch="AB124")["reasons"]) == "Batch no. on strip is AB124, batch record says AB123"
+    assert wrong_print(run(exp="09/2026")["reasons"]) and wrong_print(run(exp="09/2026", mfg="10/2026")["reasons"])
+    assert wrong_print(run(mrp="")["reasons"]) is None
+    assert wrong_print(run(readable=False)["reasons"]) is None

@@ -15,6 +15,10 @@ RULE_TEXT = {
     "strip_cut": "strip size and cut must match the taught strip",
 }
 
+# critical: strip rejected AND the line held for QA; major / minor: strip rejected only
+SEVERITY = {"wrong_tablet": "critical", "empty_pocket": "major", "broken_tablet": "major", "double_tablet": "major",
+            "foil_damage": "major", "strip_cut": "major", "tablet_spot": "minor"}
+
 SCHEMA = {
     "type": "object",
     "additionalProperties": False,
@@ -50,7 +54,7 @@ def make_checklist(sentence: str, client) -> dict:
     item = a["item"].strip() or "tablet"
     count = rows * per_row
     rules = [f"Rule 1: exactly {count} {item}s in {rows} rows of {per_row}"]
-    rules += [f"Rule {i}: " + RULE_TEXT[c].format(item=item) for i, c in enumerate(reject_if, start=2)]
+    rules += [f"Rule {i} ({SEVERITY[c]}): " + RULE_TEXT[c].format(item=item) for i, c in enumerate(reject_if, start=2)]
     return {"product": a["product"], "rows": rows, "per_row": per_row, "count": count, "item": item,
             "reject_if": reject_if, "unclear": list(a.get("unclear", [])), "sentence": sentence, "rules": rules,
             "version": None, "approved_by": None, "approved_at": None}

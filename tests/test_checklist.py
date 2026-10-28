@@ -1,6 +1,6 @@
 import pytest
 
-from d2i.checklist import CHECKS, approve, current, make_checklist, rule_number
+from d2i.checklist import CHECKS, SEVERITY, approve, current, make_checklist, rule_number
 
 
 class FakeSpark:
@@ -22,8 +22,8 @@ def test_checklist_from_fake_spark():
     cl = make_checklist("Ten tablets in two rows of five; reject empty or broken ones.", client)
     assert cl["count"] == 10
     assert cl["rules"][0].startswith("Rule 1: exactly 10 tablets")
-    assert cl["rules"][1] == "Rule 2: no pocket may be empty"
-    assert cl["rules"][2] == "Rule 3: no tablet may be broken or chipped"
+    assert cl["rules"][1] == "Rule 2 (major): no pocket may be empty"
+    assert cl["rules"][2] == "Rule 3 (major): no tablet may be broken or chipped"
     assert rule_number(cl, "broken_tablet") == 3 and rule_number(cl, "count") == 1
     assert cl["sentence"].startswith("Ten tablets") and cl["version"] is None
     system, user, schema = client.calls[0]
@@ -38,7 +38,7 @@ def test_layout_out_of_range_raises():
 def test_standard_checks_are_always_on():
     cl = make_checklist("Ten tablets in two rows.", spark(reject_if=()))
     assert cl["reject_if"] == CHECKS and len(cl["rules"]) == len(CHECKS) + 1
-    assert cl["rules"][3] == "Rule 4: one tablet per pocket, never two"
+    assert cl["rules"][3] == "Rule 4 (major): one tablet per pocket, never two"
     assert rule_number(cl, "tablet_spot") == 6
 
 
@@ -60,3 +60,12 @@ def test_make_checklist_uses_full_answer_budget(tmp_path):
     client = MetaClient(Budget(tmp_path / "s.json"), key="k", http=http)
     make_checklist("Ten tablets in two rows of five.", client)
     assert http.calls[0]["json"]["max_tokens"] == 4000 and http.calls[0]["json"]["reasoning_effort"] == "low"
+
+
+def test_severity_dict_and_rule_tags():
+    assert SEVERITY == {"wrong_tablet": "critical", "empty_pocket": "major", "broken_tablet": "major", "double_tablet": "major",
+                        "foil_damage": "major", "strip_cut": "major", "tablet_spot": "minor"}
+    rules = make_checklist("x", spark())["rules"]
+    assert rules[0].startswith("Rule 1: exactly 10 tablets")
+    assert "Rule 5 (critical): every tablet must match" in rules[4] and "Rule 6 (minor): no spots" in rules[5]
+    assert all(f"({SEVERITY[c]})" in r for c, r in zip(CHECKS, rules[1:]))

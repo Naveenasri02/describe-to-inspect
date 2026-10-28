@@ -12,9 +12,10 @@ import app as app_mod
 import d2i.meta_api as meta_api
 from d2i.audit import Users
 from d2i.batch import Batches
-from d2i.checklist import approve
+from d2i.checklist import CHECKS, approve
 from d2i.meta_api import SamTrackPoint
 from d2i.record import _lines
+from d2i.station import Verdict
 from d2i.plc import Plc
 from tests.conftest import make_strip
 from tests.test_station import CHECKLIST
@@ -579,3 +580,98 @@ def test_print_model_failure_is_plain_error_and_not_logged(tmp_path):
     c, p = _print_bench(tmp_path, boom=meta_api.MetaError("down"))
     r = c.post("/print", files={"image": ("a.jpg", jpg(make_strip(seed=1)), "image/jpeg")})
     assert r.status_code == 200 and "down" in r.json()["error"] and not (p / "prints.jsonl").exists()
+
+
+# --- severity classes and the drift rule ---
+def _fake_judge(c, *checks):
+    """The station returns a REJECT carrying these checks (no model is asked)."""
+    st = c.app.state.station
+    st.checklist = dict(st.checklist, reject_if=list(CHECKS))  # every check is on, so every kind is a named rule
+    st._judge = lambda image, sid, name: Verdict("REJECT", [st._reason(k, 0) for k in checks], strip_id=sid, image_name=name)
+
+
+def _audit(p):
+    return [json.loads(l) for l in (p / "audit.jsonl").read_text(encoding="utf-8").splitlines()]
+
+
+def test_critical_reject_holds_line(tmp_path):
+    plc = Plc(host="127.0.0.1", port=0)
+    c, p = bench(tmp_path, plc=plc)
+    _fake_judge(c, "wrong_tablet")
+    assert c.post("/inspect", files=up(make_strip(seed=15))).json()["status"] == "REJECT"
+    assert c.get("/status").json()["held"] is True and plc.coils[2] is True
+    e = _audit(p)[-1]
+    assert e["action"] == "hold_line" and e["user"] == "station" and e["reason"].startswith("Critical: Rule 5 failed")
+
+
+def test_three_rejects_in_a_row_hold_line(tmp_path):
+    plc = Plc(host="127.0.0.1", port=0)
+    c, p = bench(tmp_path, plc=plc)
+    _fake_judge(c, "empty_pocket")
+    for _ in range(2):
+        c.post("/inspect", files=up(make_strip(seed=15)))
+    assert c.get("/status").json()["held"] is False
+    c.post("/inspect", files=up(make_strip(seed=15)))
+    assert c.get("/status").json()["held"] is True and plc.coils[2] is True
+    e = _audit(p)[-1]
+    assert (e["user"], e["reason"]) == ("station", "3 rejects in a row — check the machine")
+
+
+def test_major_reject_does_not_hold_line(tmp_path):
+    c, p = bench(tmp_path)
+    _fake_judge(c, "broken_tablet", "tablet_spot")
+    c.post("/inspect", files=up(make_strip(seed=15)))
+    assert c.get("/status").json()["held"] is False and not any(e["action"] == "hold_line" for e in _audit(p))
+
+
+def test_pass_resets_the_reject_run(tmp_path):
+    c, p = bench(tmp_path)
+    _fake_judge(c, "empty_pocket")
+    for _ in range(2):
+        c.post("/inspect", files=up(make_strip(seed=15)))
+    del c.app.state.station._judge  # back to the real judge: a good strip passes
+    assert c.post("/inspect", files=up(make_strip(seed=15, shift=(2, 1)))).json()["status"] == "PASS"
+    _fake_judge(c, "empty_pocket")
+    c.post("/inspect", files=up(make_strip(seed=15)))
+    assert c.get("/status").json()["held"] is False
+
+
+def test_wrong_print_holds_line(tmp_path):
+    read = {"batch": "B9", "mfg": "01/2026", "exp": "01/2028", "mrp": "45", "readable": True}
+    c, p = _print_bench(tmp_path, read=read)
+    assert c.post("/print", files=up(make_strip(seed=1))).json()["status"] == "HOLD"
+    assert c.get("/status").json()["held"] is True
+    e = _audit(p)[-1]
+    assert e["user"] == "station" and e["reason"].startswith("Critical: wrong print — Batch no. on strip is B9")
+
+
+def test_unreadable_print_does_not_hold_line(tmp_path):
+    read = {"batch": "", "mfg": "01/2026", "exp": "01/2028", "mrp": "45", "readable": True}
+    c, p = _print_bench(tmp_path, read=read)
+    assert c.post("/print", files=up(make_strip(seed=1))).json()["status"] == "HOLD"
+    assert c.get("/status").json()["held"] is False
+
+
+def test_tray_locked_makes_no_paid_call(tmp_path):
+    clip = tmp_path / "src.mp4"
+    vw = cv2.VideoWriter(str(clip), cv2.VideoWriter_fourcc(*"mp4v"), 15, (640, 360))
+    for _ in range(3):
+        vw.write(make_strip(seed=12))
+    vw.release()
+
+    class Counting(TrayClient):
+        calls = 0
+
+        def sam_video(self, mp4, prompt):
+            Counting.calls += 1
+            return super().sam_video(mp4, prompt)
+
+    approve(CHECKLIST, "Priya", tmp_path / "p" / "checklists.jsonl")
+    open_batch(tmp_path / "p")
+    c = TestClient(app_mod.create_app(tmp_path / "p", str(clip), client=Counting()))  # never taught: LOCKED
+    try:
+        v = c.post("/tray").json()["verdicts"]
+        assert [x["status"] for x in v] == ["LOCKED"] and Counting.calls == 0
+        assert not (tmp_path / "p" / "tray.mp4").exists()
+    finally:
+        c.app.state.source.stop.set()

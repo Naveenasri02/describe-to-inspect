@@ -69,7 +69,8 @@ def test_reject_names_rule_and_pocket(station):
     st.self_test(make_strip(seed=12), rng_seed=5)
     v = st.inspect(make_strip(seed=13, missing=(6,)), strip_id=4)
     assert isinstance(v, Verdict) and v.status == "REJECT"
-    assert {"rule": 2, "check": "empty_pocket", "pocket": 7, "text": "Rule 2 failed: pocket 7 is empty"} in v.reasons
+    assert {"rule": 2, "check": "empty_pocket", "pocket": 7, "text": "Rule 2 failed: pocket 7 is empty",
+            "severity": "major"} in v.reasons
     logged = json.loads((st.dir / "log.jsonl").read_text().splitlines()[-1])
     assert logged["status"] == "REJECT" and logged["strip_id"] == 4 and logged["checklist_version"] == 1
 
@@ -114,7 +115,7 @@ def test_unlisted_defect_is_held_not_passed(station):
     st.checklist = dict(st.checklist, reject_if=["foil_damage"])
     v = st.inspect(make_strip(seed=14, cracked=(2,)))
     assert v.status == "HOLD" and v.reasons[0] == {"rule": None, "check": "unlisted_anomaly", "pocket": 3,
-                                                   "text": "Pocket 3 looks unusual — check by hand"}
+                                                   "severity": "major", "text": "Pocket 3 looks unusual — check by hand"}
 
 
 def test_empty_pocket_always_breaks_rule_1(station):
@@ -124,7 +125,7 @@ def test_empty_pocket_always_breaks_rule_1(station):
     assert [x["kind"] for x in r["results"]] == ["broken_tablet", "empty_pocket"] and r["passed"], r
     v = st.inspect(make_strip(seed=17, missing=(1,)))
     assert v.status == "REJECT"
-    assert {"rule": 1, "check": "empty_pocket", "pocket": 2, "text": "Rule 1 failed: pocket 2 is empty"} in v.reasons
+    assert {"rule": 1, "check": "empty_pocket", "pocket": 2, "text": "Rule 1 failed: pocket 2 is empty", "severity": "major"} in v.reasons
 
 
 def test_broken_judge_fails_self_test_and_locks(station, monkeypatch):
@@ -358,3 +359,12 @@ def test_strip_cut_skipped_without_profile(station):
     st.checklist = dict(st.checklist, reject_if=list(CHECKS))
     r = st.self_test(make_strip(seed=12), rng_seed=5)
     assert "strip_cut" in r["skipped"] and st.inspect(make_strip(seed=13)).skipped.count("strip size") == 1
+
+
+def test_reason_carries_severity(station):
+    st, _ = station
+    st.checklist = dict(st.checklist, reject_if=list(CHECKS))
+    assert st._reason("wrong_tablet", 0)["severity"] == "critical"
+    assert st._reason("tablet_spot", 1)["severity"] == "minor"
+    assert st._reason("foil_damage")["severity"] == "major"
+    assert st._unlisted(2)["severity"] == "major"
