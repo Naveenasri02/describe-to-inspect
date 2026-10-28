@@ -16,7 +16,9 @@ from d2i.llm import ToolChat
 from d2i.meta_api import Budget
 from d2i.plc import Plc
 from d2i.station import Station
-from d2i.supervisor import MAX_STEPS, MODEL_DOWN, STEP_LIMIT, Supervisor, baseline_from, resume_line
+from d2i.pockets import Layout
+from d2i.supervisor import (GOOD_STRIP_FIRST, MAX_STEPS, MODEL_DOWN, STEP_LIMIT, TOOLS, Supervisor, baseline_from,
+                            resume_line)
 from tests.conftest import STRIP_BOX, FakeHTTP, make_strip
 from tests.test_station import CHECKLIST, T0, Clock
 
@@ -75,24 +77,34 @@ def bench(taught, tmp_path):
                            users=users, plc=Plc(host="127.0.0.1", port=0), audit=AuditLog(tmp_path / "audit.jsonl"))
 
 
+GOOD_Q = {"question": "Is a known-good strip under the camera now?"}
+
+
 def supervisor(b, chat, frame, answer="no"):
-    return Supervisor(b.st, b.plc, b.audit, chat, lambda q: answer, baseline_from(GOOD), STRIP_BOX,
-                      lambda: frame, b.good)
+    """answer: the operator's reply; a question about a known-good strip gets "yes" unless answer is a function."""
+    ask = answer if callable(answer) else (lambda q: "yes" if "good strip" in q.lower() else answer)
+    return Supervisor(b.st, b.plc, b.audit, chat, ask, baseline_from(GOOD), STRIP_BOX, lambda: frame, b.good)
+
+
+def self_test_chat(*after):
+    """The operator confirms a known-good strip, then the agent runs the self-test."""
+    return ScriptedChat(calls(("ask_operator", GOOD_Q)), calls(("run_self_test", {})), *after)
 
 
 def test_lamp_drift_ends_with_pending_reteach(bench):
     # Lamp moved closer: brighter, with glare. (A darkened good synthetic strip fails the self-test on the foil border.)
     frame = np.clip(make_strip(seed=12).astype(np.float32) * 1.2, 0, 255).astype(np.uint8)
     chat = ScriptedChat(calls(("image_health", {}), ("camera_shift", {})),
+                        calls(("ask_operator", GOOD_Q)),
                         calls(("run_self_test", {})),
                         calls(("ask_operator", {"question": "Did anyone move the lamp?"})),
                         calls(("request_reteach", {"reason": "lighting changed since teaching"})),
                         say("The lamp moved: brightness and glare are up on the teaching photos and the self-test passed."))
     taught_at, model = bench.st.taught_at, (bench.st.dir / "model.pt").stat().st_mtime_ns
     out = supervisor(bench, chat, frame, "Yes, I moved the lamp").investigate("rejects rose: 6 of the last 10 strips")
-    assert [s["tool"] for s in out["steps"]] == ["image_health", "camera_shift", "run_self_test", "ask_operator",
-                                                  "request_reteach"]
-    health, shift, test, answer, _ = (s["result"] for s in out["steps"])
+    assert [s["tool"] for s in out["steps"]] == ["image_health", "camera_shift", "ask_operator", "run_self_test",
+                                                  "ask_operator", "request_reteach"]
+    health, shift, _, test, answer, _ = (s["result"] for s in out["steps"])
     assert health["drift"] is True and shift["drift"] is False
     assert test["passed"] is True
     assert answer == "Yes, I moved the lamp"
@@ -104,7 +116,7 @@ def test_lamp_drift_ends_with_pending_reteach(bench):
     step2 = chat.seen[1]  # both parallel calls answered, in order, before the next model step
     assert step2[2]["role"] == "assistant" and len(step2[2]["tool_calls"]) == 2
     assert [m["tool_call_id"] for m in step2[3:5]] == [c["id"] for c in step2[2]["tool_calls"]]
-    assert [e["action"] for e in bench.audit.entries()] == ["agent_step"] * 5 + ["agent_conclusion"]
+    assert [e["action"] for e in bench.audit.entries()] == ["agent_step"] * 6 + ["agent_conclusion"]
 
 
 def test_real_defects_keep_hold_no_reteach(bench):
@@ -237,13 +249,13 @@ def test_approve_requires_qa_password(bench):
 
 
 def test_agent_self_test_pass_does_not_record_or_unlock(bench):
-    chat = ScriptedChat(calls(("run_self_test", {})), say("Self-test looks fine."))
+    chat = self_test_chat(say("Self-test looks fine."))
     out = supervisor(bench, chat, make_strip(seed=12)).investigate("shift start")
-    assert out["steps"][0]["result"] == {"passed": True, "missed": [],
+    assert out["steps"][1]["result"] == {"passed": True, "missed": [],
                                          "note": "diagnostic only — does not unlock the station"}
     assert not (bench.st.dir / "selftests.jsonl").exists() and bench.st.lock_reason == "No self-test this shift"
     assert bench.st.self_test(make_strip(seed=12), rng_seed=5)["passed"]  # a person unlocks it
-    supervisor(bench, ScriptedChat(calls(("run_self_test", {})), say("Fine.")), make_strip(seed=12)).investigate("x")
+    supervisor(bench, self_test_chat(say("Fine.")), make_strip(seed=12)).investigate("x")
     assert len((bench.st.dir / "selftests.jsonl").read_text().splitlines()) == 1 and not bench.st.locked
 
 
@@ -252,8 +264,8 @@ def test_agent_self_test_miss_locks_and_opens_quarantine(bench, monkeypatch):
     assert bench.st.self_test(make_strip(seed=12), rng_seed=5)["passed"] and not bench.st.locked
     monkeypatch.setattr(bench.st.judge, "pocket_threshold", 10.0)  # blind judge: every painted defect is missed
     monkeypatch.setattr(bench.st.judge, "border_threshold", 10.0)
-    chat = ScriptedChat(calls(("run_self_test", {})), say("Self-test missed."))
-    res = supervisor(bench, chat, make_strip(seed=12)).investigate("rejects fell")["steps"][0]["result"]
+    chat = self_test_chat(say("Self-test missed."))
+    res = supervisor(bench, chat, make_strip(seed=12)).investigate("rejects fell")["steps"][1]["result"]
     assert res["passed"] is False and "empty_pocket" in res["missed"]
     rows = [json.loads(x) for x in (bench.st.dir / "selftests.jsonl").read_text().splitlines()]
     assert len(rows) == 2 and rows[-1]["passed"] is False
@@ -263,17 +275,50 @@ def test_agent_self_test_miss_locks_and_opens_quarantine(bench, monkeypatch):
 
 def test_agent_self_test_without_its_finder_says_so_and_records_nothing(bench):
     bench.st.layout_source = "sam"  # taught with SAM 3.1, and no SAM client to answer now
-    chat = ScriptedChat(calls(("run_self_test", {})), say("Finder down."))
+    chat = self_test_chat(say("Finder down."))
     out = supervisor(bench, chat, make_strip(seed=12)).investigate("x")
-    assert out["steps"][0]["result"] == "Self-test could not run: the pocket finder (SAM 3.1) did not answer — try again"
+    assert out["steps"][1]["result"] == "Self-test could not run: the pocket finder (SAM 3.1) did not answer — try again"
     assert not (bench.st.dir / "selftests.jsonl").exists()
 
 
 def test_agent_self_test_without_strip_records_nothing(bench):
-    chat = ScriptedChat(calls(("run_self_test", {})), say("No strip."))
+    chat = self_test_chat(say("No strip."))
     out = supervisor(bench, chat, np.full((360, 640, 3), 128, np.uint8)).investigate("x")
-    assert out["steps"][0]["result"] == "no good strip under the camera"
+    assert out["steps"][1]["result"] == "no good strip under the camera"
     assert not (bench.st.dir / "selftests.jsonl").exists()
+
+
+def test_agent_self_test_waits_for_the_operator_to_confirm_a_good_strip(bench):
+    """Rehearsal: the agent ran the self-test on the defective strip in view; the failed run locked the station and
+    opened quarantine. It runs only after the operator said yes, in this investigation, to a good strip in view."""
+    st = bench.st
+    assert st.self_test(make_strip(seed=12), rng_seed=5)["passed"]
+    before = (st.dir / "selftests.jsonl").read_text(encoding="utf-8")
+    chat = ScriptedChat(calls(("run_self_test", {})), calls(("ask_operator", GOOD_Q)), calls(("run_self_test", {})),
+                        say("The operator has no good strip."))
+    sup = supervisor(bench, chat, make_strip(seed=23, missing=(6,)), answer=lambda q: "No, it is the rejected one")
+    steps = sup.investigate("self-test failed")["steps"]
+    assert steps[0]["result"] == GOOD_STRIP_FIRST and steps[2]["result"] == GOOD_STRIP_FIRST
+    assert (st.dir / "selftests.jsonl").read_text(encoding="utf-8") == before and not st.locked
+    assert "ask_operator" in next(t["function"]["description"] for t in TOOLS if t["function"]["name"] == "run_self_test")
+    steps = supervisor(bench, self_test_chat(say("Fine.")), make_strip(seed=12)).investigate("x")["steps"]
+    assert steps[1]["result"]["passed"] is True  # confirmed: it runs
+
+
+def test_supervisor_sees_the_strip_the_last_inspection_found(bench, monkeypatch):
+    """Rehearsal: with a strip in view the offline finder answered "no strip" (camera_shift dx -640,
+    compare_to_last_good an error). The tools use the layout of the station's most recent inspection; no paid call."""
+    st = bench.st
+    st.self_test(make_strip(seed=12), rng_seed=5)
+    frame = make_strip(seed=23, missing=(6,), shift=(20, 0))
+    v = st.inspect(frame)
+    assert v.status == "REJECT" and st.last_layout is v.layout and len(v.layout.pockets) == 10
+    blind = lambda *a, **k: Layout((0, 0, 0, 0), [], "grid", False, "no strip")
+    monkeypatch.setattr("d2i.supervisor.find_layout", blind)  # what the offline finder said on the close-up
+    chat = ScriptedChat(calls(("camera_shift", {}), ("compare_to_last_good", {"pocket": 7})), say("Pocket 7 empty."))
+    shift, cmp = (s["result"] for s in supervisor(bench, chat, frame).investigate("x")["steps"])
+    assert shift == {"dx": 20.0, "dy": 0.0, "drift": False, "note": ""}, shift
+    assert cmp["pocket"] == 7 and cmp["score"] > cmp["threshold"] and Path(cmp["evidence"]).exists(), cmp
 
 
 def test_malformed_tool_call_holds_and_calls_qa(bench):

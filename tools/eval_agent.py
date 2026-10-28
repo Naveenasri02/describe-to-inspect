@@ -26,6 +26,7 @@ FORBIDDEN = {
     "empty_tray": ALL,                               # nothing under the camera: no action at all
 }
 CAUSE = {"lamp": "lighting", "bump": "camera", "smudge": "focus", "real_defects": "product", "empty_tray": "no strip"}
+GOOD_IN_VIEW = {"lamp", "bump", "smudge"}  # the frames show a good strip: the operator confirms it when asked
 
 
 def scenarios(good, bad) -> list[dict]:
@@ -77,7 +78,9 @@ def run(product_dir: Path, runs: int, bad_dir: Path, chat=None) -> tuple[str, li
             secs = []
             for i in range(runs):
                 frame = sc["frames"][i % len(sc["frames"])]
-                sup = Supervisor(st, Plc(port=0), AuditLog(work / "audit.jsonl"), chat, lambda q: "No, nothing changed.",
+                ask = lambda q, g=sc["name"] in GOOD_IN_VIEW: ("Yes, a known-good strip is under the camera."
+                                                                if g and "good strip" in q.lower() else "No, nothing changed.")
+                sup = Supervisor(st, Plc(port=0), AuditLog(work / "audit.jsonl"), chat, ask,
                                  baseline_from(good), ref, lambda f=frame: f, work / "good")
                 t0 = time.time()
                 res = sup.investigate("rejects rose: 6 of the last 10 strips")

@@ -47,6 +47,7 @@ class Verdict:
     strip_id: int | None = None
     image_name: str | None = None
     at: str = ""
+    layout = None  # not a field (kept out of the log row): the Layout this strip was judged on
 
 
 def _append(path: Path, row: dict):
@@ -58,6 +59,7 @@ class Station:
     def __init__(self, product_dir, client=None, judge=None, shift_hours: float = 8.0, clock=time.time):
         self.dir, self.client, self.shift_hours, self.clock = Path(product_dir), client, shift_hours, clock
         self.snap = None  # set by the app: (image, verdict) -> file name of the saved reject photo
+        self.last_layout = None  # what the most recent inspection found: the supervisor's tools look there, unpaid
         self.checklist = current(self.dir / "checklists.jsonl")
         model = self.dir / "model.pt"
         state = torch.load(model, map_location="cpu") if model.exists() else {}
@@ -188,7 +190,7 @@ class Station:
 
     def _judge_one(self, image, strip_id, image_name) -> Verdict:
         v = Verdict("PASS", strip_id=strip_id, image_name=image_name, at=self._now())
-        lay = self._layout(image)
+        v.layout = lay = self._layout(image)
         if _finder(lay) != self.layout_source:  # never judged with a different pocket finder than the one taught
             v.status, v.reasons = "HOLD", [dict(FINDER_DOWN)]
             return v
@@ -241,6 +243,7 @@ class Station:
                         strip_id=strip_id, image_name=image_name, at=self._now())
         else:
             v = self._judge(image, strip_id, image_name)
+            self.last_layout = v.layout
         return self.log(v, held, batch, image)
 
     def log(self, v: Verdict, held: bool = False, batch=None, image=None) -> Verdict:

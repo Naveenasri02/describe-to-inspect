@@ -4,6 +4,7 @@ The model never decides pass/fail and never changes a verdict or the checklist. 
 release are only requests until a QA person approves them with their password (`approve`).
 """
 import json
+import re
 import uuid
 from contextlib import nullcontext
 from collections import Counter
@@ -15,7 +16,7 @@ import numpy as np
 
 from d2i.audit import _require_qa, release_quarantine
 from d2i.judge import POCKET_SIZE, _crop
-from d2i.pockets import find_layout
+from d2i.pockets import _from_template, find_layout
 from d2i.record import _lines
 
 SYSTEM = ("You supervise a blister-strip inspection bench on a packaging line. Investigate with tools before "
@@ -27,6 +28,9 @@ STEP_LIMIT = "Step limit reached — line held, call QA"
 TOO_MANY = "investigation stopped: too many tool calls — call QA"
 MODEL_DOWN = "Model unavailable — line held, call QA"
 GLARE_FLOOR = 0.001  # a few hot pixels on a glare-free baseline are not drift
+GOOD_STRIP_FIRST = ("not run: first ask the operator (ask_operator) whether a known-good strip is under the camera "
+                    "now; run the self-test only after they answer yes")
+YES = re.compile(r"\s*(yes|yeah|yep|y|ok|okay|confirmed)\b", re.I)
 
 
 def _tool(name, description, **params):
@@ -38,7 +42,8 @@ TOOLS = [
     _tool("image_health", "Brightness, focus and glare of the current camera frame against the good teaching photos."),
     _tool("camera_shift", "How far the strip has moved in the camera frame since teaching."),
     _tool("run_self_test", "Self-test on the known-good strip now under the camera: painted fake defects must all "
-                           "be caught and the good strip must pass."),
+                           "be caught and the good strip must pass. Runs only after ask_operator confirmed a "
+                           "known-good strip is under the camera."),
     _tool("reject_stats", "Verdict counts and failed rules over the last `window` strips.", window="integer"),
     _tool("compare_to_last_good", "Score of one pocket (1 = top left) on the current frame against its threshold; "
                                   "saves a side-by-side crop with a good photo for QA.", pocket="integer"),
@@ -201,13 +206,24 @@ class Supervisor:
             return args, {"error": f"{type(e).__name__}: {e}"}
 
     def _layout(self, frame):
-        return find_layout(frame, self.station.checklist, None, self.station.template)  # offline, no paid call
+        """The strip the station's most recent inspection found (no extra paid call); the offline finder, which
+        missed a strip in view on close-ups, only when there is none."""
+        lay = self.station.last_layout
+        return lay if lay is not None and lay.pockets else find_layout(frame, self.station.checklist, None,
+                                                                         self.station.template)
 
     def _camera_shift(self):
         lay = self._layout(self.get_frame())
         return dict(camera_shift(lay, self.ref_box), note=lay.note)
 
+    def _good_strip_confirmed(self) -> bool:
+        """The operator's latest answer in this investigation to a question about a good strip is yes."""
+        said = [s["result"] for s in self._steps if s["tool"] == "ask_operator" and "good" in str(s["args"]).lower()]
+        return bool(said) and bool(YES.match(str(said[-1])))
+
     def _self_test(self):
+        if not self._good_strip_confirmed():  # on a bad strip a failed run would lock the station and open quarantine
+            return GOOD_STRIP_FIRST
         r = self.station.self_test(self.get_frame(), record="failures")  # the operator has placed a known-good strip
         if r.get("not_run"):
             return r["not_run"]
@@ -229,8 +245,9 @@ class Supervisor:
         if not lay.ok or not 0 <= i < len(lay.pockets):
             return {"error": lay.note or f"pocket must be 1 to {len(lay.pockets)}"}
         good = cv2.imread(str(sorted(self.good_dir.glob("*.jpg"))[0]))
-        side = np.hstack([_crop(frame, lay.pockets[i], POCKET_SIZE),
-                          _crop(good, self._layout(good).pockets[i], POCKET_SIZE)])
+        taught = (_from_template(st.strip_box, st._template) if st.strip_box and st._template  # the taught pockets
+                  else find_layout(good, st.checklist, None, st.template).pockets)
+        side = np.hstack([_crop(frame, lay.pockets[i], POCKET_SIZE), _crop(good, taught[i], POCKET_SIZE)])
         path = self._stamped("evidence", f"-pocket{i + 1}.jpg")
         cv2.imwrite(str(path), side)
         return {"pocket": i + 1, "score": round(st.judge.score_pockets(frame, lay)[i], 4),
