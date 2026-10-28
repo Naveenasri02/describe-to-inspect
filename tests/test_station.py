@@ -479,6 +479,46 @@ def test_cut_strip_is_named_cut_when_its_tablets_no_longer_fit_the_pattern(tmp_p
     assert v.status == "REJECT" and [r["check"] for r in v.reasons] == ["strip_cut"], v.reasons
 
 
+def test_border_judged_on_the_same_patches_at_teach_and_inspect(sam_station):
+    """Review: teach scored straight photos on every border patch, inspect left the outer ring out for turned strips.
+    The outer ring is left out at both. A 2 px band of table along the strip's edge (what a strip box 1 px too big
+    shows) scored 0.19 on the whole grid against a 0.08 threshold; now 0.06. A torn strip is still caught (0.28 ->
+    0.21)."""
+    st = sam_station
+    good = make_strip(seed=15, shift=(10, 6))
+    x0, y0, x1, y1 = st._layout(good).strip_box
+    band = good.copy()
+    band[y0:y0 + 2, x0 + 14:x1 - 14] = 40
+    band[y0 + 14:y1 - 14, x0:x0 + 2] = 40
+    assert st.inspect(band).status == "PASS"
+    lay = st._layout(good)
+    torn = paint(good, lay.pockets[4], "foil_damage", lay.strip_box, np.random.default_rng(1))
+    v = st.inspect(torn)
+    assert v.status == "REJECT" and any(r["check"] == "foil_damage" for r in v.reasons), v.reasons
+
+
+def test_teach_measures_each_photo_turn_against_the_taught_pockets(tmp_path):
+    """Real straight teach photos read -0.53 to -0.59 deg against the uniform checklist grid (real pockets do not sit
+    on it), so their border was straightened at teach and not at inspect. Each photo's turn is measured against the
+    taught pockets, as inspect does."""
+    class OffGrid(ImageSam):  # the right column sits 8 px lower than a uniform grid would put it
+        def sam_image(self, image, prompt):
+            objs = super().sam_image(image, prompt)
+            return objs if prompt == "blister strip" else [
+                SamObject(o.id, (o.box[0], o.box[1] + 8, o.box[2], o.box[3] + 8) if o.box[0] > 400 else o.box, 0.9, None)
+                for o in objs]
+    from d2i.pockets import find_layout
+    photo = make_strip(seed=1)
+    assert find_layout(photo, CHECKLIST, OffGrid()).angle == 0.0  # no taught pattern yet: no turn
+    approve(CHECKLIST, "Priya", tmp_path / "checklists.jsonl")
+    st = Station(tmp_path, client=OffGrid(), clock=lambda: T0)
+    seen = []
+    teach = st.judge.teach
+    st.judge.teach = lambda images, layouts: (seen.extend(l.angle for l in layouts), teach(images, layouts))[1]
+    st.teach([make_strip(seed=i, shift=(i, 0)) for i in range(6)])
+    assert all(abs(a) < 1e-3 for a in seen), seen
+
+
 def test_teach_records_the_layout_source(sam_station, taught):
     st = sam_station
     assert st.layout_source == "sam" and torch.load(st.dir / "model.pt")["layout_source"] == "sam"

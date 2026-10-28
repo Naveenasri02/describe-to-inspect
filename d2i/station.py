@@ -3,7 +3,7 @@ import json
 import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
 
@@ -17,7 +17,7 @@ from d2i.checklist import SEVERITY, current, rule_number
 from d2i.defects import paint
 from d2i.judge import Judge
 from d2i.measure import features, pocket_check, strip_check, teach_profile, teach_strip
-from d2i.pockets import find_layout, template_from
+from d2i.pockets import find_layout, framed, template_from, turn_of
 
 MEASURED = ("double_tablet", "wrong_tablet", "tablet_spot")  # decided by measure.py on SAM pill boxes
 POCKET_KINDS = ("empty_pocket", "broken_tablet")  # foil damage is caught on the border, not per pocket
@@ -159,6 +159,12 @@ class Station:
         # all from the grid with a key set: SAM failed on every photo; only a bench with no key is taught offline
         if sources and "sam" not in sources and self.client is not None and getattr(self.client, "has_key", True):
             raise ValueError("the pocket finder (SAM 3.1) did not answer — check the network and save the photos again")
+        if all(l.ok for l in layouts) and len({len(l.pockets) for l in layouts}) == 1:  # else judge.teach says which
+            # each photo's turn against the taught pockets, as inspect measures it (real pockets are not on the checklist
+            # grid: straight photos read 0.55 deg against it)
+            t = template_from(layouts)
+            layouts = [replace(l, angle=0.0 if framed(l.strip_box, im.shape) else turn_of(l, t))
+                       for l, im in zip(layouts, images)]
         t0 = time.perf_counter()
         with self._doing("Teaching: learning the good pockets (DINOv2)"):
             info = self.judge.teach(images, layouts)  # refuses photos whose layout is not ok
