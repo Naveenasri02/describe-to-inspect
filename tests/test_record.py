@@ -7,7 +7,7 @@ from d2i.checklist import approve
 from d2i.meta_api import MetaError
 from d2i.audit import AuditLog, config_hashes
 from d2i.batch import Batches
-from d2i.record import ask, shift_record
+from d2i.record import ask, fingerprint, shift_record
 from tests.test_station import CHECKLIST
 
 T0 = 1_800_000_000.0
@@ -326,3 +326,90 @@ def test_in_process_checks_sort_by_time_not_text(product):
     b.leak("pass", "qa1", "", late)
     html = shift_record(product, T0 - 10, late + 10, "", "").split("<h2>In-process checks</h2>")[1]
     assert html.index(_human(T0 + 70)) < html.index(_human(late))
+
+
+def test_signed_record_shows_green_badge_manifest_and_names(product):
+    import re
+    from d2i.audit import Users, sign_record
+    audit, _ = _filled(product)
+    users = Users(product / "users.json")
+    users.add("qa1", "qa", "pw")
+    html0 = shift_record(product, T0 - 10, T0 + 100, "LOT9", "Asha", audit=audit)
+    assert "DRAFT — needs QA signature</span>" in html0 and "Signed by" not in html0
+    sign_record(html0, audit, users, "qa1", "pw", meaning="Approved", batch="LOT9", extra=fingerprint(product, T0 - 10, T0 + 100))
+    html = shift_record(product, T0 - 10, T0 + 100, "LOT9", "Asha", audit=audit)
+    assert "DRAFT" not in html
+    m = re.search(r"<span class='badge signed'>Signed by qa1 — Approved — (\d+ \w+ \d{4}, \d\d:\d\d:\d\d UTC[+-]\d\d:\d\d)</span>", html)
+    assert m, html[:1500]
+    assert "<h2>Signature manifest</h2>" in html and "<td>Approved</td>" in html and "<p>qa1</p>" in html
+    other = shift_record(product, T0 - 10, T0 + 100, "OTHER", "Asha", audit=audit)  # another batch is not signed
+    assert "DRAFT — needs QA signature</span>" in other
+
+
+def test_config_block_has_thresholds_version_and_camera(product):
+    html = shift_record(product, T0 - 10, T0 + 100, "B", "A",
+                        config=[["Pocket threshold", "0.412"], ["Border threshold", "0.388"], ["Camera source", "0"]])
+    cfg = html.split("<h2>Configuration</h2>")[1].split("<h2>")[0]
+    for s in ("Pocket threshold", "0.412", "Border threshold", "0.388", "Camera source", "App version"):
+        assert s in cfg
+
+
+def test_app_version_is_git_describe_or_unknown():
+    from d2i.record import app_version
+    v = app_version()
+    assert v == "unknown" or (4 <= len(v) <= 20 and v.removesuffix("-dirty").isalnum())
+
+
+def _signed_setup(product, *meanings):
+    from d2i.audit import Users, sign_record
+    audit, _ = _filled(product)
+    users = Users(product / "users.json")
+    users.add("qa1", "qa", "pw")
+    users.add("qa2", "qa", "pw")
+    for who, m in zip(("qa1", "qa2"), meanings):
+        sign_record("x", audit, users, who, "pw", meaning=m, batch="LOT9", extra=fingerprint(product, T0 - 10, T0 + 100))
+    return audit
+
+
+def test_changed_after_signing_is_not_green(product):
+    audit = _signed_setup(product, "Approved")
+    ok = shift_record(product, T0 - 10, T0 + 100, "LOT9", "A", audit=audit)
+    assert "badge signed" in ok and "DRAFT" not in ok
+    with (product / "log.jsonl").open("a", encoding="utf-8") as f:  # a verdict arrives after signing
+        f.write(json.dumps(dict(_verdict(40, "REJECT", [R2]), batch="LOT9")) + chr(10))
+    late = shift_record(product, T0 - 10, T0 + 100, "LOT9", "A", audit=audit)
+    assert "badge signed" not in late and "Signature manifest" not in late
+    assert "DRAFT — needs QA signature" in late and "Signed by qa1 — Approved — " in late
+    assert "changed since signing, re-sign needed" in late
+
+
+def test_other_window_of_same_batch_is_draft(product):
+    audit = _signed_setup(product, "Approved")
+    other = shift_record(product, T0 + 30, T0 + 100, "LOT9", "A", audit=audit)
+    assert "badge signed" not in other and "DRAFT — needs QA signature" in other
+
+
+def test_two_signatures_are_both_listed(product):
+    audit = _signed_setup(product, "Reviewed", "Approved")
+    html = shift_record(product, T0 - 10, T0 + 100, "LOT9", "A", audit=audit)
+    assert html.count("class='badge signed'") == 2
+    man = html.split("<h2>Signature manifest</h2>")[1].split("</table>")[0]
+    assert "<td>qa1</td><td>Reviewed</td>" in man and "<td>qa2</td><td>Approved</td>" in man
+    assert "<p>qa1</p>" in html and "<p>qa2</p>" in html
+
+
+def test_record_shows_expected_and_read_product_and_strength(product):
+    audit, _ = _filled(product)
+    b = Batches(product)
+    rows = [json.loads(x) for x in (product / "batches.jsonl").read_text(encoding="utf-8").splitlines()]
+    rows[0].update(product="Paracetamol Tablets", strength="500 mg") if rows[0]["event"] == "start" else None
+    for r in rows:
+        if r["event"] == "start":
+            r.update(product="Paracetamol Tablets", strength="500 mg")
+    (product / "batches.jsonl").write_text("".join(json.dumps(r) + chr(10) for r in rows), encoding="utf-8")
+    pr = json.loads((product / "prints.jsonl").read_text(encoding="utf-8"))
+    pr["read"].update(product="PARACETAMOL TABLETS", strength="500mg")
+    (product / "prints.jsonl").write_text(json.dumps(pr) + chr(10), encoding="utf-8")
+    html = shift_record(product, T0 - 10, T0 + 100, "LOT9", "A", audit=audit)
+    assert "<dt>Product</dt><dd>Paracetamol Tablets 500 mg</dd>" in html
+    assert "PARACETAMOL TABLETS 500mg" in html

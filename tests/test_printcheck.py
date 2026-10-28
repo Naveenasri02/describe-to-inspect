@@ -91,3 +91,66 @@ def test_wrong_print_vs_unreadable_print():
     assert wrong_print(run(exp="09/2026")["reasons"]) and wrong_print(run(exp="09/2026", mfg="10/2026")["reasons"])
     assert wrong_print(run(mrp="")["reasons"]) is None
     assert wrong_print(run(readable=False)["reasons"]) is None
+
+
+PB = dict(BATCH, product="Paracetamol Tablets IP", strength="500 mg")
+PG = dict(GOOD, product="PARACETAMOL  tablets ip", strength="500MG")
+
+
+def runp(**over):
+    return check_print(dict(PG, **over), PB, TODAY)
+
+
+def test_product_and_strength_normalised():
+    assert runp() == {"status": "PRINT_OK", "reasons": []}
+    assert runp(strength="500 Mg")["status"] == "PRINT_OK" and runp(strength="500.0mg")["status"] == "PRINT_OK"
+
+
+def test_wrong_product_or_strength_is_wrong_print():
+    r = runp(strength="650 mg")
+    assert r["reasons"] == ["Strength on strip is 650 mg, batch record says 500 mg"] and wrong_print(r["reasons"])
+    r = runp(product="Ibuprofen Tablets")
+    assert r["status"] == "HOLD" and wrong_print(r["reasons"])
+    assert runp(strength="500 g")["status"] == "HOLD"  # unit matters
+
+
+def test_unparsed_strength_or_missing_product_is_check_by_hand():
+    r = runp(strength="mg")
+    assert r["reasons"] == ["Strength not readable — check by hand"] and wrong_print(r["reasons"]) is None
+    r = runp(product="")
+    assert r["status"] == "HOLD" and wrong_print(r["reasons"]) is None
+
+
+def test_prompt_never_contains_product_or_strength():
+    seen = []
+
+    class Fake:
+        def spark_json(self, system, user, schema, name="result", **kw):
+            seen.append(system + user)
+            return PG
+
+    read_print(object(), Fake())
+    assert "500" not in seen[0] and "Paracetamol" not in seen[0]
+
+
+def test_garbled_strength_is_not_readable_not_wrong_print():
+    for bad in ("5OOmg", "5O0 mg", "S00 mg", "500 xx"):
+        r = runp(strength=bad)
+        assert r["reasons"] == ["Strength not readable — check by hand"], (bad, r)
+        assert wrong_print(r["reasons"]) is None
+
+
+def test_strength_forms():
+    pb = dict(BATCH, product="Amox", strength="1,000 mg")
+    ok = lambda got, want: check_print(dict(GOOD, product="Amox", strength=got), dict(pb, strength=want), TODAY)["status"]  # noqa: E731
+    assert ok("1000mg", "1,000 mg") == "PRINT_OK" and ok("1000 mg", "1000 mg") == "PRINT_OK"
+    assert ok("500 mg + 125 mg", "500mg+125mg") == "PRINT_OK"
+    assert ok("125 mg + 500 mg", "500mg+125mg") == "HOLD"  # order matters
+    assert ok("500 mg", "500 mg + 125 mg") == "HOLD"
+    assert ok("250 mg/5 ml", "250mg / 5ml") == "PRINT_OK" and ok("250 mg/5 ml", "125 mg/5 ml") == "HOLD"
+    for u in ("5 mcg", "5 ug", "100 IU", "5 %", "2 g", "10 ml"):
+        assert ok(u, u.upper()) == "PRINT_OK", u
+
+
+def test_prompt_separates_exp_and_mrp():
+    assert "(EXP, Exp), MRP" in READ_SYSTEM

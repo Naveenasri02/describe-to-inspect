@@ -153,3 +153,23 @@ def test_foil_change_leak_samples_and_end_totals(tmp_path):
     with pytest.raises(ValueError, match="Samples must be 0 or more"):
         b.leak("pass", "qa1", "", 1250.0, samples=-1)
     assert b.end("qa1", 1300.0, {"inspected": 3})["totals"] == {"inspected": 3}
+
+
+def test_start_records_product_and_strength(tmp_path):
+    b = clear_batches(tmp_path)
+    row = b.start("B1", "01/2026", "01/2028", "45", "qa1", 1060.0, product=" Paracetamol  Tablets ", strength="500mg")
+    assert (row["product"], row["strength"]) == ("Paracetamol Tablets", "500mg")
+
+
+def test_start_refuses_bad_product_or_strength(tmp_path):
+    for p, s in (("", "500 mg"), ("X", ""), ("X", "strong")):
+        with pytest.raises(ValueError):
+            clear_batches(tmp_path).start("B1", "01/2026", "01/2028", "45", "qa1", 1060.0, product=p, strength=s)
+
+
+def test_start_limits_and_strength_forms(tmp_path):
+    for p, s in (("X" * 81, "500 mg"), ("X", "5OOmg"), ("X", "5" * 41 + "mg")):
+        with pytest.raises(ValueError):
+            clear_batches(tmp_path).start("B1", "01/2026", "01/2028", "45", "qa1", 1060.0, product=p, strength=s)
+    for s in ("1,000 mg", "500 mg + 125 mg", "250 mg/5 ml"):
+        assert clear_batches(tmp_path / s.replace("/", "_")).start("B1", "01/2026", "01/2028", "45", "qa1", 1060.0, product="X", strength=s)["strength"] == s

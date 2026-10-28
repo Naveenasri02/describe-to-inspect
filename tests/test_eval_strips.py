@@ -16,8 +16,9 @@ class FakeStation:
     def self_test(self, good_image, rng_seed=None, record=True):
         return {"passed": self.test_ok, "failed": []}
 
-    def inspect(self, image, strip_id=None, image_name=None):
+    def inspect(self, image, strip_id=None, image_name=None, user=None):
         self.inspected.append(image_name)
+        self.users = getattr(self, "users", []) + [user]
         n = image_name
 
         class V:
@@ -88,3 +89,9 @@ def test_smoke_video_call_reaches_client(tmp_path):
     clip.write_bytes(b"x")
     res = run_calls(C(), np.zeros((2, 2, 3), np.uint8), clip, b"w")
     assert C.seen == [b"x"] and all(r[1].startswith("OK") for r in res)
+
+
+def test_eval_verdicts_carry_user_eval():
+    st = FakeStation()
+    evaluate(st, paths("g", 8), paths("b", 3), load=lambda p: object())
+    assert st.users and set(st.users) == {"eval"}

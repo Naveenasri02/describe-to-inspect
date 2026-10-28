@@ -3,14 +3,15 @@ A mismatch or an unreadable print is HOLD, never a pass or reject on the model's
 import re
 from datetime import date
 
-from d2i.batch import parse_month
+from d2i.batch import parse_month, parse_strength
 
 READ_SCHEMA = {"type": "object", "additionalProperties": False,
-               "required": ["batch", "mfg", "exp", "mrp", "readable"],
+               "required": ["batch", "mfg", "exp", "mrp", "product", "strength", "readable"],
                "properties": {"batch": {"type": "string"}, "mfg": {"type": "string"}, "exp": {"type": "string"},
-                              "mrp": {"type": "string"}, "readable": {"type": "boolean"}}}
+                              "mrp": {"type": "string"}, "product": {"type": "string"},
+                              "strength": {"type": "string"}, "readable": {"type": "boolean"}}}
 READ_SYSTEM = ("You read the printed text on the foil side of a tablet blister strip. Copy exactly what is printed for: "
-               "batch number (B.No., Batch, Lot), manufacturing date (MFG, Mfd), expiry date (EXP, Exp) and MRP (price). "
+               "batch number (B.No., Batch, Lot), manufacturing date (MFG, Mfd), expiry date (EXP, Exp), MRP (price), product name (the medicine name) and strength (number and unit). "
                "Use an empty string for anything not printed or not readable. Never guess or complete partial text. "
                "Set readable to false if the photo is too blurred to read.")
 _LABELS = ("BATCHNO", "BNO", "BATCH", "LOT")
@@ -23,6 +24,10 @@ def read_print(image, client) -> dict:
 def _batch_key(s) -> str:
     s = re.sub(r"[\s.]", "", str(s)).upper()
     return re.sub(rf"^(?:{"|".join(_LABELS)}):?", "", s)  # "B.No.: AB123" -> "AB123"
+
+
+def _key(s) -> str:
+    return re.sub(r"\s+", "", str(s)).casefold()
 
 
 def _month(s):
@@ -50,6 +55,8 @@ def check_print(read: dict, batch: dict, today: date) -> dict:
         why.append(f"{label} not readable — check by hand")
 
     fields = {"Batch no.": "batch", "MFG": "mfg", "EXP": "exp", "MRP": "mrp"}
+    if batch.get("product"):  # batches started before these fields existed have nothing to compare
+        fields |= {"Product name": "product", "Strength": "strength"}
     vals = {k: str(read.get(f) or "").strip() for k, f in fields.items()}
     for k, v in vals.items():
         if not v:
@@ -75,6 +82,15 @@ def check_print(read: dict, batch: dict, today: date) -> dict:
                 differ("MRP", vals["MRP"], batch["mrp"])
         except ValueError:
             unreadable("MRP")
+    if vals.get("Product name"):
+        if _key(vals["Product name"]) != _key(batch["product"]):
+            differ("Product name", vals["Product name"], batch["product"])
+    if vals.get("Strength"):
+        try:
+            if parse_strength(vals["Strength"]) != parse_strength(batch["strength"]):
+                differ("Strength", vals["Strength"], batch["strength"])
+        except ValueError:
+            unreadable("Strength")
     m, e = months.get("MFG"), months.get("EXP")
     if m and e and e <= m:
         why.append("Expiry is not after manufacture")

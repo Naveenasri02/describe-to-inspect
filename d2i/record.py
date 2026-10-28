@@ -1,5 +1,8 @@
 """Printable shift record for QA to sign, and Ask-the-line answers. Muse Spark explains; it never decides."""
+import functools
+import hashlib
 import json
+import subprocess
 from collections import Counter
 from datetime import datetime
 from html import escape as e
@@ -32,6 +35,7 @@ header{border-bottom:2px solid var(--ink);padding-bottom:18px}
 h1{font-size:28px;font-weight:600;margin:0;letter-spacing:-.01em}
 .badge{display:inline-block;font-size:13px;font-weight:600;padding:4px 12px;border:1.5px solid;border-radius:4px}
 .badge.draft{color:#5e4100;background:#fdf0d5;border-color:var(--hold)}
+.badge.signed{color:#0b5a34;background:#e7f3ec;border-color:var(--pass)}
 .meta{display:grid;grid-template-columns:1.4fr 1fr 2fr 1fr;margin:16px 0 0;background:var(--panel);
 border:1px solid var(--rule);border-radius:4px}
 .meta div{padding:9px 14px;border-right:1px solid var(--rule);min-width:0}
@@ -74,6 +78,7 @@ border-radius:4px;white-space:nowrap}
 .shots figcaption b{display:block;color:var(--ink);font-weight:500}
 .foot{color:var(--steel);font-size:13px;margin-top:28px}
 .sig{display:grid;grid-template-columns:repeat(3,1fr);gap:32px;margin-top:24px}
+.sig div{display:contents}
 .sig p{margin:56px 0 0;padding-top:6px;border-top:1px solid var(--ink);font-size:12px;color:var(--steel)}
 body>p:last-child{margin-top:28px;font-size:11px;color:var(--steel);overflow-wrap:anywhere}
 @media print{
@@ -221,9 +226,56 @@ def _held_section(verdicts: list[dict]) -> str:
     return "<h2>Held strips</h2>" + _table(["Time", "Strip", "Image", "Reason"], rows)
 
 
-def _config_section(product_dir: Path) -> str:
+@functools.lru_cache(maxsize=1)
+def app_version() -> str:
+    """Short git hash of the running code, or "unknown" when git or the repository is not there."""
+    try:
+        out = subprocess.run(["git", "describe", "--always", "--dirty"], cwd=Path(__file__).parent, capture_output=True,
+                             text=True, timeout=5)
+        return out.stdout.strip() if out.returncode == 0 and out.stdout.strip() else "unknown"
+    except (OSError, subprocess.SubprocessError):
+        return "unknown"
+
+
+def _config_section(product_dir: Path, extra: list[list] | None = None) -> str:
     h = config_hashes(product_dir)
-    return "<h2>Configuration</h2>" + _kv([[NAMES.get(k, k), v] for k, v in h.items()])
+    return "<h2>Configuration</h2>" + _kv([[NAMES.get(k, k), v] for k, v in h.items()] + (extra or [])
+                                          + [["App version", app_version()]])
+
+
+def fingerprint(product_dir: Path, since: float, until: float) -> dict:
+    """What a record of this window is made of: its window, a hash of the rows it shows, and the verdict files' hashes.
+    Stored in the sign entry; a later render is 'signed' only when all of it is unchanged."""
+    p = Path(product_dir)
+    verdicts, tests = _records(p, since, until)
+    h = hashlib.sha256(_compact(verdicts).encode() + b"|" + _compact(tests).encode())
+    for n in ("batches.jsonl", "prints.jsonl"):
+        h.update(b"|" + ((p / n).read_bytes() if (p / n).exists() else b""))
+    files = {n: hashlib.sha256((p / n).read_bytes()).hexdigest() if (p / n).exists() else None
+             for n in ("log.jsonl", "selftests.jsonl")}
+    return {"since": since, "until": until, "content_sha256": h.hexdigest(), "files_sha256": files}
+
+
+def _signed_rows(audit: AuditLog | None, batch: str, fp: dict) -> tuple[list[dict], list[dict]]:
+    """(signatures on exactly this content, every signature on this batch)."""
+    rows = [r for r in (audit.entries() if audit else []) if r.get("action") == "sign"
+            and isinstance(r.get("details"), dict) and r["details"].get("batch", "") == batch]
+    same = lambda r: all(r["details"].get(k) == fp[k] for k in ("content_sha256", "files_sha256"))  # noqa: E731
+    return [r for r in rows if same(r)], rows
+
+
+def _signed_at(r: dict) -> str:
+    """Local time of signing with its UTC offset, as signed: '28 Oct 2026, 13:29:14 UTC+05:30'."""
+    try:
+        d = datetime.fromisoformat(r["details"]["signed_at"])
+        z = d.strftime("%z")
+        return f"{d.day} {d:%b %Y, %H:%M:%S} UTC{z[:3]}:{z[3:]}"
+    except (KeyError, TypeError, ValueError):
+        return _when(r.get("at"))
+
+
+def shown_batch(product_dir: Path, batch: str = "") -> str:
+    return batch or next((r["batch"] for r in reversed(Batches(product_dir).rows) if r["event"] == "start"), "")
 
 
 def _quarantine_section(product_dir: Path, audit: AuditLog | None = None) -> str:
@@ -272,7 +324,8 @@ def _batch_section(product_dir: Path, audit: AuditLog | None = None, until: floa
     mine = [r for r in rows if r.get("batch") == start["batch"] and r["at"] >= start["at"]]
     end = next((r for r in mine if r["event"] == "end"), None)
     clr = next((c for c in Batches(product_dir).clearances() if c["at"] == start["clearance_at"]), None)
-    fields = [["Batch", start["batch"]], ["MFG", start["mfg"]], ["EXP", start["exp"]], ["MRP", f"₹ {start['mrp']}"],
+    fields = [["Batch", start["batch"]],
+              *([["Product", f"{start['product']} {start['strength']}"]] if start.get("product") else []), ["MFG", start["mfg"]], ["EXP", start["exp"]], ["MRP", f"₹ {start['mrp']}"],
               ["Started", f"{_when(start['at'])} by {start['by']}"],
               ["Ended", f"{_when(end['at'])} by {end['by']}" if end else "still open"],
               ["Line clearance", _Html(f"{e(_when(clr['at']))} by {e(clr['by'])} " + _chip("Clear" if clr["clear"] else "Not clear"))
@@ -321,7 +374,8 @@ def _batch_section(product_dir: Path, audit: AuditLog | None = None, until: floa
             + _table(["Time", "By", "Result", "Note"], leaks)
             + "<h2>Print checks</h2>" + _table(["Time", "By", "Result", "Read on strip", "Reasons"], [
                 [_when(r["at"]), r["by"], _chip(r["status"]),
-                 " / ".join(str(r["read"].get(k) or "–") for k in ("batch", "mfg", "exp", "mrp")), "; ".join(r["reasons"])]
+                 " / ".join(str(r["read"].get(k) or "–") for k in ("batch", "mfg", "exp", "mrp"))
+                 + (f" / {r['read'].get('product') or '–'} {r['read'].get('strength') or '–'}" if start.get("product") else ""), "; ".join(r["reasons"])]
                 for r in prints])
             + "<h2>Batch verdicts</h2>" + _table([PLAIN[s] for s in STATUSES], [[by_status[s] for s in STATUSES]], "n")
             + "<h2>Reconciliation</h2>" + recon
@@ -330,22 +384,36 @@ def _batch_section(product_dir: Path, audit: AuditLog | None = None, until: floa
 
 
 def shift_record(product_dir: Path, since: float, until: float, batch: str, operator: str, client=None,
-                 audit: AuditLog | None = None) -> str:
+                 audit: AuditLog | None = None, config: list[list] | None = None) -> str:
     verdicts, tests = _records(product_dir, since, until)
     cl = current(Path(product_dir) / "checklists.jsonl") or {}
-    shown = batch or next((r["batch"] for r in reversed(Batches(product_dir).rows) if r["event"] == "start"), "")  # as the Batch section
+    shown = shown_batch(product_dir, batch)  # as the Batch section
+    sgs, every = _signed_rows(audit, shown, fingerprint(product_dir, since, until))
+    line = lambda r: f"Signed by {r['user']} — {r['details'].get('meaning')} — {_signed_at(r)}"  # noqa: E731
+    if sgs:
+        badge = "".join(f"<span class='badge signed'>{e(line(r))}</span>" for r in sgs)
+    else:
+        badge = "<span class='badge draft'>DRAFT — needs QA signature</span>"
+        if every:  # signed once, but this is not what was signed
+            badge += f"<span class='badge draft'>{e(line(every[-1]))} — changed since signing, re-sign needed</span>"
+    manifest = ("<h2>Signature manifest</h2>" + _table(["Name", "Meaning", "Signed at"],
+                [[r["user"], r["details"].get("meaning"), _signed_at(r)] for r in sgs]) if sgs else "")
+    sigblock = ("<div class='sig'>" + "".join(
+        f"<div><p>{e(r['user'])}</p><p>Signed electronically — {e(str(r['details'].get('meaning')))}</p>"
+        f"<p>{e(_signed_at(r))}</p></div>" for r in sgs) + "</div>" if sgs
+        else "<div class='sig'><p>QA name</p><p>Signature</p><p>Date</p></div>")
     meta = (("Product", cl.get("product"), " class='cap'"), ("Batch", shown, ""), ("Shift", _span(since, until), ""),
             ("Operator", operator, ""))
     parts = [
-        "<header><div class='title'><h1>Shift record</h1><span class='badge draft'>DRAFT — needs QA signature</span></div>"
+        "<header><div class='title'><h1>Shift record</h1>" + badge + "</div>"
         "<dl class='meta'>" + "".join(f"<div><dt>{k}</dt><dd{c}>{e(str(v or '–'))}</dd></div>" for k, v, c in meta) + "</dl></header>",
         _batch_section(product_dir, audit, until),
         _checklist_section(cl), _selftest_section(tests), _totals_section(verdicts),
         _rejects_section(verdicts), _held_section(verdicts),
-        _config_section(product_dir), _quarantine_section(product_dir, audit), _audit_sections(audit, since, until),
+        _config_section(product_dir, config), _quarantine_section(product_dir, audit), _audit_sections(audit, since, until),
         "<h2>Shift summary (written by Muse Spark — check before signing)</h2>"
         f"<p class='summary'>{e(_summary(product_dir, verdicts, tests, client))}</p>",
         f"<p class='foot'>{e(FOOTER)}</p>",
-        "<div class='sig'><p>QA name</p><p>Signature</p><p>Date</p></div>",
+        manifest, sigblock,
     ]
     return f"<!doctype html><html><head><meta charset='utf-8'><title>Shift record</title><style>{CSS}</style></head><body>{''.join(parts)}</body></html>"

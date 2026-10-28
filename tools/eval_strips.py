@@ -49,7 +49,7 @@ def evaluate(station, good_paths, bad_paths, load=cv2.imread) -> dict:
     rows = []
     for kind, ps in (("good", hold), ("bad", sorted(bad_paths))):
         for p in ps:
-            v = station.inspect(load(p), image_name=Path(p).name)
+            v = station.inspect(load(p), image_name=Path(p).name, user="eval")
             rows.append({"kind": kind, "name": Path(p).name, "status": v.status,
                          "reasons": [r["text"] for r in v.reasons]})
     n = lambda kind, *st: sum(r["kind"] == kind and r["status"] in st for r in rows)  # noqa: E731
