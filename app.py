@@ -363,6 +363,7 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
     @app.post("/selftest")
     def selftest(request: Request, image: UploadFile | None = File(None)):
         def run():
+            name = qa(request)  # a self-test unlocks or locks the station: QA only
             im = image_from(image)
             if not st.checklist:
                 return {"error": NO_CHECKLIST}
@@ -371,7 +372,7 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
             with lock:
                 r = st.self_test(im)
                 sync_lock()
-                audit.append("selftest", who(request)[0], {"passed": r.get("passed")})
+                audit.append("selftest", name, {"passed": r.get("passed")})
                 return r
         return paid(run)
 
@@ -509,6 +510,9 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
             with meta:
                 row = batches.leak(result, name, note, clock(), samples)
                 audit.append("leak_test", name, {"batch": row["batch"], "result": result, "note": note, "samples": samples})
+            if result == "fail":  # after the row is written, like a wrong print
+                with lock:
+                    station_hold("Leak test failed — check the sealing")
             return row
         return paid(run)
 
@@ -577,10 +581,13 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
 
     @app.post("/challenge")
     def challenge(body: dict, request: Request):
+        name, role = who(request)
+        if not role:
+            return {"error": "Log in first"}
         label = str(body.get("strip_label", "")).strip()
         if not label:
             return {"error": "Enter the challenge strip label."}
-        return paid(lambda: log_physical_challenge(audit, who(request)[0], label, bool(body.get("ejected"))))
+        return paid(lambda: log_physical_challenge(audit, name, label, bool(body.get("ejected"))))
 
     @app.post("/release")
     def release(body: dict, request: Request):

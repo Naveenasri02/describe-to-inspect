@@ -48,12 +48,16 @@ def check_events(product_dir, batch: str) -> list[dict]:
     return sorted(ev, key=lambda r: r["time"])
 
 
+def _done(r, ev) -> bool:
+    return r["event"] == ev and (ev != "leak" or r.get("result") == "pass")  # a failed leak test is not a done one
+
+
 def due(batch: dict, rows: list[dict], now: float) -> list[str]:
     """Leak test / print check due: none since the later of batch start and last foil change, or the last is over an hour old."""
     start = max([batch["time"]] + [r["time"] for r in rows if r["event"] == "foil_change"])
     out = []
     for ev, text in (("leak", "Leak test due"), ("print", "Print check due")):
-        last = max((r["time"] for r in rows if r["event"] == ev and r["time"] >= start), default=None)
+        last = max((r["time"] for r in rows if _done(r, ev) and r["time"] >= start), default=None)
         if last is None or now - last > IPQC_EVERY_S:
             out.append(text)
     return out
@@ -68,7 +72,7 @@ def missed_windows(batch: dict, rows: list[dict], until: float) -> list[tuple[st
         w = s
         while w + IPQC_EVERY_S <= stop:
             for ev, text in (("leak", "Leak test missed"), ("print", "Print check missed")):
-                if not any(r["event"] == ev and w <= r["time"] < w + IPQC_EVERY_S for r in rows):
+                if not any(_done(r, ev) and w <= r["time"] < w + IPQC_EVERY_S for r in rows):
                     out.append((text, w, w + IPQC_EVERY_S))
             w += IPQC_EVERY_S
     return out

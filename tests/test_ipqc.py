@@ -45,8 +45,8 @@ def test_selftest_before_batch_start_does_not_count():
     assert release_blockers(BATCH, [{"passed": True, "time": 999.0}], [PR_OK], True) == ["Self-test for this batch"]
 
 
-def ev(kind, t):
-    return {"event": kind, "time": t}
+def ev(kind, t, result="pass"):
+    return {"event": kind, "time": t, "result": result}  # print rows carry no result; harmless here
 
 
 def test_due_after_an_hour():
@@ -74,6 +74,13 @@ def test_missed_windows():
         ("Print check missed", 1000.0, 4600.0), ("Print check missed", 4600.0, 8200.0)]
     assert missed_windows(BATCH, [ev("foil_change", 2000.0)], 2000.0 + 3600) == [
         ("Leak test missed", 2000.0, 5600.0), ("Print check missed", 2000.0, 5600.0)]  # a foil change restarts the windows
+
+
+def test_failed_leak_test_does_not_count():
+    rows = [ev("leak", 1100.0, "fail"), ev("print", 1100.0)]
+    assert due(BATCH, rows, 1200.0) == ["Leak test due"]
+    assert missed_windows(BATCH, rows, 4600.0) == [("Leak test missed", 1000.0, 4600.0)]
+    assert due(BATCH, rows + [ev("leak", 1150.0)], 1200.0) == []
 
 
 def test_reconcile_balanced():

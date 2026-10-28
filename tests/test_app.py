@@ -502,8 +502,26 @@ def test_sign_pins_the_verdict_files(tmp_path):
 
 def test_self_test_before_teaching_says_teach_first(tmp_path):
     approve(CHECKLIST, "Priya", tmp_path / "p" / "checklists.jsonl")
+    Users(tmp_path / "users.json").add("qa1", "qa", "pw-qa")
     c = TestClient(app_mod.create_app(tmp_path / "p", None))
+    login(c, "qa1", "pw-qa")
     assert c.post("/selftest", files=up(make_strip(seed=12))).json() == {"error": "Teach the station first"}
+
+
+def test_selftest_needs_qa_and_challenge_needs_login(tmp_path):
+    c, p = bench(tmp_path)
+    before = (p / "selftests.jsonl").read_text(encoding="utf-8")
+    for user in (None, ("op", "pw-op")):
+        if user:
+            login(c, *user)
+        assert c.post("/selftest", files=up(make_strip(seed=12))).json() == {"error": "Log in as a QA user first"}
+    assert (p / "selftests.jsonl").read_text(encoding="utf-8") == before
+    assert not any(e["action"] == "selftest" and e["user"] != "qa1" for e in _audit(p))
+    c.post("/logout")
+    assert c.post("/challenge", json={"strip_label": "C-1", "ejected": True}).json() == {"error": "Log in first"}
+    assert not any(e["action"] == "physical_challenge" for e in _audit(p))
+    login(c, "op", "pw-op")
+    assert c.post("/challenge", json={"strip_label": "C-1", "ejected": True}).json()["user"] == "op"
 
 
 class ClearClient(FakeClient):
@@ -807,6 +825,20 @@ def test_batch_end_stores_reconciliation(tmp_path):
     end = c.post("/batch/end").json()
     assert end["totals"] == {"inspected": 1, "passed": 1, "rejected": 0, "held": 0, "no_strip": 0, "balanced": True}
     assert Batches(p).rows[-1]["totals"] == end["totals"]
+
+
+def test_failed_leak_test_stays_due_and_holds_the_line(tmp_path):
+    c, p = bench(tmp_path)
+    _print_ok(p)
+    login(c, "qa1", "pw-qa")
+    assert c.post("/leak", data={"result": "fail", "note": "bubbles"}).json()["result"] == "fail"
+    s = c.get("/status").json()
+    assert s["due"] == ["Leak test due"] and s["held"] is True
+    assert [(e["user"], e["reason"]) for e in _holds(p)] == [("station", "Leak test failed — check the sealing")]
+    c.post("/leak", data={"result": "fail"})  # already held: no second hold
+    assert len(_holds(p)) == 1
+    assert c.post("/leak", data={"result": "pass"}).json()["result"] == "pass"
+    assert c.get("/status").json()["due"] == []
 
 
 def test_leak_refuses_negative_samples(tmp_path):
