@@ -187,6 +187,17 @@ def test_no_key_raises_with_key_file_hint(tmp_path, monkeypatch):
         client.spark_json("sys", "user", {"type": "object", "properties": {}, "required": []})
 
 
+def test_has_key_from_argument_env_or_key_file(tmp_path, monkeypatch):
+    monkeypatch.delenv("MODEL_API_KEY", raising=False)
+    monkeypatch.setattr("d2i.meta_api.KEY_FILE", tmp_path / "key.txt")
+    assert MetaClient(budget(tmp_path), key="k").has_key and not MetaClient(budget(tmp_path)).has_key
+    (tmp_path / "key.txt").write_text("k\n")
+    assert MetaClient(budget(tmp_path)).has_key
+    (tmp_path / "key.txt").unlink()
+    monkeypatch.setenv("MODEL_API_KEY", "k")
+    assert MetaClient(budget(tmp_path)).has_key
+
+
 def test_sam_image_parses_boxes(tmp_path):
     http = FakeHTTP([responses_body(sam_text([(0, (10, 20, 30, 40), 0.9)]))])
     client = MetaClient(budget(tmp_path), key="k", http=http)

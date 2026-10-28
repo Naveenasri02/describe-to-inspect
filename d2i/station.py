@@ -129,6 +129,9 @@ class Station:
         if "sam" in sources and "grid" in sources:  # SAM 3.1 failed on some photos: their pockets came from the grid
             raise ValueError(f"photo {sources.index('grid') + 1}: the pocket finder (SAM 3.1) did not answer — "
                              f"save that photo again")
+        # all from the grid with a key set: SAM failed on every photo; only a bench with no key is taught offline
+        if sources and "sam" not in sources and self.client is not None and getattr(self.client, "has_key", True):
+            raise ValueError("the pocket finder (SAM 3.1) did not answer — check the network and save the photos again")
         t0 = time.perf_counter()
         info = self.judge.teach(images, layouts)  # refuses photos whose layout is not ok
         for _ in images:

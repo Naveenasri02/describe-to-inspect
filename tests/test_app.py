@@ -74,12 +74,22 @@ def test_inspect_upload_returns_verdict(tmp_path):
 
 
 class FakeClient:
+    has_key = False  # an offline bench: no Meta key, so teaching on the checklist grid is allowed
+
     def spark_json(self, system, user, schema, name="result", **kw):
         return {"product": "vit C", "rows": 2, "per_row": 5, "item": "tablet",
                 "reject_if": ["empty_pocket"], "unclear": []}
 
     def sam_image(self, image, prompt):
         raise meta_api.MetaError("offline")  # the bench finds pockets with the checklist grid
+
+
+def test_teach_offline_with_the_real_client_and_no_key(tmp_path, monkeypatch):
+    """The app always has a Meta client; with no key it is an offline bench and teaches on the checklist grid."""
+    monkeypatch.delenv("MODEL_API_KEY", raising=False)
+    monkeypatch.setattr("d2i.meta_api.KEY_FILE", tmp_path / "nokey.txt")
+    c, p = bench(tmp_path, client=meta_api.MetaClient(meta_api.Budget()), batch=False)
+    assert c.app.state.station.layout_source == "grid" and c.app.state.station.taught_at is not None
 
 
 def test_describe_then_approve_flow(tmp_path):

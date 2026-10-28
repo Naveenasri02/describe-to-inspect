@@ -121,10 +121,18 @@ class MetaClient:
         self.budget, self._key = budget, key
         self.http = http or requests
 
-    def _headers(self):
+    def _api_key(self):
         key = self._key or os.environ.get("MODEL_API_KEY")
         if not key and KEY_FILE.exists():
             key = KEY_FILE.read_text().strip()
+        return key
+
+    @property
+    def has_key(self) -> bool:
+        return bool(self._api_key())
+
+    def _headers(self):
+        key = self._api_key()
         if not key:
             raise MetaError(f"no Meta API key: set MODEL_API_KEY or put the key in {KEY_FILE}")
         return {"Authorization": f"Bearer {key}"}

@@ -430,6 +430,19 @@ def test_teach_refuses_a_photo_the_pocket_finder_missed(tmp_path):
     assert st.taught_at is None and not (tmp_path / "model.pt").exists()
 
 
+def test_teach_refuses_when_sam_answers_no_photo(tmp_path):
+    approve(CHECKLIST, "Priya", tmp_path / "checklists.jsonl")
+    photos = [make_strip(seed=i, shift=(i, 0)) for i in range(6)]
+    st = Station(tmp_path, client=FailingSam(fail="all"), clock=lambda: T0)  # a key is set, SAM never answers
+    with pytest.raises(ValueError, match=r"^the pocket finder \(SAM 3.1\) did not answer — check the network and "
+                                         r"save the photos again$"):
+        st.teach(photos)
+    assert st.taught_at is None and not (tmp_path / "model.pt").exists()
+    st.client.has_key = False  # no key at all: an offline product, taught on the checklist grid
+    st.teach(photos)
+    assert st.layout_source == "grid" and st.client.calls == 12  # one failed strip call per photo, per teach
+
+
 def test_inspect_holds_when_the_taught_finder_does_not_answer(sam_station):
     st = sam_station
     assert not st.locked and st.inspect(make_strip(seed=15)).status == "PASS"
