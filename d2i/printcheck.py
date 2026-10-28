@@ -11,7 +11,7 @@ READ_SCHEMA = {"type": "object", "additionalProperties": False,
                               "mrp": {"type": "string"}, "product": {"type": "string"},
                               "strength": {"type": "string"}, "readable": {"type": "boolean"}}}
 READ_SYSTEM = ("You read the printed text on the foil side of a tablet blister strip. Copy exactly what is printed for: "
-               "batch number (B.No., Batch, Lot), manufacturing date (MFG, Mfd), expiry date (EXP, Exp) MRP (price), product name (the medicine name) and strength (number and unit). "
+               "batch number (B.No., Batch, Lot), manufacturing date (MFG, Mfd), expiry date (EXP, Exp), MRP (price), product name (the medicine name) and strength (number and unit). "
                "Use an empty string for anything not printed or not readable. Never guess or complete partial text. "
                "Set readable to false if the photo is too blurred to read.")
 _LABELS = ("BATCHNO", "BNO", "BATCH", "LOT")

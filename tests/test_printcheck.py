@@ -131,3 +131,26 @@ def test_prompt_never_contains_product_or_strength():
 
     read_print(object(), Fake())
     assert "500" not in seen[0] and "Paracetamol" not in seen[0]
+
+
+def test_garbled_strength_is_not_readable_not_wrong_print():
+    for bad in ("5OOmg", "5O0 mg", "S00 mg", "500 xx"):
+        r = runp(strength=bad)
+        assert r["reasons"] == ["Strength not readable — check by hand"], (bad, r)
+        assert wrong_print(r["reasons"]) is None
+
+
+def test_strength_forms():
+    pb = dict(BATCH, product="Amox", strength="1,000 mg")
+    ok = lambda got, want: check_print(dict(GOOD, product="Amox", strength=got), dict(pb, strength=want), TODAY)["status"]  # noqa: E731
+    assert ok("1000mg", "1,000 mg") == "PRINT_OK" and ok("1000 mg", "1000 mg") == "PRINT_OK"
+    assert ok("500 mg + 125 mg", "500mg+125mg") == "PRINT_OK"
+    assert ok("125 mg + 500 mg", "500mg+125mg") == "HOLD"  # order matters
+    assert ok("500 mg", "500 mg + 125 mg") == "HOLD"
+    assert ok("250 mg/5 ml", "250mg / 5ml") == "PRINT_OK" and ok("250 mg/5 ml", "125 mg/5 ml") == "HOLD"
+    for u in ("5 mcg", "5 ug", "100 IU", "5 %", "2 g", "10 ml"):
+        assert ok(u, u.upper()) == "PRINT_OK", u
+
+
+def test_prompt_separates_exp_and_mrp():
+    assert "(EXP, Exp), MRP" in READ_SYSTEM

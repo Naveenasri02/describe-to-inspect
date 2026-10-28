@@ -157,7 +157,7 @@ SIGN_MEANINGS = ("Reviewed", "Approved")
 
 
 def sign_record(html: str, audit: AuditLog, users: Users, name: str, password: str,
-                meaning: str = "", product_dir: Path | None = None, batch: str = "") -> dict:
+                meaning: str = "", product_dir: Path | None = None, batch: str = "", extra: dict | None = None) -> dict:
     """With product_dir, the signed entry also pins the verdict files (log.jsonl, selftests.jsonl) by sha256.
     Signature manifest: name (the entry's user), local time with its UTC offset, meaning, and the batch shown."""
     if meaning not in SIGN_MEANINGS:
@@ -170,6 +170,7 @@ def sign_record(html: str, audit: AuditLog, users: Users, name: str, password: s
         files = [Path(product_dir) / n for n in ("log.jsonl", "selftests.jsonl")]
         details["files_sha256"] = {f.name: hashlib.sha256(f.read_bytes()).hexdigest() if f.exists() else None
                                    for f in files}
+    details.update(extra or {})  # what the viewer saw (window, content and file hashes) wins over a fresh read
     entry = audit.append("sign", name, details, reason=meaning)
     return {"signed_by": name, "role": "qa", "meaning": meaning, "at": entry["at"],
             "signed_at": details["signed_at"], "record_sha256": sha}

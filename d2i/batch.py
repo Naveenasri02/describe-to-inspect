@@ -27,12 +27,23 @@ def parse_month(s: str) -> tuple[int, int]:
     return (int(yr) + (2000 if len(yr) == 2 else 0), mon)
 
 
-def parse_strength(s) -> tuple[float, str]:
-    """"500 mg" = "500mg" = "500MG" -> (500.0, "mg"); ValueError when there is no number and unit."""
-    m = re.fullmatch(r"\s*(\d+(?:\.\d+)?|\.\d+)\s*([A-Za-zµ%]+(?:\s*/\s*[A-Za-z]+)?)\s*", str(s))
-    if not m:
-        raise ValueError("Strength: a number and a unit, e.g. 500 mg")
-    return float(m.group(1)), re.sub(r"\s", "", m.group(2)).lower()
+_NUM = r"(?:\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?|\.\d+)"
+_STRENGTH = re.compile(rf"({_NUM})\s*(mg|mcg|[µμu]g|g|ml|iu|%)(?:\s*/\s*({_NUM})?\s*(ml|mg|g))?", re.I)
+
+
+def parse_strength(s) -> tuple:
+    """"500 mg" = "500mg" = "500MG" -> ((500.0, "mg", None),); "1,000 mg" and "500 mg + 125 mg" (parts in order) and
+    "250 mg/5 ml" work too. Only known units (mg, g, mcg, ug, ml, iu, %); anything else (a garbled "5OOmg") is a ValueError."""
+    parts = []
+    for part in str(s).split("+"):
+        m = _STRENGTH.fullmatch(part.strip())
+        if not m:
+            raise ValueError("Strength: a number and a unit, e.g. 500 mg")
+        n, unit, per_n, per_unit = m.groups()
+        unit = "mcg" if unit.lower() in ("µg", "μg", "ug") else unit.lower()
+        per = (float(per_n.replace(",", "")) if per_n else 1.0, per_unit.lower()) if per_unit else None
+        parts.append((float(n.replace(",", "")), unit, per))
+    return tuple(parts)
 
 
 def line_clearance(image, client) -> dict:
@@ -96,8 +107,10 @@ class Batches:
         extra = {}
         if product is not None or strength is not None:  # None = an older caller with no foil text to compare
             prod = re.sub(r"\s+", " ", str(product or "")).strip()
-            if not 1 <= len(prod) <= 60:
-                raise ValueError("Product name: 1 to 60 characters")
+            if not 1 <= len(prod) <= 80:
+                raise ValueError("Product name: 1 to 80 characters")
+            if len(str(strength)) > 40:
+                raise ValueError("Strength: 40 characters at most")
             parse_strength(strength or "")
             extra = {"product": prod, "strength": re.sub(r"\s+", " ", str(strength)).strip()}
         m, e = parse_month(mfg), parse_month(exp)

@@ -471,14 +471,16 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
         cfg = [["Pocket threshold", th(getattr(st.judge, "pocket_threshold", None))],
                ["Border threshold", th(getattr(st.judge, "border_threshold", None))],
                ["Camera source", src.source if src else "none"]]
-        return record.shift_record(product_dir, now - hours * 3600, now, batch, operator, state["client"], audit, config=cfg)
+        since = now - hours * 3600
+        fp = record.fingerprint(product_dir, since, now)  # taken first: a change in between only makes a signature "changed"
+        return record.shift_record(product_dir, since, now, batch, operator, state["client"], audit, config=cfg), fp
 
     @app.get("/record", response_class=HTMLResponse)
     def shift_record(batch: str = "", operator: str = "", hours: float = 8.0):
         try:
-            body = make_record(batch, operator, hours)
+            body, fp = make_record(batch, operator, hours)
             sha, rid = hashlib.sha256(body.encode("utf-8")).hexdigest(), uuid.uuid4().hex[:8]
-            records[rid] = (body, sha, record.shown_batch(product_dir, batch))
+            records[rid] = (body, sha, record.shown_batch(product_dir, batch), fp)
             while len(records) > 20:
                 records.pop(next(iter(records)))
             note = f"<p>Record id: {rid} · SHA-256 of the record above: {sha}</p>"
@@ -653,7 +655,7 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
             if rec is None:
                 return {"error": RECORD_EXPIRED}
             return sign_record(rec[0], audit, users, name, str(body.get("password", "")),
-                               meaning=str(body.get("meaning", "")), product_dir=product_dir, batch=rec[2])
+                               meaning=str(body.get("meaning", "")), product_dir=product_dir, batch=rec[2], extra=rec[3])
         return paid(run)
 
     @app.get("/trace")

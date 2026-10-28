@@ -165,3 +165,11 @@ def test_start_refuses_bad_product_or_strength(tmp_path):
     for p, s in (("", "500 mg"), ("X", ""), ("X", "strong")):
         with pytest.raises(ValueError):
             clear_batches(tmp_path).start("B1", "01/2026", "01/2028", "45", "qa1", 1060.0, product=p, strength=s)
+
+
+def test_start_limits_and_strength_forms(tmp_path):
+    for p, s in (("X" * 81, "500 mg"), ("X", "5OOmg"), ("X", "5" * 41 + "mg")):
+        with pytest.raises(ValueError):
+            clear_batches(tmp_path).start("B1", "01/2026", "01/2028", "45", "qa1", 1060.0, product=p, strength=s)
+    for s in ("1,000 mg", "500 mg + 125 mg", "250 mg/5 ml"):
+        assert clear_batches(tmp_path / s.replace("/", "_")).start("B1", "01/2026", "01/2028", "45", "qa1", 1060.0, product="X", strength=s)["strength"] == s
