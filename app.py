@@ -20,7 +20,7 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from d2i import record, trace
+from d2i import challenge, record, trace
 from d2i.commands import KEYWORDS, match
 from d2i.audit import (AuditLog, Users, _require_qa, log_physical_challenge, quarantine_list, release_quarantine,
                        sign_record)
@@ -31,7 +31,7 @@ from d2i.meta_api import Budget, MetaClient
 from d2i.ipqc import DRIFT_REJECTS, check_events, due, reconcile, reject_run, release_blockers
 from d2i.printcheck import check_print, read_print, wrong_print
 from d2i.pockets import find_layout
-from d2i.station import NEED_TEACH, Station, Verdict
+from d2i.station import FINDER_DOWN, NEED_TEACH, Station, Verdict
 from d2i.supervisor import Supervisor, baseline_from, hold_line, hold_state, resume_line
 from d2i.tray import inspect_clip, record_clip
 
@@ -207,7 +207,8 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
 
     def blockers_for(b):  # what still stops this open batch from being inspected
         signed = any(e["action"] == "specimen_signed" and e["details"].get("batch") == b["batch"] for e in audit.entries())
-        return release_blockers(b, st._selftests(), record._lines(product_dir / "prints.jsonl"), signed)
+        chal = challenge.runs(product_dir) if challenge.load_set(product_dir) else None  # no set: no challenge run needed
+        return release_blockers(b, st._selftests(), record._lines(product_dir / "prints.jsonl"), signed, chal)
 
     def not_released(b):
         left = blockers_for(b)
@@ -618,16 +619,6 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
     def quarantine():
         return paid(lambda: quarantine_list(product_dir, audit))
 
-    @app.post("/challenge")
-    def challenge(body: dict, request: Request):
-        name, role = who(request)
-        if not role:
-            return {"error": "Log in first"}
-        label = str(body.get("strip_label", "")).strip()
-        if not label:
-            return {"error": "Enter the challenge strip label."}
-        return paid(lambda: log_physical_challenge(audit, name, label, bool(body.get("ejected"))))
-
     @app.post("/release")
     def release(body: dict, request: Request):
         return paid(lambda: release_quarantine(product_dir, audit, users, qa(request), str(body.get("password", "")),
@@ -817,6 +808,111 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
     @app.get("/stream")
     def stream():
         return StreamingResponse(frames(), media_type="multipart/x-mixed-replace; boundary=f")
+
+    # --- Physical challenge: QA registers known-bad strips; a logged-in user runs each one through the verdict path ---
+    chal = {"run": None}  # the run in progress, in memory: a run lost to a restart never passed (the gate stays shut)
+
+    def local_now():
+        return datetime.fromtimestamp(clock()).isoformat(timespec="seconds")
+
+    @app.get("/challenge")
+    def challenge_state():
+        def run():
+            s, r = challenge.load_set(product_dir), chal["run"]
+            nxt = None
+            if s and not (r and r["pending"]):
+                nxt = r["strips"][len(r["results"])] if r else s["strips"][0]
+            return {"set": s, "next": nxt and challenge.place(nxt), "strip": nxt, "pending": r["pending"] if r else None,
+                    "results": r["results"] if r else [], "last": (challenge.runs(product_dir) or [None])[-1]}
+        return paid(run)
+
+    @app.post("/challenge/register")
+    def challenge_register(request: Request, label: str = Form(""), kind: str = Form(""), rule: str = Form(""),
+                           image: UploadFile | None = File(None)):
+        def run():
+            name = qa(request)
+            if not st.checklist:
+                return {"error": NO_CHECKLIST}
+            im = image_from(image)
+            with meta:
+                out = challenge.register(product_dir, st.checklist, label, kind, rule, im, name, local_now())
+                audit.append("challenge_register", name, {"strips": out["strips"]})
+            return out
+        return paid(run)
+
+    @app.post("/challenge/inspect")
+    def challenge_inspect(request: Request, image: UploadFile | None = File(None)):
+        def run():
+            name, role = who(request)
+            if not role:
+                return {"error": "Log in first"}
+            s = challenge.load_set(product_dir)
+            if not s:
+                return {"error": challenge.NO_SET}
+            im = image_from(image)
+            if im is None:
+                return {"error": "No camera frame to check."}
+            with lock:  # one slow station operation at a time
+                r = chal["run"]
+                if r and r["pending"]:
+                    return {"error": f"Tick Ejected for {r['pending']['label']} and record it first"}
+                if st.locked:
+                    return {"error": "Station locked: " + st.lock_reason}
+                strip = r["strips"][len(r["results"])] if r else s["strips"][0]
+                v = st._judge(im, None, None)  # the normal verdict, never logged: no batch count, no drift rule
+                if FINDER_DOWN in v.reasons:  # like a self-test that could not run: nothing is recorded
+                    return {"error": "Could not inspect: the pocket finder (SAM 3.1) did not answer — try again"}
+                res = challenge.judged(strip, v)
+                publish([v])  # a REJECT pulses the machine's reject output: that is what ejects the strip
+                if not res["caught"]:  # fail-safe: locked now, before anyone ticks anything
+                    challenge.lock(st, res, res["why"])
+                    sync_lock()
+                if r is None:
+                    b = batches.open
+                    r = chal["run"] = {"by": name, "batch": b["batch"] if b else None, "strips": s["strips"],
+                                       "results": [], "pending": None}
+                r["pending"] = res
+                msg = (f"Rejected for Rule {res['expected_rule']}: tick Ejected once the strip is out" if res["caught"]
+                       else f"Missed: {res['label']} {res['why']} — station locked, quarantine open")
+                return dict(res, message=msg)
+        return paid(run)
+
+    @app.post("/challenge/eject")
+    def challenge_eject(request: Request, body: dict | None = None):
+        def run():
+            name, role = who(request)
+            if not role:
+                return {"error": "Log in first"}
+            with lock:
+                r = chal["run"]
+                if not (r and r["pending"]):
+                    return {"error": "Inspect the challenge strip first"}
+                p, ej = r["pending"], bool((body or {}).get("ejected"))
+                res = {"label": p["label"], "expected_rule": p["expected_rule"], "status": p["status"],
+                       "rules": p["rules"], "passed": p["caught"] and ej, "ejected": ej}
+                if p["caught"] and not ej:  # rejected but still on the line: the reject path failed
+                    challenge.lock(st, p, "not ejected")
+                    sync_lock()
+                log_physical_challenge(audit, name, p["label"], ej, batch=r["batch"],
+                                       **{k: res[k] for k in ("expected_rule", "status", "rules", "passed")})
+                r["results"].append(res)
+                r["pending"] = None
+                if res["passed"] and len(r["results"]) < len(r["strips"]):
+                    return {"result": res, "next": challenge.place(r["strips"][len(r["results"])])}
+                row = batches._write(challenge.RUNS, {"time": clock(), "at": local_now(), "by": r["by"], "batch": r["batch"],
+                                                      "results": r["results"], "passed": res["passed"]})  # a run stops at its first miss
+                chal["run"] = None
+                return {"result": res, "run": row}
+        return paid(run)
+
+    @app.get("/challenge/photo/{label}")
+    def challenge_photo(label: str, request: Request):
+        if not who(request)[1]:
+            return JSONResponse({"error": "Log in first"}, status_code=401)
+        f = product_dir / "challenge" / f"{label}.jpg"
+        if not re.fullmatch(r"[A-Z0-9-]{1,12}", label) or not f.is_file():
+            return JSONResponse({"error": "No such photo"}, status_code=404)
+        return FileResponse(f, media_type="image/jpeg")
 
     return app
 

@@ -7,6 +7,7 @@ from pathlib import Path
 
 from d2i.audit import AuditLog, config_hashes, quarantine_list
 from d2i.batch import Batches
+from d2i.challenge import NO_SET, load_set, runs as challenge_runs
 from d2i.checklist import current
 from d2i.ipqc import check_events, missed_windows
 from d2i.meta_api import BudgetExceeded, MetaError
@@ -193,6 +194,8 @@ def _selftest_section(tests: list[dict]) -> str:
                        for r in t["results"]) or "none",
              _chip("Passed" if t["passed"] else "Failed"), "no" if t["passed"] else "yes"] for t in tests]
     for row, t in zip(rows, tests):
+        if t.get("challenge"):  # a missed physical challenge strip locks like a failed self-test
+            row[1] = f"Physical challenge {t['challenge']}: {row[1]}"
         if t.get("skipped"):
             row[3] = _Html(row[3] + e(" (did not cover: " + ", ".join(map(plain, t["skipped"])) + ")"))
     return "<h2>Self-tests</h2>" + _table(["Time", "Kinds", "Caught / named", "Result", "Station locked?"], rows)
@@ -250,17 +253,30 @@ def _audit_sections(audit, since: float, until: float) -> str:
 
     rows = [r for r in all_rows if in_range(r)]
     g = lambda r, k: r.get(k, "?")
-    d = lambda r: r["details"] if isinstance(r.get("details"), dict) else {}
-    phys = [[_when(g(r, "at")), g(r, "user"), d(r).get("strip_label", "?"), "yes" if d(r).get("ejected") else "no"]
-            for r in rows if r.get("action") == "physical_challenge"]
     agent = any(str(r.get("action", "")).startswith("agent_") for r in rows)  # rows carrying the agent's text
     act = lambda a: str(a).replace("_", " ").replace("selftest", "self-test").capitalize()  # specimen_signed -> Specimen signed
     return (f"<h2>Audit trail</h2><p class=\"chain{'' if ok else ' bad'}\">{e(chain)}</p>"
             "<p>The audit trail is tamper-evident: each entry carries the hash of the one before.</p>"
             + _table(["Time", "User", "Action", "Reason"],
                      [[_when(g(r, "at")), g(r, "user"), act(g(r, "action")), g(r, "reason")] for r in rows])
-            + ("<p>Built with Muse Spark Open</p>" if agent else "")
-            + "<h2>Physical challenge strips</h2>" + _table(["Time", "User", "Strip", "Ejected?"], phys))
+            + ("<p>Built with Muse Spark Open</p>" if agent else ""))
+
+
+def _challenge_section(product_dir: Path, since: float, until: float) -> str:
+    """The registered set and the runs in this record's time range, each strip with what the station said."""
+    s = load_set(product_dir)
+    if not s:
+        return f"<h2>Physical challenge</h2><p>{e(NO_SET)}</p>"
+    say = lambda x: (f"{x['label']}: {PLAIN.get(x['status'], x['status'])}"
+                     + (f" (Rule {', '.join(map(str, x['rules']))})" if x["rules"] else "")
+                     + f", expected Rule {x['expected_rule']}, {'ejected' if x['ejected'] else 'not ejected'}")
+    rows = [[_when(r["at"]), r["by"], r.get("batch") or "", "; ".join(map(say, r["results"])),
+             _chip("Passed" if r["passed"] else "Failed")] for r in challenge_runs(product_dir) if since <= r["time"] <= until]
+    return ("<h2>Physical challenge</h2>"
+            f"<p>Set registered by {e(s['registered_by'])} at {e(_when(s['at']))}.</p>"
+            + _table(["Strip", "Defect kind", "Expected rule"],
+                     [[x["label"], x["kind"].replace("_", " "), f"Rule {x['rule']}"] for x in s["strips"]])
+            + _table(["Time", "By", "Batch", "Each strip", "Run"], rows))
 
 
 def _batch_section(product_dir: Path, audit: AuditLog | None = None, until: float = 0.0) -> str:
@@ -289,6 +305,10 @@ def _batch_section(product_dir: Path, audit: AuditLog | None = None, until: floa
     release = [["Self-test for this batch", _when(st["at"]) if st else _chip("Not done"), st_by if st else ""],
                ["Start-up print check", _when(ok["at"]) if ok else _chip("Not done"), ok["by"] if ok else ""],
                ["QA signature on the start-up specimen", _when(sig["at"]) if sig else _chip("Not done"), sig["user"] if sig else ""]]
+    if load_set(product_dir):  # the gate needs a passed challenge run only when a set is registered
+        run = next((r for r in challenge_runs(product_dir) if r["passed"] and r["time"] >= start["time"]), None)
+        release.insert(1, ["Physical challenge for this batch", _when(run["at"]) if run else _chip("Not done"),
+                           run["by"] if run else ""])
     checks = [(r["time"], [_when(r["at"]), "Leak test" if r["event"] == "leak" else "Print check", r["by"],
                            _chip(r["result"] if r["event"] == "leak" else r["status"])]) for r in ev if r["event"] != "foil_change"]
     checks += [(r["time"], [_when(r["time"]), "Foil roll changed", r["by"], ""]) for r in ev if r["event"] == "foil_change"]
@@ -340,7 +360,8 @@ def shift_record(product_dir: Path, since: float, until: float, batch: str, oper
         "<header><div class='title'><h1>Shift record</h1><span class='badge draft'>DRAFT — needs QA signature</span></div>"
         "<dl class='meta'>" + "".join(f"<div><dt>{k}</dt><dd{c}>{e(str(v or '–'))}</dd></div>" for k, v, c in meta) + "</dl></header>",
         _batch_section(product_dir, audit, until),
-        _checklist_section(cl), _selftest_section(tests), _totals_section(verdicts),
+        _checklist_section(cl), _selftest_section(tests), _challenge_section(product_dir, since, until),
+        _totals_section(verdicts),
         _rejects_section(verdicts), _held_section(verdicts),
         _config_section(product_dir), _quarantine_section(product_dir, audit), _audit_sections(audit, since, until),
         "<h2>Shift summary (written by Muse Spark — check before signing)</h2>"

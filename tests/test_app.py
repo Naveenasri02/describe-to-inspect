@@ -199,7 +199,6 @@ def test_release_requires_qa_login(tmp_path):
     assert login(c, "qa1", "pw-qa") == {"name": "qa1", "role": "qa"}
     assert c.post("/release", json={"password": "bad", "reason": "x"}).json()["error"]
     assert c.post("/release", json={"password": "pw-qa", "reason": "strips re-checked"}).json()["action"] == "release_quarantine"
-    assert c.post("/challenge", json={"strip_label": "C-1", "ejected": True}).json()["user"] == "qa1"
     rid = c.get("/record").headers["X-Record-Id"]
     assert c.post("/sign", json={"password": "pw-qa", "record_id": rid}).json()["signed_by"] == "qa1"
 
@@ -528,10 +527,9 @@ def test_selftest_needs_qa_and_challenge_needs_login(tmp_path):
     assert (p / "selftests.jsonl").read_text(encoding="utf-8") == before
     assert not any(e["action"] == "selftest" and e["user"] != "qa1" for e in _audit(p))
     c.post("/logout")
-    assert c.post("/challenge", json={"strip_label": "C-1", "ejected": True}).json() == {"error": "Log in first"}
+    for url in ("/challenge/inspect", "/challenge/eject"):  # the verified run: tests/test_challenge.py
+        assert c.post(url).json() == {"error": "Log in first"}
     assert not any(e["action"] == "physical_challenge" for e in _audit(p))
-    login(c, "op", "pw-op")
-    assert c.post("/challenge", json={"strip_label": "C-1", "ejected": True}).json()["user"] == "op"
 
 
 class ClearClient(FakeClient):

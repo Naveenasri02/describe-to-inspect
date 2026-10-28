@@ -149,8 +149,9 @@ def release_quarantine(product_dir, audit: AuditLog, users: Users, name: str, pa
     return audit.append("release_quarantine", name, {"strips": len(q["strips"]), "failed_at": q["failed_at"]}, reason)
 
 
-def log_physical_challenge(audit: AuditLog, user: str, strip_label: str, ejected: bool) -> dict:
-    return audit.append("physical_challenge", user, {"strip_label": strip_label, "ejected": ejected})
+def log_physical_challenge(audit: AuditLog, user: str, strip_label: str, ejected: bool, **result) -> dict:
+    """result: what the station said for this challenge strip (expected_rule, status, rules, passed, batch)."""
+    return audit.append("physical_challenge", user, {"strip_label": strip_label, "ejected": ejected, **result})
 
 
 def sign_record(html: str, audit: AuditLog, users: Users, name: str, password: str,

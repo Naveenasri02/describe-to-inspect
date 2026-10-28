@@ -25,13 +25,19 @@ def reject_run(rows: list[dict], batch: str, since: float = 0.0) -> int:
 IPQC_EVERY_S = 3600
 BLOCK_SELFTEST, BLOCK_PRINT, BLOCK_SPECIMEN = ("Self-test for this batch", "Start-up print check",
                                                "QA signature on the start-up specimen")
+BLOCK_CHALLENGE = "Physical challenge for this batch"
 
 
-def release_blockers(batch: dict, selftests: list, prints: list, specimen_signed: bool) -> list[str]:
-    """What still stands between a started batch and inspection; empty = released."""
+def release_blockers(batch: dict, selftests: list, prints: list, specimen_signed: bool,
+                     challenge_runs: list | None = None) -> list[str]:
+    """What still stands between a started batch and inspection; empty = released.
+    challenge_runs: None when no physical challenge set is registered (then no challenge run is needed)."""
     out = []
     if not any(t.get("passed") and t.get("time", 0) >= batch["time"] for t in selftests):
         out.append(BLOCK_SELFTEST)
+    if challenge_runs is not None and not any(r.get("passed") and r.get("time", 0) >= batch["time"]
+                                              for r in challenge_runs):
+        out.append(BLOCK_CHALLENGE)
     if not any(p.get("batch") == batch["batch"] and p.get("status") == "PRINT_OK" for p in prints):
         out.append(BLOCK_PRINT)
     if not specimen_signed:

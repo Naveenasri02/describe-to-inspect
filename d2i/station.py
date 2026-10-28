@@ -91,7 +91,8 @@ class Station:
             return "Checklist changed — teach the station again"
         tests = self._selftests()
         if tests and not tests[-1]["passed"]:
-            return "Self-test missed: " + (", ".join(tests[-1]["failed"]) or "see result")
+            what = "Physical challenge missed: " if tests[-1].get("challenge") else "Self-test missed: "
+            return what + (", ".join(tests[-1]["failed"]) or "see result")
         version = self.checklist and self.checklist["version"]
         ok = [t for t in tests if t["passed"] and t["checklist_version"] == version and t["taught_at"] == self.taught_at]
         if not ok:  # also covers a re-teach after the last pass
