@@ -839,3 +839,32 @@ def test_status_shows_the_pending_sentence(tmp_path):
     c.post("/describe", json={"text": "ten tablets"})
     s = c.get("/status").json()
     assert s["pending_sentence"] == "ten tablets" and s["taught"] is False and s["totals"] is None
+
+
+def test_reject_saves_photo_and_logs_name(tmp_path):
+    c, p = bench(tmp_path)
+    _fake_judge(c, "empty_pocket")
+    assert c.post("/inspect", files=up(make_strip(seed=15))).json()["status"] == "REJECT"
+    row = _lines(p / "log.jsonl")[-1]
+    assert re.fullmatch(r"[0-9]{8}-[0-9]{6}-[0-9]+\.jpg", row["photo"])
+    assert cv2.imread(str(p / "rejects" / row["photo"])) is not None
+
+
+def test_pass_saves_no_photo(tmp_path):
+    c, p = bench(tmp_path)
+    c.app.state.station._judge = lambda image, sid, name: Verdict("PASS", strip_id=sid, image_name=name)
+    c.post("/inspect", files=up(make_strip(seed=15)))
+    assert "photo" not in _lines(p / "log.jsonl")[-1] and not (p / "rejects").exists()
+
+
+def test_rejects_route_refuses_bad_names(tmp_path):
+    c, p = bench(tmp_path)
+    _fake_judge(c, "empty_pocket")
+    c.post("/inspect", files=up(make_strip(seed=15)))
+    name = _lines(p / "log.jsonl")[-1]["photo"]
+    assert c.get("/rejects/" + name).status_code == 401  # nobody logged in
+    login(c, "op", "pw-op")
+    assert c.get("/rejects/" + name).status_code == 200
+    for bad in ("../x.jpg", "a.jpg", "..%2Fx.jpg", "20260101-000000-1.png"):
+        assert c.get("/rejects/" + bad).status_code == 404
+    assert c.get("/rejects/20260101-000000-9.jpg").status_code == 404  # right shape, no such file

@@ -4,6 +4,7 @@ import html
 import hashlib
 import json
 import mimetypes
+import re
 import secrets
 import threading
 import time
@@ -91,6 +92,17 @@ RECORD_EXPIRED = "Record expired — open it again before signing"
 class _NoPlc:  # no PLC attached (tests): the hold still lives in hold.json
     def set_hold(self, on):
         pass
+
+
+RED, BLUE, GREEN = (42, 42, 194), (200, 120, 30), (74, 128, 16)  # BGR: screen reject red, strip blue, pass green
+
+
+def draw_pockets(f, boxes, bad, rules=None):
+    """Pocket boxes: failing ones red (with their rule number when `rules` is given), the rest green. Shared by /stream and the reject photo."""
+    for i, (x0, y0, x1, y1) in enumerate(boxes):
+        cv2.rectangle(f, (x0, y0), (x1, y1), RED if i + 1 in bad else GREEN, 3)
+        if rules and i + 1 in rules:
+            cv2.putText(f, f"R{rules[i + 1]}", (x0 + 4, y0 + 22), cv2.FONT_HERSHEY_SIMPLEX, 0.7, RED, 2)
 
 
 def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time, chat=None,
@@ -696,6 +708,37 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
                                    str(body.get("reason", "")))
         return paid(run)
 
+    def snap(image, v):
+        """Annotated JPEG of a REJECT/HOLD strip in rejects/; returns its file name. Offline: the same finder as the stream."""
+        try:
+            lay = find_layout(image, st.checklist, None, st._template)
+        except Exception:
+            lay = None
+        f = image.copy()
+        sb = tuple(int(v) for v in lay.strip_box) if lay and lay.strip_box else None
+        if sb:
+            cv2.rectangle(f, sb[:2], sb[2:], BLUE, 3)
+        bad = {r["pocket"]: r["rule"] for r in v.reasons if r.get("pocket") is not None}
+        draw_pockets(f, lay.pockets if lay and lay.ok else [], set(bad), bad)
+        if sb and any(r.get("pocket") is None for r in v.reasons):
+            cv2.rectangle(f, sb[:2], sb[2:], RED, 5)  # a strip-level reason: the whole outline
+        d = product_dir / "rejects"
+        d.mkdir(exist_ok=True)
+        stamp = datetime.fromtimestamp(clock()).strftime("%Y%m%d-%H%M%S")
+        name = f"{stamp}-{len(list(d.glob(stamp + '-*.jpg'))) + 1}.jpg"
+        cv2.imwrite(str(d / name), f)
+        return name
+
+    st.snap = snap
+
+    @app.get("/rejects/{name}")
+    def reject_photo(name: str, request: Request):
+        if not who(request)[1]:
+            return JSONResponse({"error": "Log in first"}, status_code=401)
+        if not re.fullmatch(r"[0-9]{8}-[0-9]{6}-[0-9]+\.jpg", name) or not (product_dir / "rejects" / name).is_file():
+            return JSONResponse({"error": "No such photo"}, status_code=404)
+        return FileResponse(product_dir / "rejects" / name, media_type="image/jpeg")
+
     def overlay_boxes(frame):
         """Pocket boxes for the stream, recomputed at most once a second, without paid calls."""
         t, boxes = state["overlay"]
@@ -716,8 +759,7 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
             if f is not None:
                 last = state["last"] or {}
                 bad = {r.get("pocket") for r in last.get("reasons", [])}
-                for i, (x0, y0, x1, y1) in enumerate(overlay_boxes(f)):
-                    cv2.rectangle(f, (x0, y0), (x1, y1), (42, 42, 194) if i + 1 in bad else (74, 128, 16), 3)  # screen reject / pass red and green (BGR)
+                draw_pockets(f, overlay_boxes(f), bad)
                 if last:
                     cv2.putText(f, last["status"], (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
                 ok, buf = cv2.imencode(".jpg", f)

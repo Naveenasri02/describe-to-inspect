@@ -190,6 +190,11 @@ def _batch_section(product_dir: Path, audit: AuditLog | None = None, until: floa
     vs = [v for v in _lines(Path(product_dir) / "log.jsonl") if v.get("batch") == start["batch"]]
     by_status = Counter(v["status"] for v in vs)
     by_rule = Counter(_label(r) for v in vs for r in v["reasons"])
+    shots = [v for v in vs if v.get("photo")][-12:]  # the 12 latest reject photos, each with its reasons
+    photos = "".join(f'<figure style="display:inline-block;margin:4px;width:200px;vertical-align:top">'
+                     f'<a href="/rejects/{e(v["photo"])}"><img src="/rejects/{e(v["photo"])}" width="200" alt="Reject photo"></a>'
+                     f'<figcaption>{e(v["at"])}: {e("; ".join(r["text"] for r in v["reasons"]))}</figcaption></figure>'
+                     for v in shots)
     return ("<h2>Batch</h2>" + _table(["Item", "Value"], fields) + "<h2>Release</h2>"
             + _table(["Item", "Time", "By"], release) + "<h2>In-process checks</h2>"
             + _table(["Time", "Check", "By", "Result"], sorted(checks)) + "<h2>Leak test</h2>"
@@ -199,7 +204,8 @@ def _batch_section(product_dir: Path, audit: AuditLog | None = None, until: floa
                  "; ".join(r["reasons"])] for r in prints])
             + "<h2>Batch verdicts</h2>" + _table(list(STATUSES), [[by_status[s] for s in STATUSES]])
             + "<h2>Reconciliation</h2>" + recon
-            + _table(["Reason", "Count"], sorted(by_rule.items())))
+            + _table(["Reason", "Count"], sorted(by_rule.items()))
+            + ("<h2>Reject photos</h2>" + photos if photos else ""))
 
 
 def shift_record(product_dir: Path, since: float, until: float, batch: str, operator: str, client=None,

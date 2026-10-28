@@ -50,6 +50,7 @@ def _append(path: Path, row: dict):
 class Station:
     def __init__(self, product_dir, client=None, judge=None, shift_hours: float = 8.0, clock=time.time):
         self.dir, self.client, self.shift_hours, self.clock = Path(product_dir), client, shift_hours, clock
+        self.snap = None  # set by the app: (image, verdict) -> file name of the saved reject photo
         self.checklist = current(self.dir / "checklists.jsonl")
         model = self.dir / "model.pt"
         state = torch.load(model, map_location="cpu") if model.exists() else {}
@@ -218,14 +219,20 @@ class Station:
                         strip_id=strip_id, image_name=image_name, at=self._now())
         else:
             v = self._judge(image, strip_id, image_name)
-        return self.log(v, held, batch)
+        return self.log(v, held, batch, image)
 
-    def log(self, v: Verdict, held: bool = False, batch=None) -> Verdict:
+    def log(self, v: Verdict, held: bool = False, batch=None, image=None) -> Verdict:
         """Append one verdict to log.jsonl. held: the line is held, so a PASS is logged (and returned) as HOLD."""
         if held and v.status == "PASS":
             v.status, v.reasons = "HOLD", [{"rule": None, "check": "line_held", "pocket": None, "text": LINE_HELD}]
         v.at = v.at or self._now()
-        _append(self.dir / "log.jsonl", dict(asdict(v), checklist_version=self.checklist["version"], batch=batch))
+        row = dict(asdict(v), checklist_version=self.checklist["version"], batch=batch)
+        if image is not None and self.snap and v.status in ("REJECT", "HOLD"):
+            try:
+                row["photo"] = self.snap(image, v)
+            except Exception:  # the photo is extra evidence: never lose the verdict row over it
+                pass
+        _append(self.dir / "log.jsonl", row)
         return v
 
     def self_test(self, good_image, rng_seed: int | None = None, record: bool | str = True) -> dict:

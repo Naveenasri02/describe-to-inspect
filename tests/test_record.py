@@ -230,3 +230,15 @@ def test_record_old_ended_batch_without_totals(product):
     b.end("qa1", T0 + 100)
     html = shift_record(product, T0 - 10, T0 + 200, "", "")
     assert "Not reconciled (ended before reconciliation)" in html and "still open" not in html
+
+
+def test_record_shows_reject_thumbnails(product):
+    b = Batches(product)
+    b.clearance({"clear": True, "found": []}, "qa1", T0)
+    b.start("LOT8", "01/2026", "01/2028", "45", "qa1", T0 + 60)
+    rows = [dict(_verdict(20 + i, "REJECT", [R2]), batch="LOT8", photo=f"20261101-0000{i:02d}-{i}.jpg") for i in range(14)]
+    with (product / "log.jsonl").open("a", encoding="utf-8") as f:
+        f.write("".join(json.dumps(r) + chr(10) for r in rows))
+    html = shift_record(product, T0 - 10, T0 + 100, "", "")
+    assert html.count("<img") == 12 and 'href="/rejects/20261101-000013-13.jpg"' in html
+    assert "20261101-000000-0.jpg" not in html and "pocket 7 is empty" in html  # the latest 12, each with its reason
