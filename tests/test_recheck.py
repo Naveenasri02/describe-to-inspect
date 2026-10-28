@@ -255,7 +255,10 @@ def test_record_totals_and_quarantine_count_each_strip_once(tmp_path):
     assert "<td>2</td><td>2</td><td>1</td><td>0</td><td>0</td>" in tot  # passed, rejected, held, locked, no strip
     bv = html.split("<h2>Batch verdicts</h2>")[1].split("<h2>")[0]
     assert "<td>2</td><td>2</td><td>1</td><td>0</td><td>0</td>" in bv
-    Batches(p)._write("selftests.jsonl", dict(c.app.state.station._selftests()[-1], passed=False, failed=["x"],
-                                              time=time.time() + 1))
-    q = quarantine_list(p, AuditLog(p / "audit.jsonl"))["strips"]
-    assert q and not any(v.get("recheck") for v in q)  # a re-checked strip is listed once, by its first verdict
+    b = Batches(tmp_path / "q")  # fixed times: verdict times have one-second resolution
+    t = 1_800_000_000.0
+    b._write("selftests.jsonl", {"passed": True, "time": t, "at": "x"})
+    for r in ({"status": "PASS"}, {"status": "PASS", "recheck": True}):
+        b._write("log.jsonl", dict(r, at=datetime.fromtimestamp(t + 10).isoformat()))
+    b._write("selftests.jsonl", {"passed": False, "failed": ["x"], "time": t + 20, "at": "y"})
+    assert [v.get("recheck") for v in quarantine_list(tmp_path / "q")["strips"]] == [None]  # listed once, first verdict
