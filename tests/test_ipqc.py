@@ -59,8 +59,8 @@ def test_due_after_an_hour():
 
 def test_due_after_foil_change():
     rows = [ev("leak", 1100.0), ev("print", 1100.0), ev("foil_change", 1200.0)]
-    assert due(BATCH, rows, 1300.0) == ["Leak test due", "Print check due"]
-    assert due(BATCH, rows + [ev("leak", 1250.0)], 1300.0) == ["Print check due"]
+    assert due(BATCH, rows, 1300.0) == ["Print check due"]  # only the print clock restarts
+    assert due(BATCH, [ev("foil_change", 1200.0)], 1300.0) == ["Leak test due", "Print check due"]
 
 
 def test_not_due_after_recent_checks():
@@ -73,7 +73,12 @@ def test_missed_windows():
     assert missed_windows(BATCH, [ev("leak", 1010.0), ev("leak", 4700.0)], 8205.0) == [  # per kind, like due()
         ("Print check missed", 1000.0, 4600.0), ("Print check missed", 4600.0, 8200.0)]
     assert missed_windows(BATCH, [ev("foil_change", 2000.0)], 2000.0 + 3600) == [
-        ("Leak test missed", 2000.0, 5600.0), ("Print check missed", 2000.0, 5600.0)]  # a foil change restarts the windows
+        ("Leak test missed", 1000.0, 4600.0), ("Print check missed", 2000.0, 5600.0)]  # a foil change restarts the print windows only
+
+
+def test_foil_change_makes_only_the_print_check_due():
+    rows = [ev("leak", 1100.0), ev("print", 1100.0), ev("foil_change", 1200.0)]
+    assert due(BATCH, rows, 1300.0) == ["Print check due"]
 
 
 def test_failed_leak_test_does_not_count():
@@ -83,6 +88,29 @@ def test_failed_leak_test_does_not_count():
     assert due(BATCH, rows + [ev("leak", 1150.0)], 1200.0) == []
 
 
-def test_reconcile_balanced():
+C0 = {"received": 5, "good_tray": 2, "reject_box": 2, "samples": 1, "unused": 0,
+      "foil_issued": 10, "foil_used": 8, "foil_returned": 1.5, "foil_destroyed": 0.5}
+L0 = {"strips": 0, "foil": 0.5}
+
+
+def test_reconcile_open_without_typed_counts():
     r = reconcile(rows("PPRHNL") + rows("P", "B0"), "B1")
-    assert r == {"inspected": 5, "passed": 2, "rejected": 1, "held": 1, "no_strip": 1, "balanced": True}  # LOCKED excluded
+    assert r == {"inspected": 5, "passed": 2, "rejected": 1, "held": 1, "no_strip": 1, "status": "open"}  # LOCKED excluded
+
+
+def test_reconcile_typed_counts_within():
+    r = reconcile(rows("PPRH"), "B1", C0, L0)
+    assert r["status"] == "within" and [l["difference"] for l in r["lines"]] == [0, 0, 0, 0]
+    assert r["lines"][0]["name"] == "Strip balance" and r["limits"] == L0
+
+
+def test_reconcile_old_tautology_is_gone():
+    r = reconcile(rows("P" * 10), "B1", dict(C0, received=10, good_tray=9, reject_box=0, samples=0), L0)
+    tray = next(l for l in r["lines"] if l["name"] == "Good tray")
+    assert tray["difference"] == -1 and tray["outside"] and r["status"] == "outside"
+
+
+def test_reconcile_foil_line_and_limit():
+    assert reconcile(rows("PPRH"), "B1", dict(C0, foil_used=7.6), L0)["status"] == "within"  # 0.4 m, limit 0.5
+    r = reconcile(rows("PPRH"), "B1", dict(C0, foil_used=7), L0)
+    assert next(l for l in r["lines"] if l["name"] == "Foil")["difference"] == 1 and r["status"] == "outside"

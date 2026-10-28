@@ -90,3 +90,13 @@ def test_setup_screen_says_when_the_self_test_could_not_run(tmp_path):
 def test_end_batch_asks_first():  # a batch number cannot be used again
     js = (STATIC / "station.js").read_text(encoding="utf-8")
     assert re.search(r"async function batchEnd\(\)\{if\(!confirm\(", js)
+
+
+def test_end_batch_form_takes_counts_limits_and_reason():
+    html = (STATIC / "index.html").read_text(encoding="utf-8")
+    js = (STATIC / "station.js").read_text(encoding="utf-8")
+    for i in ("e-received", "e-good", "e-reject", "e-samples", "e-unused", "e-fissued", "e-fused", "e-freturned",
+              "e-fdestroyed", "e-cleared", "e-slimit", "e-flimit", "e-pw", "e-reason"):
+        assert f'id="{i}"' in html and f'$("{i}")' in js, i
+    assert "site policy" in html and "line cleared, leftover printed foil returned or destroyed" in html
+    assert "confirm(" in js.split("async function batchEnd")[1].split("\n")[0] and "Totals balance" not in js

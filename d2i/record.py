@@ -87,7 +87,7 @@ h2{break-after:avoid}
 PLAIN = {"PASS": "Passed", "REJECT": "Rejected", "HOLD": "Held", "LOCKED": "Locked", "NO_STRIP": "No strip",
          "PRINT_OK": "Print OK", "pass": "Passed", "fail": "Failed"}  # the Run screen's band words
 TONE = {"Passed": "pass", "Print OK": "pass", "Clear": "pass", "Yes": "pass", "Rejected": "reject", "Failed": "reject",
-        "Locked": "reject", "Not clear": "reject", "No": "reject", "Held": "hold", "Missed": "hold", "Not done": "hold"}
+        "Locked": "reject", "Not clear": "reject", "No": "reject", "Outside": "reject", "Within": "pass", "Held": "hold", "Missed": "hold", "Not done": "hold"}
 NAMES = {"model_sha256": "Model SHA-256", "checklist_version": "Checklist version", "checklist_sha256": "Checklist SHA-256"}
 
 
@@ -211,7 +211,7 @@ def _label(r: dict) -> str:
 
 
 def _rejects_section(verdicts: list[dict]) -> str:
-    n = Counter(_label(r) for v in verdicts if v["status"] == "REJECT" for r in v["reasons"])
+    n = Counter(k for v in verdicts if v["status"] == "REJECT" for k in {_label(r) for r in v["reasons"]})  # a strip counts once per rule
     return "<h2>Rejects per rule</h2>" + _table(["Rule", "Rejects"], [[k, c] for k, c in sorted(n.items(), key=lambda kv: (kv[0] == 'Unlisted', int(kv[0].split()[1]) if kv[0] != 'Unlisted' else 0))], "cnt")
 
 
@@ -295,14 +295,21 @@ def _batch_section(product_dir: Path, audit: AuditLog | None = None, until: floa
     checks += [(a, [_span(a, b), text, "", _chip("Missed")]) for text, a, b in missed_windows(start, ev, end["time"] if end else until)]
     checks = [row for _, row in sorted(checks, key=lambda c: (c[0], c[1][1]))]  # by time: shown times do not sort as text
     tot = end.get("totals") if end else None
-    recon = (_table(["Inspected", "Passed", "Rejected", "Held", "No strip", "Balanced"],
-                    [[tot[k] for k in ("inspected", "passed", "rejected", "held", "no_strip")]
-                     + [_chip("Yes" if tot["balanced"] else "No")]], "n")
-             if tot else "<p>Not reconciled (ended before reconciliation)</p>" if end
-             else "<p>Not reconciled: the batch is still open</p>")
+    if tot and "lines" in tot:
+        recon = (_table(["Line", "Difference", "Limit (site policy)", "Result"],
+                        [[l["name"], f'{l["difference"]:g} {l["unit"]}', f'{l["limit"]:g} {l["unit"]}',
+                          _chip("Outside" if l["outside"] else "Within")] for l in tot["lines"]], "n")
+                 + (f'<p>Outside limit — investigated by {e(tot["investigated"]["by"])}: {e(tot["investigated"]["reason"])}</p>'
+                    if tot.get("investigated") else ""))
+    else:  # batches ended before typed counts
+        recon = (_table(["Inspected", "Passed", "Rejected", "Held", "No strip", "Balanced"],
+                        [[tot[k] for k in ("inspected", "passed", "rejected", "held", "no_strip")]
+                         + [_chip("Yes" if tot["balanced"] else "No")]], "n")
+                 if tot else "<p>Not reconciled (ended before reconciliation)</p>" if end
+                 else "<p>Not reconciled: the batch is still open</p>")
     vs = [v for v in _lines(Path(product_dir) / "log.jsonl") if v.get("batch") == start["batch"]]
     by_status = Counter(v["status"] for v in vs)
-    by_rule = Counter(_label(r) for v in vs for r in v["reasons"])
+    by_rule = Counter(k for v in vs for k in {_label(r) for r in v["reasons"]})
     shots = [v for v in vs if v.get("photo")][-12:]  # the 12 latest reject photos, each with its reasons
     photos = "".join(f'<figure><a href="/rejects/{e(v["photo"])}" target="_blank" rel="noopener">'
                      f'<img src="/rejects/{e(v["photo"])}" alt="Reject photo"></a>'

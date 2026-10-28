@@ -265,10 +265,12 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
             blockers = blockers_for(open_batch) if open_batch else []
             overdue = due(open_batch, check_events(product_dir, open_batch["batch"]), clock()) if open_batch else []
             totals = reconcile(rows, open_batch["batch"]) if open_batch else None
+            recon = "open" if open_batch else next((r["totals"].get("status") for r in reversed(batches.rows)
+                                                      if r["event"] == "end"), None)
             hold_reason = next((e["reason"] for e in reversed(audit.entries()) if e["action"] == "hold_line" and e["user"] == by),
                                "") if held and by != "supervisor" else ""  # the supervisor's hold has no hold_line row
         except Exception:  # unreadable records: not released (the safe direction)
-            blockers, overdue, totals, hold_reason = ["Cannot read the batch records"], [], None, ""
+            blockers, overdue, totals, hold_reason, recon = ["Cannot read the batch records"], [], None, "", None
         if held:
             by = "the Shift Supervisor" if by == "supervisor" else by
             banner, text = "HOLD", (f"Line held by {by} — QA must resume." if by else "Line held — QA must resume.") \
@@ -288,7 +290,7 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
                 "counts": counts, "batch": open_batch, "blockers": blockers, "due": overdue, "last_verdict": last, "selftest_skipped": uncovered, "state": banner, "text": text,
                 "rules": cl["rules"] if cl else [], "pending": pending["rules"] if pending else None,
                 "held": held, "quarantine_count": qn, "quarantine_error": qerr,
-                "checklist": cl, "pending_sentence": pending and pending.get("sentence"), "totals": totals,
+                "checklist": cl, "pending_sentence": pending and pending.get("sentence"), "totals": totals, "reconciliation": recon,
                 "selftest": last_test, "taught": st._template is not None,
                 "good_photos": len(list((product_dir / "good").glob("*.jpg"))), "hold_reason": hold_reason,
                 "machine_link": plc.connected if plc else None,
@@ -379,7 +381,10 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
             with lock:
                 r = st.self_test(im)
                 sync_lock()
-                audit.append("selftest", name, {"passed": r.get("passed")})
+                if r.get("not_run"):  # the finder did not answer: not a failed self-test
+                    audit.append("selftest_not_run", name, {"not_run": r["not_run"]})
+                else:
+                    audit.append("selftest", name, {"passed": r.get("passed")})
                 return r
         return paid(run)
 
@@ -552,16 +557,43 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
         return paid(run)
 
     @app.post("/batch/end")
-    def batch_end(request: Request):
+    async def batch_end(request: Request):
+        f = dict(await request.form())  # typed counts, limits, clearance tick, and password + reason when outside a limit
+
         def run():
             name = qa(request)
+            keys = ("received", "good_tray", "reject_box", "samples", "unused",
+                    "foil_issued", "foil_used", "foil_returned", "foil_destroyed")
+            try:
+                counts = {k: float(f.get(k) or 0) for k in keys}
+                limits = {"strips": float(f.get("strips_limit") or 0), "foil": float(f.get("foil_limit") or 0.5)}
+            except ValueError:
+                return {"error": "Counts and limits must be numbers"}
+            if min(*counts.values(), *limits.values()) < 0:
+                return {"error": "Counts and limits cannot be negative"}
+            for k in keys[:5]:
+                counts[k] = int(counts[k])
+            if str(f.get("cleared", "")).lower() not in ("true", "1", "on"):
+                return {"error": "Tick the after-batch line clearance: line cleared, leftover printed foil returned or destroyed"}
             with meta:
                 cur = batches.open
-                totals = reconcile(record._lines(product_dir / "log.jsonl"), cur["batch"]) if cur else None
+                if not cur:
+                    return JSONResponse({"error": NO_BATCH}, status_code=409)
+                totals = reconcile(record._lines(product_dir / "log.jsonl"), cur["batch"], counts, limits)
+                totals["cleared"] = True
+                if totals["status"] == "outside":
+                    why = str(f.get("reason", "")).strip()
+                    off = "; ".join(f"{l['name']} off by {l['difference']:g} {l['unit']} (site policy limit {l['limit']:g})"
+                                    for l in totals["lines"] if l["outside"])
+                    if not why:
+                        return {"error": f"Outside limit: {off}. Enter the QA password and an investigation reason to end the batch.",
+                                "outside": True}
+                    _require_qa(users, name, str(f.get("password", "")))
+                    totals["investigated"] = {"by": name, "reason": why}
                 row = batches.end(name, clock(), totals)
                 audit.append("batch_end", name, {"batch": row["batch"], "totals": totals})
             return row
-        return paid(run)
+        return await run_in_threadpool(paid, run)
 
     @app.post("/login")
     def login(body: dict):

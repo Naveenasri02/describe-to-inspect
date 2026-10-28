@@ -229,6 +229,29 @@ def test_record_missed_is_per_kind(product):
     assert "Leak test missed" not in html and html.count("Print check missed") == 2
 
 
+def test_record_reconciliation_lines_limits_and_investigation(product):
+    from d2i.ipqc import reconcile
+    b = Batches(product)
+    b.clearance({"clear": True, "found": []}, "qa1", T0)
+    b.start("LOT9", "01/2026", "01/2028", "45", "qa1", T0 + 60)
+    counts = {"received": 3, "good_tray": 1, "reject_box": 0, "samples": 0, "unused": 0,
+              "foil_issued": 10, "foil_used": 9, "foil_returned": 0.5, "foil_destroyed": 0.5}
+    tot = reconcile([], "LOT9", counts, {"strips": 0, "foil": 0.5})
+    b.end("qa1", T0 + 100, dict(tot, investigated={"by": "qa1", "reason": "<b>tray</b> miscount"}))
+    html = shift_record(product, T0 - 10, T0 + 200, "", "")
+    assert "Strip balance" in html and "Foil" in html and "site policy" in html
+    assert "Outside" in html and "Within" in html
+    assert "Outside limit — investigated by qa1: &lt;b&gt;tray&lt;/b&gt; miscount" in html
+
+
+def test_rejects_per_rule_counts_each_strip_once(product):
+    from d2i.record import _rejects_section
+    r3 = {"rule": 3, "severity": "major", "text": "x", "check": "c"}
+    vs = [{"status": "REJECT", "reasons": [r3] * 4}, {"status": "REJECT", "reasons": [r3, dict(r3, rule=5, severity="minor")]}]
+    html = _rejects_section(vs)
+    assert "<td>Rule 3 (major)</td><td>2</td>" in html and "<td>Rule 5 (minor)</td><td>1</td>" in html
+
+
 def test_record_old_ended_batch_without_totals(product):
     b = Batches(product)
     b.clearance({"clear": True, "found": []}, "qa1", T0)

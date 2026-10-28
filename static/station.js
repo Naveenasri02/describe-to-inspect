@@ -49,7 +49,11 @@ async function leak(x){const r=await form("/leak",{result:x,note:$("bnote").valu
   show(r.error?r:"Leak test "+x+" recorded ("+r.samples+" samples).")}
 async function specimen(){const r=await j("/specimen/sign",{password:$("spw").value});$("spw").value="";show(r.error?r:"Start-up specimen signed.")}
 async function foil(){const r=await form("/foil-change");show(r.error?r:"Foil roll change recorded.")}
-async function batchEnd(){if(!confirm("End this batch? Its batch number cannot be used again."))return;const r=await form("/batch/end");show(r.error?r:"Batch "+r.batch+" ended.")}
+async function batchEnd(){if(!confirm("End this batch? Its batch number cannot be used again."))return;
+  const r=await form("/batch/end",{received:$("e-received").value,good_tray:$("e-good").value,reject_box:$("e-reject").value,samples:$("e-samples").value,unused:$("e-unused").value,
+    foil_issued:$("e-fissued").value,foil_used:$("e-fused").value,foil_returned:$("e-freturned").value,foil_destroyed:$("e-fdestroyed").value,
+    strips_limit:$("e-slimit").value,foil_limit:$("e-flimit").value,cleared:$("e-cleared").checked,password:$("e-pw").value,reason:$("e-reason").value});
+  $("e-pw").value="";show(r.error?r:"Batch "+r.batch+" ended ("+r.totals.status+").")}
 async function describe(){show("Working...");shown(await j("/describe",{text:$("text").value}))}
 function shown(r){if(r.error)return show(r);if(r.transcript)$("text").value=r.transcript;show("Check the rules, then Approve.")}
 let recId="";
@@ -169,7 +173,7 @@ function qaTab(s){
   const t=s.totals,tb=$("recon");tb.replaceChildren();
   if(t)[["Passed",t.passed],["Rejected",t.rejected],["Held for QA",t.held],["No strip found",t.no_strip],["Inspected",t.inspected,"sum"]]
     .forEach(([k,n,c])=>{const tr=mk("tr","",c);tr.append(mk("td",k),mk("td",n));tb.append(tr)});
-  $("bal").className="bal"+(t&&!t.balanced?" bad":"");$("bal").replaceChildren(...(t?(t.balanced?[mk("span","✓","tick")," Totals balance"]:["Totals do not balance — check the log"]):["No batch open"]));
+  $("bal").className="bal";$("bal").textContent=t?"Reconciled against the counts typed at End batch":"No batch open";
   // the one main action on this screen: the next thing QA has to do
   const main=s.held?"go-resume":!b?"go-start":s.blockers.includes(REL[1])?"go-print":s.blockers.includes(REL[2])?"go-spec":"";
   document.querySelectorAll("#qa .go").forEach(x=>x.classList.toggle("primary",x.id===main));

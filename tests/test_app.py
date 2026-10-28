@@ -568,7 +568,7 @@ def test_inspect_logs_batch(tmp_path):
     assert c.post("/inspect", files=up(make_strip(seed=15))).json()["status"] == "PASS"
     assert _lines(p / "log.jsonl")[-1]["batch"] == "LOT7"
     assert c.post("/leak", data={"result": "pass", "note": "ok"}).json()["result"] == "pass"
-    assert c.post("/batch/end").json()["event"] == "end"
+    assert c.post("/batch/end", data=dict(END_OK, received="1", good_tray="1")).json()["event"] == "end"
     assert c.get("/status").json()["batch"] is None
     acts = [json.loads(x)["action"] for x in (p / "audit.jsonl").read_text(encoding="utf-8").splitlines()]
     assert acts[-5:] == ["line_clearance", "batch_start", "specimen_signed", "leak_test", "batch_end"]
@@ -823,8 +823,12 @@ def test_foil_change_makes_checks_due(tmp_path):
     login(c, "op", "pw-op")
     assert c.post("/foil-change").json()["event"] == "foil_change"
     time.sleep(1.1)
-    assert c.get("/status").json()["due"] == ["Leak test due", "Print check due"]
+    assert c.get("/status").json()["due"] == ["Print check due"]  # a foil change restarts the print clock only
     assert _audit(p)[-1]["action"] == "foil_change"
+
+
+END_OK = {"received": "0", "good_tray": "0", "reject_box": "0", "samples": "0", "unused": "0", "foil_issued": "0",
+          "foil_used": "0", "foil_returned": "0", "foil_destroyed": "0", "cleared": "true"}
 
 
 def test_batch_end_stores_reconciliation(tmp_path):
@@ -832,10 +836,46 @@ def test_batch_end_stores_reconciliation(tmp_path):
     c.post("/inspect", files=up(make_strip(seed=15)))
     login(c, "qa1", "pw-qa")
     assert c.post("/leak", data={"result": "pass", "samples": "5"}).json()["samples"] == 5
-    end = c.post("/batch/end").json()
-    assert end["totals"] == {"inspected": 1, "passed": 1, "rejected": 0, "held": 0, "no_strip": 0, "balanced": True}
-    assert Batches(p).rows[-1]["totals"] == end["totals"]
+    assert c.get("/status").json()["reconciliation"] == "open"
+    end = c.post("/batch/end", data=dict(END_OK, received="1", good_tray="1")).json()
+    t = end["totals"]
+    assert (t["inspected"], t["passed"], t["status"], t["limits"]) == (1, 1, "within", {"strips": 0, "foil": 0.5})
+    assert Batches(p).rows[-1]["totals"] == t
+    assert c.get("/status").json()["reconciliation"] == "within"
 
+
+def test_batch_end_outside_limit_needs_password_and_reason(tmp_path):
+    c, p = bench(tmp_path)
+    c.post("/inspect", files=up(make_strip(seed=15)))
+    login(c, "qa1", "pw-qa")
+    bad = dict(END_OK, received="1", good_tray="0")  # the log says 1 pass, the tray holds none
+    r = c.post("/batch/end", data=bad).json()
+    assert "Good tray" in r["error"] and "investigation reason" in r["error"] and Batches(p).open
+    assert "error" in c.post("/batch/end", data=dict(bad, password="wrong", reason="miscount")).json()
+    assert "error" in c.post("/batch/end", data=dict(bad, password="pw-qa")).json() and Batches(p).open
+    end = c.post("/batch/end", data=dict(bad, password="pw-qa", reason="strip found under the tray")).json()
+    assert end["totals"]["status"] == "outside" and end["totals"]["investigated"] == {"by": "qa1", "reason": "strip found under the tray"}
+    assert _audit(p)[-1]["action"] == "batch_end" and _audit(p)[-1]["details"]["totals"]["investigated"]["by"] == "qa1"
+    assert c.get("/status").json()["reconciliation"] == "outside"
+
+
+def test_batch_end_needs_the_clearance_tick_and_a_limit_applies(tmp_path):
+    c, p = bench(tmp_path)
+    login(c, "qa1", "pw-qa")
+    assert "clearance" in c.post("/batch/end", data=dict(END_OK, cleared="")).json()["error"]
+    wide = dict(END_OK, foil_issued="0.4", strips_limit="0", foil_limit="0.5")  # 0.4 m unaccounted, limit 0.5
+    assert c.post("/batch/end", data=wide).json()["totals"]["status"] == "within"
+
+
+def test_selftest_not_run_is_not_a_failed_selftest_row(tmp_path, monkeypatch):
+    c, p = bench(tmp_path)
+    login(c, "qa1", "pw-qa")
+    note = "Self-test could not run: the pocket finder did not answer"
+    monkeypatch.setattr(c.app.state.station, "self_test", lambda im: {"passed": False, "not_run": note})
+    c.post("/selftest", files=up(make_strip(seed=12)))
+    last = _audit(p)[-1]
+    assert last["action"] == "selftest_not_run" and last["details"] == {"not_run": note}
+    assert not any(e["action"] == "selftest" and e["details"].get("passed") is False for e in _audit(p))
 
 def test_failed_leak_test_stays_due_and_holds_the_line(tmp_path):
     c, p = bench(tmp_path)
@@ -863,7 +903,7 @@ def test_status_gives_the_screens_their_data(tmp_path):
     s = c.get("/status").json()
     assert s["taught"] is True and s["good_photos"] == 6 and s["checklist"]["approved_by"] == "Priya"
     assert s["selftest"]["at"] and s["machine_link"] is False and s["hold_reason"] == ""
-    assert s["totals"] == {"inspected": 0, "passed": 0, "rejected": 0, "held": 0, "no_strip": 0, "balanced": True}
+    assert s["totals"] == {"inspected": 0, "passed": 0, "rejected": 0, "held": 0, "no_strip": 0, "status": "open"}
     c.post("/inspect", files=up(make_strip(seed=15)))
     c.post("/hold", json={"reason": "foil looks wrong"})
     s = c.get("/status").json()

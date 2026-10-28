@@ -53,10 +53,11 @@ def _done(r, ev) -> bool:
 
 
 def due(batch: dict, rows: list[dict], now: float) -> list[str]:
-    """Leak test / print check due: none since the later of batch start and last foil change, or the last is over an hour old."""
-    start = max([batch["time"]] + [r["time"] for r in rows if r["event"] == "foil_change"])
+    """Leak test due: none since batch start, or the last pass is over an hour old. Print check: the same, but a foil
+    roll change restarts its clock (the leak-test clock keeps running)."""
+    foil = max([batch["time"]] + [r["time"] for r in rows if r["event"] == "foil_change"])
     out = []
-    for ev, text in (("leak", "Leak test due"), ("print", "Print check due")):
+    for ev, text, start in (("leak", "Leak test due", batch["time"]), ("print", "Print check due", foil)):
         last = max((r["time"] for r in rows if _done(r, ev) and r["time"] >= start), default=None)
         if last is None or now - last > IPQC_EVERY_S:
             out.append(text)
@@ -64,23 +65,35 @@ def due(batch: dict, rows: list[dict], now: float) -> list[str]:
 
 
 def missed_windows(batch: dict, rows: list[dict], until: float) -> list[tuple[str, float, float]]:
-    """Whole IPQC_EVERY_S windows (restarted by each foil change) up to `until`, per kind, with no leak test /
-    no print check: (text, window start, window end), matching due()."""
-    marks = [batch["time"]] + [r["time"] for r in rows if r["event"] == "foil_change"] + [until]
+    """Whole IPQC_EVERY_S windows up to `until`, per kind (the print windows restart at each foil change, the leak
+    windows do not), with no leak test / no print check: (text, window start, window end), matching due()."""
+    foils = [r["time"] for r in rows if r["event"] == "foil_change"]
     out = []
-    for s, stop in zip(marks, marks[1:]):
-        w = s
-        while w + IPQC_EVERY_S <= stop:
-            for ev, text in (("leak", "Leak test missed"), ("print", "Print check missed")):
+    for ev, text, marks in (("leak", "Leak test missed", [batch["time"], until]),
+                            ("print", "Print check missed", [batch["time"]] + foils + [until])):
+        for s, stop in zip(marks, marks[1:]):
+            w = s
+            while w + IPQC_EVERY_S <= stop:
                 if not any(_done(r, ev) and w <= r["time"] < w + IPQC_EVERY_S for r in rows):
                     out.append((text, w, w + IPQC_EVERY_S))
-            w += IPQC_EVERY_S
-    return out
+                w += IPQC_EVERY_S
+    return sorted(out, key=lambda m: m[1])  # stable: leak before print in the same window
 
 
-def reconcile(rows: list[dict], batch: str) -> dict:
-    """Strip counts of this batch; LOCKED rows are not inspections."""
+def reconcile(rows: list[dict], batch: str, counts: dict | None = None, limits: dict | None = None) -> dict:
+    """Log counts of this batch (LOCKED rows are not inspections). With the counts QA typed at End batch (strips at the
+    bench, trays, foil in metres) each line is checked against QA's limits: status within / outside; without them, open."""
     n = Counter(r["status"] for r in rows if r.get("batch") == batch and r["status"] != "LOCKED")
     out = {"inspected": sum(n.values()), "passed": n["PASS"], "rejected": n["REJECT"], "held": n["HOLD"],
            "no_strip": n["NO_STRIP"]}
-    return dict(out, balanced=out["inspected"] == out["passed"] + out["rejected"] + out["held"] + out["no_strip"])
+    if counts is None:
+        return dict(out, status="open")
+    c, p, r, h = counts, n["PASS"], n["REJECT"], n["HOLD"]
+    raw = [("Strip balance", c["received"] - (p + r + h + c["samples"] + c["unused"]), "strips"),
+           ("Good tray", c["good_tray"] - p, "strips"),
+           ("Reject box", c["reject_box"] - (r + h), "strips"),
+           ("Foil", c["foil_issued"] - (c["foil_used"] + c["foil_returned"] + c["foil_destroyed"]), "foil")]
+    lines = [{"name": k, "difference": round(d, 3), "limit": limits[u], "unit": "m" if u == "foil" else "strips",
+              "outside": abs(round(d, 3)) > limits[u]} for k, d, u in raw]
+    return dict(out, counts=counts, limits=limits, lines=lines,
+                status="outside" if any(l["outside"] for l in lines) else "within")
