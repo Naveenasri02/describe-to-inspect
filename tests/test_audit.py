@@ -88,11 +88,23 @@ def test_sign_requires_password(tmp_path):
     users.add("qa1", "qa", "pw2")
     for who, pw in [("qa1", "wrong"), ("op", "pw1")]:
         with pytest.raises(PermissionError):
-            sign_record("<html>", audit, users, who, pw)
+            sign_record("<html>", audit, users, who, pw, meaning="Reviewed")
     assert audit.entries() == []
-    s = sign_record("<html>", audit, users, "qa1", "pw2")
+    s = sign_record("<html>", audit, users, "qa1", "pw2", meaning="Reviewed", batch="B1")
     assert s["signed_by"] == "qa1" and len(s["record_sha256"]) == 64
-    assert audit.entries()[0]["action"] == "sign"
+    e = audit.entries()[0]
+    assert e["action"] == "sign" and e["reason"] == "Reviewed"
+    assert e["details"]["meaning"] == "Reviewed" and e["details"]["batch"] == "B1"
+    assert e["details"]["signed_at"][-6] in "+-"  # local time with its UTC offset
+
+
+def test_sign_meaning_must_be_reviewed_or_approved(tmp_path):
+    audit, users = AuditLog(tmp_path / "audit.jsonl"), Users(tmp_path / "users.json")
+    users.add("qa1", "qa", "pw2")
+    for bad in ("", "Reviewed and approved", "ok"):
+        with pytest.raises(ValueError, match="Reviewed or Approved"):
+            sign_record("<html>", audit, users, "qa1", "pw2", meaning=bad)
+    assert audit.entries() == []
 
 
 def _three(tmp_path):

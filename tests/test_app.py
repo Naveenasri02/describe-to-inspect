@@ -45,7 +45,9 @@ def test_describe_without_key_returns_error_not_500(tmp_path, monkeypatch):
 
 
 def test_inspect_without_checklist_says_no_checklist(tmp_path):
-    c = TestClient(app_mod.create_app(tmp_path, None))
+    Users(tmp_path / "users.json").add("op", "operator", "pw-op")
+    c = TestClient(app_mod.create_app(tmp_path / "p", None))
+    login(c, "op", "pw-op")
     r = c.post("/inspect", files={"image": ("a.jpg", jpg(make_strip()), "image/jpeg")})
     assert r.status_code == 200 and r.json()["status"] == "NO_CHECKLIST"
 
@@ -164,7 +166,7 @@ def release_batch(p, no="B1"):
     AuditLog(p / "audit.jsonl").append("specimen_signed", "qa1", {"batch": no, "print_at": "x"})
 
 
-def bench(tmp_path, chat=None, client=None, plc=None, source=None, batch=True, release=True):
+def bench(tmp_path, chat=None, client=None, plc=None, source=None, batch=True, release=True, as_user=("op", "pw-op")):
     """Taught, self-tested bench in tmp_path/p with a QA user (qa1/pw-qa) and an operator (op/pw-op)."""
     p = tmp_path / "p"
     approve(CHECKLIST, "Priya", p / "checklists.jsonl")
@@ -179,6 +181,8 @@ def bench(tmp_path, chat=None, client=None, plc=None, source=None, batch=True, r
     assert c.post("/teach", json={}).json().get("error") is None
     c.post("/selftest", files={"image": ("a.jpg", jpg(make_strip(seed=12)), "image/jpeg")})
     c.post("/logout")
+    if as_user:  # /inspect, /tray and the voice inspect command need a login
+        login(c, *as_user)
     if batch:
         open_batch(p)
         if release:
@@ -201,7 +205,7 @@ def test_release_requires_qa_login(tmp_path):
     assert c.post("/release", json={"password": "pw-qa", "reason": "strips re-checked"}).json()["action"] == "release_quarantine"
     assert c.post("/challenge", json={"strip_label": "C-1", "ejected": True}).json()["user"] == "qa1"
     rid = c.get("/record").headers["X-Record-Id"]
-    assert c.post("/sign", json={"password": "pw-qa", "record_id": rid}).json()["signed_by"] == "qa1"
+    assert c.post("/sign", json={"password": "pw-qa", "record_id": rid, "meaning": "Approved"}).json()["signed_by"] == "qa1"
 
 
 def test_trace_endpoint_lists_events(tmp_path):
@@ -270,9 +274,9 @@ def test_sign_signs_the_record_that_was_viewed(tmp_path):
     rid, shown = r.headers["X-Record-Id"], re.search(r"SHA-256 of the record above: (\w{64})", r.text).group(1)
     with (p / "log.jsonl").open("a", encoding="utf-8") as f:  # the log changes after QA opened the record
         f.write(json.dumps({"status": "REJECT", "reasons": [], "time": time.time()}) + "\n")
-    signed = c.post("/sign", json={"password": "pw-qa", "record_id": rid}).json()
+    signed = c.post("/sign", json={"password": "pw-qa", "record_id": rid, "meaning": "Approved"}).json()
     assert signed["record_sha256"] == shown
-    assert c.post("/sign", json={"password": "pw-qa", "record_id": "nope"}).json()["error"].startswith("Record expired")
+    assert c.post("/sign", json={"password": "pw-qa", "record_id": "nope", "meaning": "Approved"}).json()["error"].startswith("Record expired")
 
 
 class GateChat(ScriptChat):
@@ -492,7 +496,9 @@ def test_tray_needs_a_camera_or_video(tmp_path):
     cv2.imwrite(str(photos / "a.jpg"), make_strip())
     approve(CHECKLIST, "Priya", tmp_path / "p" / "checklists.jsonl")
     for source in (None, str(photos), str(photos / "a.jpg")):
+        Users(tmp_path / "users.json").add("op", "operator", "pw-op")
         c = TestClient(app_mod.create_app(tmp_path / "p", source, client=TrayClient()))
+        login(c, "op", "pw-op")
         assert c.post("/tray").json() == {"error": "tray clip needs a camera or video source"}
         if c.app.state.source:
             c.app.state.source.stop.set()
@@ -503,7 +509,7 @@ def test_sign_pins_the_verdict_files(tmp_path):
     c.post("/inspect", files=up(make_strip(seed=15)))
     login(c, "qa1", "pw-qa")
     rid = c.get("/record").headers["X-Record-Id"]
-    assert c.post("/sign", json={"password": "pw-qa", "record_id": rid}).json()["signed_by"] == "qa1"
+    assert c.post("/sign", json={"password": "pw-qa", "record_id": rid, "meaning": "Approved"}).json()["signed_by"] == "qa1"
     e = json.loads((p / "audit.jsonl").read_text(encoding="utf-8").splitlines()[-1])
     sha = lambda n: hashlib.sha256((p / n).read_bytes()).hexdigest()  # noqa: E731
     assert e["action"] == "sign"
@@ -560,7 +566,7 @@ def test_inspect_logs_batch(tmp_path):
     login(c, "qa1", "pw-qa")
     c.app.state.station.client.cleared = True
     assert c.post("/clearance", files=up(make_strip(seed=1))).json() == {"clear": True, "found": []}
-    form = {"batch": "lot 7", "mfg": "01/2026", "exp": "01/2028", "mrp": "Rs. 45"}
+    form = {"batch": "lot 7", "mfg": "01/2026", "exp": "01/2028", "mrp": "Rs. 45", "product": "Paracetamol", "strength": "500 mg"}
     assert c.post("/batch/start", data=form).json()["batch"] == "LOT7"
     assert c.post("/batch/start", data=form).json() == {"error": "A batch is already open: LOT7"}
     assert c.get("/status").json()["batch"]["batch"] == "LOT7"
@@ -715,7 +721,9 @@ def test_tray_locked_makes_no_paid_call(tmp_path):
     approve(CHECKLIST, "Priya", tmp_path / "p" / "checklists.jsonl")
     open_batch(tmp_path / "p")
     release_batch(tmp_path / "p")
+    Users(tmp_path / "users.json").add("op", "operator", "pw-op")
     c = TestClient(app_mod.create_app(tmp_path / "p", str(clip), client=Counting()))  # never taught: LOCKED
+    login(c, "op", "pw-op")
     try:
         v = c.post("/tray").json()["verdicts"]
         assert [x["status"] for x in v] == ["LOCKED"] and Counting.calls == 0
@@ -814,7 +822,7 @@ def test_specimen_sign_needs_qa_password_and_print_ok(tmp_path):
 
 
 def test_foil_change_makes_checks_due(tmp_path):
-    c, p = bench(tmp_path)
+    c, p = bench(tmp_path, as_user=None)
     b = Batches(p)
     b.leak("pass", "qa1", "", time.time())
     _print_ok(p)
@@ -957,9 +965,9 @@ def _tray_bench(tmp_path, monkeypatch, kinds):
     c, p = bench(tmp_path, source=str(clip))
     _fake_judge(c, "empty_pocket")
 
-    def clip_verdicts(path, station, client, held=False, batch=None):
+    def clip_verdicts(path, station, client, held=False, batch=None, user=None):
         return [station.log(Verdict("REJECT", [station._reason(k, 0)], strip_id=i) if k else Verdict("PASS", strip_id=i),
-                            held, batch) for i, k in enumerate(kinds, 1)]
+                            held, batch, user=user) for i, k in enumerate(kinds, 1)]
     monkeypatch.setattr(app_mod, "record_clip", lambda *a: clip)
     monkeypatch.setattr(app_mod, "inspect_clip", clip_verdicts)
     return c, p
@@ -993,6 +1001,7 @@ def test_rejects_route_refuses_bad_names(tmp_path):
     _fake_judge(c, "empty_pocket")
     c.post("/inspect", files=up(make_strip(seed=15)))
     name = _lines(p / "log.jsonl")[-1]["photo"]
+    c.post("/logout")
     assert c.get("/rejects/" + name).status_code == 401  # nobody logged in
     login(c, "op", "pw-op")
     assert c.get("/rejects/" + name).status_code == 200
@@ -1015,3 +1024,64 @@ def test_failed_imwrite_leaves_no_photo_name(tmp_path, monkeypatch):
     monkeypatch.setattr(cv2, "imwrite", lambda *a, **k: False)
     assert c.post("/inspect", files=up(make_strip(seed=15))).json()["status"] == "REJECT"
     assert "photo" not in _lines(p / "log.jsonl")[-1]
+
+
+def test_batch_start_needs_product_and_strength_and_audits_them(tmp_path):
+    c, p = bench(tmp_path, client=ClearClient(), batch=False)
+    login(c, "qa1", "pw-qa")
+    c.app.state.station.client.cleared = True
+    c.post("/clearance", files=up(make_strip(seed=1)))
+    base = {"batch": "L1", "mfg": "01/2026", "exp": "01/2028", "mrp": "45"}
+    assert "Product name" in c.post("/batch/start", data=base).json()["error"]
+    assert "Strength" in c.post("/batch/start", data=dict(base, product="Para", strength="x")).json()["error"]
+    row = c.post("/batch/start", data=dict(base, product="Para", strength="500 mg")).json()
+    assert (row["product"], row["strength"]) == ("Para", "500 mg")
+    last = [json.loads(x) for x in (p / "audit.jsonl").read_text(encoding="utf-8").splitlines()][-1]
+    assert last["action"] == "batch_start" and last["details"]["strength"] == "500 mg"
+
+
+class SaysClient(FakeClient):
+    def __init__(self, text):
+        self.text = text
+
+    def transcribe(self, wav, keywords=(), languages=None, mode="PUSH_TO_TALK"):
+        return self.text
+
+
+def test_inspect_tray_and_voice_inspect_need_login_and_verdict_carries_user(tmp_path):
+    c, p = bench(tmp_path, client=SaysClient("inspect the strip"), as_user=None)
+    assert c.post("/inspect", files=up(make_strip(seed=15))).json() == {"error": "Log in first"}
+    assert c.post("/tray").json() == {"error": "Log in first"}
+    assert c.post("/command", files={"audio": ("a.wav", b"x")}).json() == {"error": "Log in first"}
+    assert not (p / "log.jsonl").exists()
+    login(c, "op", "pw-op")
+    assert c.post("/command", files={"audio": ("a.wav", b"x")}).json()["command"] == "inspect"
+    assert c.post("/inspect", files=up(make_strip(seed=15))).json()["status"] == "PASS"
+    assert _lines(p / "log.jsonl")[-1]["user"] == "op"
+    login(c, "qa1", "pw-qa")
+    c.post("/inspect", files=up(make_strip(seed=15)))
+    assert _lines(p / "log.jsonl")[-1]["user"] == "qa1"
+
+
+def test_voice_hold_command_works_without_login(tmp_path):
+    c, _ = bench(tmp_path, client=SaysClient("stop the line"), as_user=None)
+    assert c.post("/command", files={"audio": ("a.wav", b"x")}).json()["command"] == "hold"
+
+
+def test_sign_needs_a_meaning_and_reopened_record_shows_signed(tmp_path):
+    c, p = bench(tmp_path)
+    login(c, "qa1", "pw-qa")
+    rid = c.get("/record").headers["X-Record-Id"]
+    assert "Reviewed or Approved" in c.post("/sign", json={"password": "pw-qa", "record_id": rid}).json()["error"]
+    assert "DRAFT — needs QA signature" in c.get("/record").text
+    out = c.post("/sign", json={"password": "pw-qa", "record_id": rid, "meaning": "Reviewed"}).json()
+    assert out["signed_by"] == "qa1" and out["meaning"] == "Reviewed"
+    html = c.get("/record").text
+    assert "DRAFT" not in html and "Signed by qa1 — Reviewed — " in html and "Signature manifest" in html
+
+
+def test_record_config_block_has_app_version_and_camera_source(tmp_path):
+    c, p = bench(tmp_path, source=None)
+    cfg = c.get("/record").text.split("<h2>Configuration</h2>")[1].split("<h2>")[0]
+    for s in ("App version", "Camera source", "Pocket threshold", "Border threshold"):
+        assert s in cfg

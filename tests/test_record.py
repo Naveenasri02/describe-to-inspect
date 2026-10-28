@@ -326,3 +326,35 @@ def test_in_process_checks_sort_by_time_not_text(product):
     b.leak("pass", "qa1", "", late)
     html = shift_record(product, T0 - 10, late + 10, "", "").split("<h2>In-process checks</h2>")[1]
     assert html.index(_human(T0 + 70)) < html.index(_human(late))
+
+
+def test_signed_record_shows_green_badge_manifest_and_names(product):
+    import re
+    from d2i.audit import Users, sign_record
+    audit, _ = _filled(product)
+    users = Users(product / "users.json")
+    users.add("qa1", "qa", "pw")
+    html0 = shift_record(product, T0 - 10, T0 + 100, "LOT9", "Asha", audit=audit)
+    assert "DRAFT — needs QA signature</span>" in html0 and "Signed by" not in html0
+    sign_record(html0, audit, users, "qa1", "pw", meaning="Approved", batch="LOT9")
+    html = shift_record(product, T0 - 10, T0 + 100, "LOT9", "Asha", audit=audit)
+    assert "DRAFT" not in html
+    m = re.search(r"<span class='badge signed'>Signed by qa1 — Approved — (\d+ \w+ \d{4}, \d\d:\d\d:\d\d UTC[+-]\d\d:\d\d)</span>", html)
+    assert m, html[:1500]
+    assert "<h2>Signature manifest</h2>" in html and "<td>Approved</td>" in html and "<p>qa1</p>" in html
+    other = shift_record(product, T0 - 10, T0 + 100, "OTHER", "Asha", audit=audit)  # another batch is not signed
+    assert "DRAFT — needs QA signature</span>" in other
+
+
+def test_config_block_has_thresholds_version_and_camera(product):
+    html = shift_record(product, T0 - 10, T0 + 100, "B", "A",
+                        config=[["Pocket threshold", "0.412"], ["Border threshold", "0.388"], ["Camera source", "0"]])
+    cfg = html.split("<h2>Configuration</h2>")[1].split("<h2>")[0]
+    for s in ("Pocket threshold", "0.412", "Border threshold", "0.388", "Camera source", "App version"):
+        assert s in cfg
+
+
+def test_app_version_is_a_git_hash_or_unknown():
+    from d2i.record import app_version
+    v = app_version()
+    assert v == "unknown" or (4 <= len(v) <= 12 and all(c in "0123456789abcdef" for c in v))

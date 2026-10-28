@@ -153,15 +153,23 @@ def log_physical_challenge(audit: AuditLog, user: str, strip_label: str, ejected
     return audit.append("physical_challenge", user, {"strip_label": strip_label, "ejected": ejected})
 
 
+SIGN_MEANINGS = ("Reviewed", "Approved")
+
+
 def sign_record(html: str, audit: AuditLog, users: Users, name: str, password: str,
-                meaning: str = "Reviewed and approved", product_dir: Path | None = None) -> dict:
-    """With product_dir, the signed entry also pins the verdict files (log.jsonl, selftests.jsonl) by sha256."""
+                meaning: str = "", product_dir: Path | None = None, batch: str = "") -> dict:
+    """With product_dir, the signed entry also pins the verdict files (log.jsonl, selftests.jsonl) by sha256.
+    Signature manifest: name (the entry's user), local time with its UTC offset, meaning, and the batch shown."""
+    if meaning not in SIGN_MEANINGS:
+        raise ValueError("Pick the meaning of your signature: Reviewed or Approved")
     _require_qa(users, name, password)
     sha = hashlib.sha256(html.encode("utf-8")).hexdigest()
-    details = {"record_sha256": sha, "meaning": meaning}
+    details = {"record_sha256": sha, "meaning": meaning, "batch": batch,
+               "signed_at": datetime.now().astimezone().isoformat(timespec="seconds")}
     if product_dir is not None:
         files = [Path(product_dir) / n for n in ("log.jsonl", "selftests.jsonl")]
         details["files_sha256"] = {f.name: hashlib.sha256(f.read_bytes()).hexdigest() if f.exists() else None
                                    for f in files}
-    entry = audit.append("sign", name, details)
-    return {"signed_by": name, "role": "qa", "meaning": meaning, "at": entry["at"], "record_sha256": sha}
+    entry = audit.append("sign", name, details, reason=meaning)
+    return {"signed_by": name, "role": "qa", "meaning": meaning, "at": entry["at"],
+            "signed_at": details["signed_at"], "record_sha256": sha}

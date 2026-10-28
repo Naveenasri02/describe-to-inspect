@@ -43,7 +43,7 @@ async function trayNow(){show("Working...");const r=await j("/tray");
   show(r.verdicts?r.verdicts.map(v=>"Strip "+(v.strip_id??"-")+": "+v.status+" "+v.reasons.map(reasonText).join("; ")).join("\n"):r);if(r.verdicts)red(r.verdicts)}
 async function clearance(){show("Checking the table...");const r=await form("/clearance");
   $("clr").textContent=r.error?"":(r.clear?"Clear":"Not clear: "+r.found.map(f=>f.count+" "+f.prompt).join(", "));show(r.error?r:"Line clearance: "+(r.clear?"clear":"NOT clear"))}
-async function batchStart(){const r=await form("/batch/start",{batch:$("bn").value,mfg:$("bm").value,exp:$("be").value,mrp:$("bp").value});
+async function batchStart(){const r=await form("/batch/start",{batch:$("bn").value,mfg:$("bm").value,exp:$("be").value,mrp:$("bp").value,product:$("bpn").value,strength:$("bst").value});
   show(r.error?r:"Batch "+r.batch+" started.")}
 async function leak(x){const r=await form("/leak",{result:x,note:$("bnote").value,samples:$("bsamp").value||0});
   show(r.error?r:"Leak test "+x+" recorded ("+r.samples+" samples).")}
@@ -67,7 +67,8 @@ async function logout(){await j("/logout");refresh()}
 async function challenge(){const r=await j("/challenge",{strip_label:$("cl").value,ejected:$("ce").checked});
   show(r.error?r:"Challenge strip "+r.details.strip_label+" logged"+(r.details.ejected?", ejected.":", not ejected."))}
 async function release(){const r=await j("/release",{password:$("rp").value,reason:$("rr").value});$("rp").value="";show(r.error?r:"Quarantine released.")}
-async function sign(){const r=await j("/sign",{password:$("sp").value,record_id:recId});$("sp").value="";show(r.error?r:"Record signed by "+r.signed_by+".")}
+async function sign(){const r=await j("/sign",{password:$("sp").value,record_id:recId,meaning:$("smean").value});$("sp").value="";
+  show(r.error?r:"Record signed by "+r.signed_by+" — "+r.meaning+".");if(!r.error)rec()}  // re-open: the record now shows the signed state
 async function investigate(){const r=await j("/investigate",{trigger:$("trig").value});if(r.error)show(r);invRefresh()}
 async function answer(){const r=await j("/ask-operator-answer",{id:qId,answer:$("ans").value});$("ans").value="";show(r.error?r:"Answer sent.")}
 async function approveReq(id,pw){show(await j("/approve-request",{id:id,password:pw.value}));pw.value=""}

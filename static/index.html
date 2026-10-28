@@ -133,7 +133,7 @@
         <h3>Start a batch</h3>
         <div class="field"><button class="btn go" id="go-clear" onclick="clearance()">Line clearance</button> <span id="clr" class="small"></span></div>
         <div class="grid4"><input id="bn" placeholder="Batch no." aria-label="Batch no."><input id="bm" placeholder="MFG 10/2026" aria-label="MFG">
-          <input id="be" placeholder="EXP 10/2028" aria-label="EXP"><input id="bp" placeholder="MRP Rs." aria-label="MRP"></div>
+          <input id="be" placeholder="EXP 10/2028" aria-label="EXP"><input id="bp" placeholder="MRP Rs." aria-label="MRP"><input id="bpn" placeholder="Product name" aria-label="Product name"><input id="bst" placeholder="Strength 500 mg" aria-label="Strength"></div>
         <div class="field"><button class="btn go" id="go-start" onclick="batchStart()">Start batch</button></div>
       </div>
       <div id="inbatch" hidden>
@@ -209,6 +209,7 @@
       <div class="field"><input id="batch" placeholder="Batch" aria-label="Batch"><input id="op" placeholder="Operator" aria-label="Operator"></div>
       <div class="field"><button class="btn primary" onclick="rec()">Open shift record</button></div>
       <h3>Sign shift record</h3>
+      <div class="field"><select id="smean" aria-label="Meaning of your signature"><option value="Reviewed">Reviewed</option><option value="Approved">Approved</option></select></div>
       <div class="field"><input id="sp" type="password" placeholder="QA password" aria-label="QA password to sign"><button class="btn" onclick="sign()">Sign record (QA)</button></div>
       <h3>Ask about the records</h3>
       <div class="field"><input id="q" placeholder="e.g. why were strips rejected today?" aria-label="Question about the records"><button class="btn" onclick="ask()">Ask</button></div>

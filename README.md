@@ -80,7 +80,7 @@ Steps on a new machine, in order (the screens are the tabs Run / Setup / QA / Re
 3. Open http://localhost:8000 and log in as the QA user in the header.
 4. Setup, step 1: describe the good strip (type it and press "Make checklist", or "Speak rule"). Step 2: check the rules and press "Approve".
 5. Step 3: put a good strip under the camera and press "Save this strip" five times, moving the strip a little each time. The fifth press teaches the station.
-6. QA screen: press "Line clearance" (the station looks for anything left on the line), enter the batch number, MFG, EXP and MRP and press "Start batch".
+6. QA screen: press "Line clearance" (the station looks for anything left on the line), enter the batch number, MFG, EXP, MRP, product name and strength (for example 500 mg) and press "Start batch".
 7. Run the self-test after Start batch (a self-test from before the batch started does not release it): Setup, step 4, press "Run self-test" with a good strip under the camera. The station unlocks only when it passes.
 8. Release the batch (the three ticks under "Batch release"): the self-test from step 7, "Check print (foil side up)" on a start-up strip, and "Sign start-up specimen (QA)" with the QA password. Strips cannot be inspected until all three are done; the Run screen says "NOT RELEASED" until then.
 9. Run screen: press "Inspect strip".
@@ -118,7 +118,8 @@ python tools/eval_agent.py data/blister --bad photos/bad --runs 3 --yes-live
 
 - This is a bench, not a line: it works at bench speed, not line speed. A 60-frame SAM video call takes about 2 minutes.
 - The self-test is a per-shift functional check that runs on top of the physical challenge strip. It adds to the physical challenge test; it does not replace it.
-- The shift record is a draft ("DRAFT — needs QA signature"). Your own QA decides whether to use this.
+- The shift record is a draft ("DRAFT — needs QA signature"). Your own QA decides whether to use this. When QA signs it (picking "Reviewed" or "Approved"), the audit log keeps the name, the time with its time zone and the meaning, and a re-opened record shows a green "Signed by ..." badge.
+- Start batch also takes the product name and strength; the print check reads them from the foil and compares them in plain code.
 - The tray clip opens the camera again while the stream is running; if the camera driver allows only one user, the clip fails with an error and nothing is judged.
 - The SAM prompt words were measured on real photos and may need tuning per product.
 - With `--host 0.0.0.0` anyone on the network can call the paid endpoints (`/describe`, `/command`, `/ask`, `/investigate`); keep the default 127.0.0.1 for a bench.

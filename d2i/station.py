@@ -235,21 +235,21 @@ class Station:
         v.status = "REJECT" if listed else "HOLD" if unlisted else "PASS"
         return v
 
-    def inspect(self, image, strip_id=None, image_name=None, held: bool = False, batch=None) -> Verdict:
+    def inspect(self, image, strip_id=None, image_name=None, held: bool = False, batch=None, user=None) -> Verdict:
         if self.locked:
             v = Verdict("LOCKED", [{"rule": None, "check": "locked", "pocket": None, "text": self.lock_reason}],
                         strip_id=strip_id, image_name=image_name, at=self._now())
         else:
             v = self._judge(image, strip_id, image_name)
-        return self.log(v, held, batch, image)
+        return self.log(v, held, batch, image, user)
 
-    def log(self, v: Verdict, held: bool = False, batch=None, image=None) -> Verdict:
+    def log(self, v: Verdict, held: bool = False, batch=None, image=None, user=None) -> Verdict:
         """Append one verdict to log.jsonl. held: the line is held, so a PASS is logged (and returned) as HOLD."""
         line_held = held and v.status == "PASS"  # a good strip: no photo, so it never pushes real reject photos out
         if line_held:
             v.status, v.reasons = "HOLD", [{"rule": None, "check": "line_held", "pocket": None, "text": LINE_HELD}]
         v.at = v.at or self._now()
-        row = dict(asdict(v), checklist_version=self.checklist["version"], batch=batch)
+        row = dict(asdict(v), checklist_version=self.checklist["version"], batch=batch, user=user)
         if image is not None and self.snap and v.status in ("REJECT", "HOLD") and not line_held:
             try:
                 row["photo"] = self.snap(image, v)

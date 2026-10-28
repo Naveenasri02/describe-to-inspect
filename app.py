@@ -389,8 +389,9 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
         return paid(run)
 
     @app.post("/inspect")
-    def inspect(image: UploadFile | None = File(None)):
+    def inspect(request: Request, image: UploadFile | None = File(None)):
         def run():
+            user = login_name(request)
             im = image_from(image)
             if not st.checklist:
                 return {"status": "NO_CHECKLIST", "reasons": [{"text": NO_CHECKLIST}]}
@@ -402,12 +403,12 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
                 return refused
             with lock:  # inspect and publish together so verdicts land in order
                 try:
-                    v = st.inspect(im, held=held_now(), batch=no)
+                    v = st.inspect(im, held=held_now(), batch=no, user=user)
                 except Exception:  # logged and held, never a 500 that leaves the PLC on the previous verdict
                     v = Verdict("HOLD", [{"rule": None, "check": "inspection_error", "pocket": None,
                                           "text": INSPECT_ERROR}], at=st._now())
                     out = publish([v])  # the hold reaches the PLC even if the log cannot be written either
-                    st.log(v, batch=no, image=im)
+                    st.log(v, batch=no, image=im, user=user)
                     return out
                 out = publish([v])
                 after_verdicts([v], no)
@@ -440,8 +441,9 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
         return paid(run)
 
     @app.post("/tray")
-    def tray():
+    def tray(request: Request):
         def run():
+            user = login_name(request)
             if not st.checklist:
                 return {"error": NO_CHECKLIST}
             s = src.source if src else ""
@@ -453,11 +455,11 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
                 return refused
             with lock:  # one slow station operation at a time; verdicts land in order
                 if st.locked:  # no paid SAM video call for a locked station
-                    v = st.log(Verdict("LOCKED", [{"rule": None, "check": "locked", "pocket": None, "text": st.lock_reason}]), batch=no)
+                    v = st.log(Verdict("LOCKED", [{"rule": None, "check": "locked", "pocket": None, "text": st.lock_reason}]), batch=no, user=user)
                     publish([v])
                     return {"verdicts": [asdict(v)]}
                 clip = record_clip(int(s) if s.isdigit() else s, TRAY_SECONDS, product_dir / "tray.mp4")
-                vs = inspect_clip(clip, st, get_client(), held=held_now(), batch=no)  # each one is already logged
+                vs = inspect_clip(clip, st, get_client(), held=held_now(), batch=no, user=user)  # each one is already logged
                 publish(vs)
                 after_verdicts(vs, no)
                 return {"verdicts": [asdict(v) for v in vs]}
@@ -465,14 +467,18 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
 
     def make_record(batch, operator, hours):
         now = clock()
-        return record.shift_record(product_dir, now - hours * 3600, now, batch, operator, state["client"], audit)
+        th = lambda v: "not taught" if v is None else f"{v:.4g}"
+        cfg = [["Pocket threshold", th(getattr(st.judge, "pocket_threshold", None))],
+               ["Border threshold", th(getattr(st.judge, "border_threshold", None))],
+               ["Camera source", src.source if src else "none"]]
+        return record.shift_record(product_dir, now - hours * 3600, now, batch, operator, state["client"], audit, config=cfg)
 
     @app.get("/record", response_class=HTMLResponse)
     def shift_record(batch: str = "", operator: str = "", hours: float = 8.0):
         try:
             body = make_record(batch, operator, hours)
             sha, rid = hashlib.sha256(body.encode("utf-8")).hexdigest(), uuid.uuid4().hex[:8]
-            records[rid] = (body, sha)
+            records[rid] = (body, sha, record.shown_batch(product_dir, batch))
             while len(records) > 20:
                 records.pop(next(iter(records)))
             note = f"<p>Record id: {rid} · SHA-256 of the record above: {sha}</p>"
@@ -483,6 +489,12 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
     @app.post("/ask")
     def ask(body: dict):
         return paid(lambda: {"answer": record.ask(str(body.get("question", "")), product_dir, get_client())})
+
+    def login_name(request: Request):  # any logged-in user (operator or QA): verdicts are attributed
+        name, role = who(request)
+        if role not in ("operator", "qa"):
+            raise PermissionError("Log in first")
+        return name
 
     def qa(request: Request):
         name, role = who(request)
@@ -506,12 +518,12 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
 
     @app.post("/batch/start")
     def batch_start(request: Request, batch: str = Form(""), mfg: str = Form(""), exp: str = Form(""),
-                    mrp: str = Form("")):
+                    mrp: str = Form(""), product: str = Form(""), strength: str = Form("")):
         def run():
             name = qa(request)
             with meta:
-                row = batches.start(batch, mfg, exp, mrp, name, clock())
-                audit.append("batch_start", name, {k: row[k] for k in ("batch", "mfg", "exp", "mrp", "clearance_at")})
+                row = batches.start(batch, mfg, exp, mrp, name, clock(), product=product, strength=strength)
+                audit.append("batch_start", name, {k: row[k] for k in ("batch", "mfg", "exp", "mrp", "product", "strength", "clearance_at")})
             return row
         return paid(run)
 
@@ -640,7 +652,8 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
             rec = records.get(str(body.get("record_id", "")))
             if rec is None:
                 return {"error": RECORD_EXPIRED}
-            return sign_record(rec[0], audit, users, name, str(body.get("password", "")), product_dir=product_dir)
+            return sign_record(rec[0], audit, users, name, str(body.get("password", "")),
+                               meaning=str(body.get("meaning", "")), product_dir=product_dir, batch=rec[2])
         return paid(run)
 
     @app.get("/trace")
@@ -743,7 +756,10 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
         def run():
             text = get_client().transcribe(audio, keywords=KEYWORDS, languages=[lang] if lang in LANGS else None,
                                            mode="ENDPOINTING")
-            return {"transcript": text, "command": match(text)}
+            cmd = match(text)
+            if cmd == "inspect":
+                login_name(request)  # hold, record etc. stay open to anyone at the bench
+            return {"transcript": text, "command": cmd}
         return await run_in_threadpool(paid, run)
 
     @app.post("/resume")
