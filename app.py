@@ -19,13 +19,13 @@ from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 
 from d2i import record, trace
 from d2i.commands import KEYWORDS, match
-from d2i.audit import (AuditLog, Users, log_physical_challenge, quarantine_list, release_quarantine,
+from d2i.audit import (AuditLog, Users, _require_qa, log_physical_challenge, quarantine_list, release_quarantine,
                        sign_record)
 from d2i.batch import Batches, line_clearance
 from d2i.checklist import approve, make_checklist
 from d2i.llm import ToolChat
 from d2i.meta_api import Budget, MetaClient
-from d2i.ipqc import DRIFT_REJECTS, reject_run
+from d2i.ipqc import DRIFT_REJECTS, check_events, due, reconcile, reject_run, release_blockers
 from d2i.printcheck import check_print, read_print, wrong_print
 from d2i.pockets import find_layout
 from d2i.station import NEED_TEACH, Station, Verdict
@@ -174,6 +174,14 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
         b = batches.open
         return (b["batch"], None) if b else (None, JSONResponse({"error": NO_BATCH}, status_code=409))
 
+    def blockers_for(b):  # what still stops this open batch from being inspected
+        signed = any(e["action"] == "specimen_signed" and e["details"].get("batch") == b["batch"] for e in audit.entries())
+        return release_blockers(b, st._selftests(), record._lines(product_dir / "prints.jsonl"), signed)
+
+    def not_released(b):
+        left = blockers_for(b)
+        return JSONResponse({"error": "Batch not released: " + ", ".join(left)}, status_code=409) if left else None
+
     def paid(fn):  # the screen never sees a 500: any failure becomes plain text
         try:
             return fn()
@@ -219,6 +227,11 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
             locked, reason, uncovered = True, f"Cannot read self-test log: {ex}", []
         if plc:
             plc.set_locked(locked)  # every poll, so shift expiry reaches coil 1
+        try:
+            blockers = blockers_for(open_batch) if open_batch else []
+            overdue = due(open_batch, check_events(product_dir, open_batch["batch"]), clock()) if open_batch else []
+        except Exception:  # unreadable records: not released (the safe direction)
+            blockers, overdue = ["Cannot read the batch records"], []
         (held, by), (qn, qerr) = hold_state(product_dir), quarantine_count()
         if held:
             by = "the Shift Supervisor" if by == "supervisor" else by
@@ -226,6 +239,8 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
                 + (f" {reason}" if locked else "")
         elif locked:
             banner, text = "LOCKED", reason
+        elif blockers:
+            banner, text = "NOT RELEASED", "Batch not released: " + ", ".join(blockers)
         elif last and last["status"] in ("REJECT", "HOLD"):
             banner, text = last["status"], " ".join(r["text"] for r in last["reasons"])
         elif last and last["status"] in ("PASS", "NO_STRIP"):
@@ -234,7 +249,7 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
             banner, text = "READY", ""
         return {"locked": locked, "lock_reason": reason if locked else "",
                 "checklist_version": cl and cl["version"], "spent_usd": spent,
-                "counts": counts, "batch": open_batch, "last_verdict": last, "selftest_skipped": uncovered, "state": banner, "text": text,
+                "counts": counts, "batch": open_batch, "blockers": blockers, "due": overdue, "last_verdict": last, "selftest_skipped": uncovered, "state": banner, "text": text,
                 "rules": cl["rules"] if cl else [], "pending": pending["rules"] if pending else None,
                 "held": held, "quarantine_count": qn, "quarantine_error": qerr,
                 "user": dict(zip(("name", "role"), who(request))) if request.cookies.get("d2i_session") in sessions else None}
@@ -336,6 +351,7 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
             if im is None:
                 return {"error": "No image."}
             no, refused = need_batch()
+            refused = refused or not_released(batches.open)
             if refused:
                 return refused
             with lock:  # inspect and publish together so verdicts land in order
@@ -367,7 +383,7 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
             read = read_print(im, get_client())  # MetaError / BudgetExceeded reach paid(): plain text, nothing logged
             out = check_print(read, b, date.fromtimestamp(clock()))
             with meta:
-                batches._write("prints.jsonl", {"at": datetime.fromtimestamp(clock()).isoformat(timespec="seconds"),
+                batches._write("prints.jsonl", {"at": datetime.fromtimestamp(clock()).isoformat(timespec="seconds"), "time": clock(),
                                                 "batch": b["batch"], "read": read, "status": out["status"],
                                                 "reasons": out["reasons"], "by": name})
             bad = wrong_print(out["reasons"])
@@ -386,6 +402,7 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
             if not s or Path(s).is_dir() or Path(s).suffix.lower() in (".jpg", ".jpeg", ".png"):
                 return {"error": "tray clip needs a camera or video source"}
             no, refused = need_batch()
+            refused = refused or not_released(batches.open)
             if refused:
                 return refused
             with lock:  # one slow station operation at a time; verdicts land in order
@@ -453,12 +470,40 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
         return paid(run)
 
     @app.post("/leak")
-    def leak(request: Request, result: str = Form(""), note: str = Form("")):
+    def leak(request: Request, result: str = Form(""), note: str = Form(""), samples: int = Form(0)):
         def run():
             name = qa(request)
             with meta:
-                row = batches.leak(result, name, note, clock())
-                audit.append("leak_test", name, {"batch": row["batch"], "result": result, "note": note})
+                row = batches.leak(result, name, note, clock(), samples)
+                audit.append("leak_test", name, {"batch": row["batch"], "result": result, "note": note, "samples": samples})
+            return row
+        return paid(run)
+
+    @app.post("/specimen/sign")
+    def specimen_sign(body: dict, request: Request):
+        def run():
+            name = qa(request)
+            _require_qa(users, name, str(body.get("password", "")))  # re-typed password
+            with meta:
+                b = batches.open
+                if not b:
+                    return JSONResponse({"error": NO_BATCH}, status_code=409)
+                ok = next((r for r in reversed(record._lines(product_dir / "prints.jsonl"))
+                           if r.get("batch") == b["batch"] and r.get("status") == "PRINT_OK"), None)
+                if not ok:
+                    return {"error": "The start-up specimen needs a PRINT_OK print check first"}
+                return audit.append("specimen_signed", name, {"batch": b["batch"], "print_at": ok["at"]})
+        return paid(run)
+
+    @app.post("/foil-change")
+    def foil_change(request: Request):
+        def run():
+            name, role = who(request)
+            if not role:
+                return {"error": "Log in first"}
+            with meta:
+                row = batches.foil_change(name, clock())
+                audit.append("foil_change", name, {"batch": row["batch"]})
             return row
         return paid(run)
 
@@ -467,8 +512,10 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
         def run():
             name = qa(request)
             with meta:
-                row = batches.end(name, clock())
-                audit.append("batch_end", name, {"batch": row["batch"]})
+                cur = batches.open
+                totals = reconcile(record._lines(product_dir / "log.jsonl"), cur["batch"]) if cur else None
+                row = batches.end(name, clock(), totals)
+                audit.append("batch_end", name, {"batch": row["batch"], "totals": totals})
             return row
         return paid(run)
 

@@ -88,7 +88,8 @@ class Batches:
         m, e = parse_month(mfg), parse_month(exp)
         if e <= m:
             raise ValueError("Expiry must be after the manufacturing month")
-        clean = re.sub(r"rs\.?|₹|/-|[\s,]", "", str(mrp), flags=re.I)  # "Rs. 1,250/-" -> 1250
+        bare = re.sub(r"rs\.?|₹|/-", "", str(mrp), flags=re.I).strip()  # "Rs. 1,250/-" -> 1,250
+        clean = "" if re.search(r"\d\s+\d", bare) else re.sub(r"[\s,]", "", bare)  # "45 50" is not 4550
         price = float(clean) if re.fullmatch(r"\d+(\.\d+)?|\.\d+", clean) else 0.0
         if price <= 0:
             raise ValueError("MRP must be one price, e.g. 24.50")
@@ -111,18 +112,25 @@ class Batches:
                                              "exp": "%02d/%d" % (e[1], e[0]), "mrp": f"{price:.2f}", "by": by,
                                              "at": _iso(now), "time": now, "clearance_at": last["at"]})
 
-    def leak(self, result, by, note, now) -> dict:
+    def leak(self, result, by, note, now, samples: int = 0) -> dict:
         if result not in ("pass", "fail"):
             raise ValueError("Leak test result must be pass or fail")
         cur = self.open
         if not cur:
             raise ValueError(NO_BATCH)
         return self._write("batches.jsonl", {"event": "leak", "batch": cur["batch"], "result": result,
-                                             "note": str(note or ""), "by": by, "at": _iso(now), "time": now})
+                                             "note": str(note or ""), "samples": int(samples), "by": by, "at": _iso(now), "time": now})
 
-    def end(self, by, now) -> dict:
+    def foil_change(self, by, now) -> dict:
+        cur = self.open
+        if not cur:
+            raise ValueError(NO_BATCH)
+        return self._write("batches.jsonl", {"event": "foil_change", "batch": cur["batch"], "by": by,
+                                             "at": _iso(now), "time": now})
+
+    def end(self, by, now, totals: dict | None = None) -> dict:
         cur = self.open
         if not cur:
             raise ValueError(NO_BATCH)
         return self._write("batches.jsonl", {"event": "end", "batch": cur["batch"], "by": by,
-                                             "at": _iso(now), "time": now})
+                                             "at": _iso(now), "time": now, "totals": totals or {}})

@@ -72,8 +72,12 @@ td,th{font-size:12px;padding:2px 6px;text-align:left}
   <div><button onclick="clearance()">Line clearance</button> <span id="clr" class="small"></span></div>
   <div><input id="bn" placeholder="Batch no."><input id="bm" placeholder="MFG 10/2026"><input id="be" placeholder="EXP 10/2028"><input id="bp" placeholder="MRP Rs.">
   <button onclick="batchStart()">Start batch</button></div>
+  <ul id="rel" class="small"></ul>
+  <div id="due" class="small" style="color:#b36b00;font-weight:600"></div>
+  <div><input id="spw" type="password" placeholder="QA password"><button onclick="specimen()">Sign start-up specimen (QA)</button>
+  <button onclick="foil()">Foil roll changed</button></div>
   <div>Leak test: <button onclick="leak('pass')">Pass</button><button onclick="leak('fail')">Fail</button>
-  <input id="bnote" placeholder="Note"></div>
+  <input id="bsamp" type="number" min="0" placeholder="Samples" style="width:90px"><input id="bnote" placeholder="Note"></div>
   <div><button onclick="batchEnd()">End batch</button></div>
 </section>
 <section>
@@ -95,7 +99,7 @@ td,th{font-size:12px;padding:2px 6px;text-align:left}
 <footer>Built with Muse Spark Open</footer>
 <script>
 const $=id=>document.getElementById(id);
-const col={READY:"#118a3a",PASS:"#118a3a",REJECT:"#c4161c",LOCKED:"#c4161c",HOLD:"#e59a00","NO STRIP":"#888"};
+const col={READY:"#118a3a",PASS:"#118a3a",REJECT:"#c4161c",LOCKED:"#c4161c",HOLD:"#e59a00","NO STRIP":"#888","NOT RELEASED":"#e59a00"};
 const red=vs=>{if(vs.some(v=>(v.reasons||[]).some(r=>r.severity==="critical")))$("msg").classList.add("crit")};
 const show=o=>{$("msg").className="";$("msg").style.cssText="";$("msg").textContent=typeof o==="string"?o:(o.error||JSON.stringify(o,null,1));refresh()};
 async function j(url,body){const r=await fetch(url,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body||{})});return r.json()}
@@ -110,7 +114,9 @@ async function form(url,o){const r=await fetch(url,{method:"POST",body:new URLSe
 async function clearance(){show("Checking the table...");const r=await form("/clearance");
   $("clr").textContent=r.error?"":(r.clear?"Clear":"Not clear: "+r.found.map(f=>f.count+" "+f.prompt).join(", "));show(r.error?r:"Line clearance: "+(r.clear?"clear":"NOT clear"))}
 async function batchStart(){show(await form("/batch/start",{batch:$("bn").value,mfg:$("bm").value,exp:$("be").value,mrp:$("bp").value}))}
-async function leak(r){show(await form("/leak",{result:r,note:$("bnote").value}))}
+async function leak(r){show(await form("/leak",{result:r,note:$("bnote").value,samples:$("bsamp").value||0}))}
+async function specimen(){const r=await j("/specimen/sign",{password:$("spw").value});$("spw").value="";show(r)}
+async function foil(){show(await form("/foil-change"))}
 async function batchEnd(){show(await form("/batch/end"))}
 async function describe(){show("Working...");const r=await j("/describe",{text:$("text").value});shown(r)}
 function shown(r){if(r.error)return show(r);if(r.transcript)$("text").value=r.transcript;show("Check the rules, then Approve.")}
@@ -124,6 +130,9 @@ async function refresh(){
   const s=await (await fetch("/status")).json();
   $("banner").style.background=col[s.state]||"#888";
   $("banner").firstChild.textContent=s.state;$("why").textContent=s.text;$("uncovered").textContent=(s.selftest_skipped||[]).length?"Self-test did not cover: "+s.selftest_skipped.join(", "):"";$("skipped").textContent=((s.last_verdict||{}).skipped||[]).length?"Not checked: "+s.last_verdict.skipped.join(", "):"";$("batchline").textContent=s.batch?"Batch "+s.batch.batch:"No batch open";
+  $("rel").replaceChildren();if(s.batch)["Self-test for this batch","Start-up print check","QA signature on the start-up specimen"]
+    .forEach(t=>$("rel").appendChild(mk("li",(s.blockers.includes(t)?"☐ ":"☑ ")+t)));
+  $("due").textContent=s.due.length?"Due: "+s.due.join(", "):"";
   $("spent").textContent=s.spent_usd==null?"?":s.spent_usd.toFixed(2);$("ver").textContent=s.checklist_version??"-";
   $("counts").textContent=Object.entries(s.counts).map(([k,v])=>k+" "+v).join(" · ");
   $("rules").innerHTML="";(s.pending||s.rules).forEach(t=>{const li=document.createElement("li");li.textContent=t.replace(/^Rule \d+(?: \((\w+)\))?: /,(m,s)=>s?"["+s+"] ":"");if(/^Rule \d+ \(critical\)/.test(t))li.className="crit";$("rules").appendChild(li)});

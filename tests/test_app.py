@@ -10,7 +10,9 @@ from fastapi.testclient import TestClient
 
 import app as app_mod
 import d2i.meta_api as meta_api
-from d2i.audit import Users
+from datetime import datetime
+
+from d2i.audit import AuditLog, Users
 from d2i.batch import Batches
 from d2i.checklist import CHECKS, approve
 from d2i.meta_api import SamTrackPoint
@@ -61,6 +63,7 @@ def test_inspect_upload_returns_verdict(tmp_path):
     assert c.post("/selftest", files=up(make_strip(seed=12))).json()["passed"] is True
     assert c.get("/status").json()["locked"] is False
     open_batch(p)
+    release_batch(p)
     v = c.post("/inspect", files=up(make_strip(missing=(0,), seed=13))).json()
     assert v["status"] == "REJECT"
     assert "pocket 1" in " ".join(r["text"] for r in v["reasons"])
@@ -139,7 +142,18 @@ def open_batch(p, no="B1"):
     return b.start(no, "01/2026", "01/2028", "45", "qa1", time.time())
 
 
-def bench(tmp_path, chat=None, client=None, plc=None, source=None, batch=True):
+def release_batch(p, no="B1"):
+    """What releases an open batch: a passed self-test, a PRINT_OK print row and QA's specimen signature."""
+    now = time.time()
+    b = Batches(p)
+    last = (b._read("selftests.jsonl") or [{"passed": True, "at": "x", "results": [], "checklist_version": 1, "taught_at": 0}])[-1]  # a copy keeps the station's lock state
+    b._write("selftests.jsonl", dict(last, time=now))
+    b._write("prints.jsonl", {"at": datetime.fromtimestamp(now).isoformat(timespec="seconds"), "batch": no, "time": now,
+                              "read": {}, "status": "PRINT_OK", "reasons": [], "by": "op"})
+    AuditLog(p / "audit.jsonl").append("specimen_signed", "qa1", {"batch": no, "print_at": "x"})
+
+
+def bench(tmp_path, chat=None, client=None, plc=None, source=None, batch=True, release=True):
     """Taught, self-tested bench in tmp_path/p with a QA user (qa1/pw-qa) and an operator (op/pw-op)."""
     p = tmp_path / "p"
     approve(CHECKLIST, "Priya", p / "checklists.jsonl")
@@ -156,6 +170,8 @@ def bench(tmp_path, chat=None, client=None, plc=None, source=None, batch=True):
     c.post("/logout")
     if batch:
         open_batch(p)
+        if release:
+            release_batch(p)
     return c, p
 
 
@@ -519,13 +535,14 @@ def test_inspect_logs_batch(tmp_path):
     assert c.post("/batch/start", data=form).json()["batch"] == "LOT7"
     assert c.post("/batch/start", data=form).json() == {"error": "A batch is already open: LOT7"}
     assert c.get("/status").json()["batch"]["batch"] == "LOT7"
+    release_batch(p, "LOT7")
     assert c.post("/inspect", files=up(make_strip(seed=15))).json()["status"] == "PASS"
     assert _lines(p / "log.jsonl")[-1]["batch"] == "LOT7"
     assert c.post("/leak", data={"result": "pass", "note": "ok"}).json()["result"] == "pass"
     assert c.post("/batch/end").json()["event"] == "end"
     assert c.get("/status").json()["batch"] is None
     acts = [json.loads(x)["action"] for x in (p / "audit.jsonl").read_text(encoding="utf-8").splitlines()]
-    assert acts[-4:] == ["line_clearance", "batch_start", "leak_test", "batch_end"]
+    assert acts[-5:] == ["line_clearance", "batch_start", "specimen_signed", "leak_test", "batch_end"]
 
 
 def test_batch_endpoints_need_qa(tmp_path):
@@ -548,7 +565,7 @@ class PrintClient(FakeClient):
 
 
 def _print_bench(tmp_path, **kw):
-    c, p = bench(tmp_path, client=PrintClient(**kw))
+    c, p = bench(tmp_path, client=PrintClient(**kw), release=False)
     login(c, "op", "pw-op")
     return c, p
 
@@ -571,7 +588,7 @@ def test_print_logged(tmp_path):
 
 
 def test_print_needs_login(tmp_path):
-    c, p = bench(tmp_path, client=PrintClient())
+    c, p = bench(tmp_path, client=PrintClient(), release=False)
     r = c.post("/print", files={"image": ("a.jpg", jpg(make_strip(seed=1)), "image/jpeg")})
     assert "error" in r.json() and not (p / "prints.jsonl").exists()
 
@@ -668,6 +685,7 @@ def test_tray_locked_makes_no_paid_call(tmp_path):
 
     approve(CHECKLIST, "Priya", tmp_path / "p" / "checklists.jsonl")
     open_batch(tmp_path / "p")
+    release_batch(tmp_path / "p")
     c = TestClient(app_mod.create_app(tmp_path / "p", str(clip), client=Counting()))  # never taught: LOCKED
     try:
         v = c.post("/tray").json()["verdicts"]
@@ -724,3 +742,67 @@ def test_wrong_print_while_held_adds_no_second_hold(tmp_path):
     assert c.post("/print", files=up(make_strip(seed=1))).json()["status"] == "HOLD"
     assert len(_lines(p / "prints.jsonl")) == 1 and len(_holds(p)) == n
     assert (p / "hold.json").read_text(encoding="utf-8") == first
+
+
+# --- Task 28: release gate ---
+def _print_ok(p, no="B1"):
+    Batches(p)._write("prints.jsonl", {"at": datetime.now().isoformat(timespec="seconds"), "time": time.time(), "batch": no, "read": {},
+                                       "status": "PRINT_OK", "reasons": [], "by": "op"})
+
+
+def test_inspect_refused_until_released(tmp_path):
+    clip = tmp_path / "src.mp4"
+    vw = cv2.VideoWriter(str(clip), cv2.VideoWriter_fourcc(*"mp4v"), 15, (640, 360))
+    for _ in range(3):
+        vw.write(make_strip(seed=12))
+    vw.release()
+    c, p = bench(tmp_path, client=TrayClient(), release=False, source=str(clip))
+    want = ["Self-test for this batch", "Start-up print check", "QA signature on the start-up specimen"]
+    s = c.get("/status").json()
+    assert s["blockers"] == want and s["state"] == "NOT RELEASED" and "Batch not released" in s["text"]
+    for url in ("/inspect", "/tray"):
+        r = c.post(url, files=up(make_strip(seed=15))) if url == "/inspect" else c.post(url)
+        assert r.status_code == 409 and r.json() == {"error": "Batch not released: " + ", ".join(want)}
+    assert not (p / "log.jsonl").exists()
+    release_batch(p)
+    assert c.get("/status").json()["blockers"] == []
+    assert c.post("/inspect", files=up(make_strip(seed=15))).json()["status"] == "PASS"
+    c.app.state.source.stop.set()
+
+
+def test_specimen_sign_needs_qa_password_and_print_ok(tmp_path):
+    c, p = bench(tmp_path, release=False)
+    assert c.post("/specimen/sign", json={"password": "pw-qa"}).json() == {"error": "Log in as a QA user first"}
+    login(c, "qa1", "pw-qa")
+    assert "PRINT_OK" in c.post("/specimen/sign", json={"password": "pw-qa"}).json()["error"]
+    _print_ok(p)
+    assert "error" in c.post("/specimen/sign", json={"password": "wrong"}).json()
+    assert "QA signature on the start-up specimen" in c.get("/status").json()["blockers"]
+    assert "error" not in c.post("/specimen/sign", json={"password": "pw-qa"}).json()
+    e = _audit(p)[-1]
+    assert e["action"] == "specimen_signed" and e["user"] == "qa1" and e["details"]["batch"] == "B1" and e["details"]["print_at"]
+    assert "QA signature on the start-up specimen" not in c.get("/status").json()["blockers"]
+
+
+def test_foil_change_makes_checks_due(tmp_path):
+    c, p = bench(tmp_path)
+    b = Batches(p)
+    b.leak("pass", "qa1", "", time.time())
+    _print_ok(p)
+    assert c.get("/status").json()["due"] == []
+    assert c.post("/foil-change").json() == {"error": "Log in first"}
+    login(c, "op", "pw-op")
+    assert c.post("/foil-change").json()["event"] == "foil_change"
+    time.sleep(1.1)
+    assert c.get("/status").json()["due"] == ["Leak test due", "Print check due"]
+    assert _audit(p)[-1]["action"] == "foil_change"
+
+
+def test_batch_end_stores_reconciliation(tmp_path):
+    c, p = bench(tmp_path)
+    c.post("/inspect", files=up(make_strip(seed=15)))
+    login(c, "qa1", "pw-qa")
+    assert c.post("/leak", data={"result": "pass", "samples": "5"}).json()["samples"] == 5
+    end = c.post("/batch/end").json()
+    assert end["totals"] == {"inspected": 1, "passed": 1, "rejected": 0, "held": 0, "no_strip": 0, "balanced": True}
+    assert Batches(p).rows[-1]["totals"] == end["totals"]

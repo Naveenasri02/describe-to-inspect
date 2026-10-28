@@ -8,6 +8,7 @@ from pathlib import Path
 from d2i.audit import AuditLog, config_hashes, quarantine_list
 from d2i.batch import Batches
 from d2i.checklist import current
+from d2i.ipqc import check_events, missed_windows
 from d2i.meta_api import BudgetExceeded, MetaError
 
 STATUSES = ("PASS", "REJECT", "HOLD", "LOCKED", "NO_STRIP")
@@ -151,7 +152,7 @@ def _audit_sections(audit, since: float, until: float) -> str:
             + "<h2>Physical challenge strips</h2>" + _table(["Time (UTC)", "User", "Strip", "Ejected?"], phys))
 
 
-def _batch_section(product_dir: Path) -> str:
+def _batch_section(product_dir: Path, audit: AuditLog | None = None, until: float = 0.0) -> str:
     """The open batch, else the last one: fields, clearance, leak results, verdict counts by status and rule."""
     rows = Batches(product_dir).rows
     start = next((r for r in reversed(rows) if r["event"] == "start"), None)
@@ -164,15 +165,39 @@ def _batch_section(product_dir: Path) -> str:
               ["Started", f"{start['at']} by {start['by']}"], ["Ended", f"{end['at']} by {end['by']}" if end else "still open"],
               ["Line clearance", f"{clr['at']} by {clr['by']}: {'clear' if clr['clear'] else 'NOT clear'}" if clr else "not found"]]
     leaks = [[r["at"], r["by"], r["result"].upper(), r["note"]] for r in mine if r["event"] == "leak"]
+    prints = [r for r in _lines(Path(product_dir) / "prints.jsonl") if r.get("batch") == start["batch"]]
+    ev = check_events(product_dir, start["batch"])
+    ts = lambda a: datetime.fromisoformat(a).timestamp()
+    arows = [r for r in (audit.entries() if audit else []) if isinstance(r.get("details"), dict)]
+    st = next((t for t in _lines(Path(product_dir) / "selftests.jsonl") if t.get("passed") and t.get("time", 0) >= start["time"]), None)
+    st_by = next((r["user"] for r in arows if r["action"] == "selftest" and r["details"].get("passed") and ts(r["at"]) >= start["time"] - 1), "?")
+    ok = next((r for r in prints if r["status"] == "PRINT_OK"), None)
+    sig = next((r for r in arows if r["action"] == "specimen_signed" and r["details"].get("batch") == start["batch"]), None)
+    release = [["Self-test for this batch", st["at"] if st else "not done", st_by if st else ""],
+               ["Start-up print check", ok["at"] if ok else "not done", ok["by"] if ok else ""],
+               ["QA signature on the start-up specimen", sig["at"] if sig else "not done", sig["user"] if sig else ""]]
+    stamp = lambda t: datetime.fromtimestamp(t).isoformat(timespec="seconds")
+    checks = [[r["at"], "Leak test" if r["event"] == "leak" else "Print check", r["by"],
+               (r["result"] if r["event"] == "leak" else r["status"]).upper()] for r in ev if r["event"] != "foil_change"]
+    checks += [[stamp(r["time"]), "Foil roll changed", r["by"], ""] for r in ev if r["event"] == "foil_change"]
+    checks += [[f"{stamp(a)} to {stamp(b)}", "No leak test or print check in this hour", "", "missed"]
+               for a, b in missed_windows(start, ev, end["time"] if end else until)]
+    tot = end.get("totals") if end else None
+    recon = (_table(["Inspected", "Passed", "Rejected", "Held", "No strip", "Balanced"],
+                    [[tot[k] for k in ("inspected", "passed", "rejected", "held", "no_strip")] + ["yes" if tot["balanced"] else "NO"]])
+             if tot else "<p>Not reconciled: the batch is still open</p>")
     vs = [v for v in _lines(Path(product_dir) / "log.jsonl") if v.get("batch") == start["batch"]]
     by_status = Counter(v["status"] for v in vs)
     by_rule = Counter(_label(r) for v in vs for r in v["reasons"])
-    return ("<h2>Batch</h2>" + _table(["Item", "Value"], fields) + "<h2>Leak test</h2>"
+    return ("<h2>Batch</h2>" + _table(["Item", "Value"], fields) + "<h2>Release</h2>"
+            + _table(["Item", "Time", "By"], release) + "<h2>In-process checks</h2>"
+            + _table(["Time", "Check", "By", "Result"], sorted(checks)) + "<h2>Leak test</h2>"
             + _table(["Time", "By", "Result", "Note"], leaks)
             + "<h2>Print checks</h2>" + _table(["Time", "By", "Result", "Read on strip", "Reasons"], [
                 [r["at"], r["by"], r["status"], f"{r['read'].get('batch')} / {r['read'].get('mfg')} / {r['read'].get('exp')} / {r['read'].get('mrp')}",
-                 "; ".join(r["reasons"])] for r in _lines(Path(product_dir) / "prints.jsonl") if r.get("batch") == start["batch"]])
+                 "; ".join(r["reasons"])] for r in prints])
             + "<h2>Batch verdicts</h2>" + _table(list(STATUSES), [[by_status[s] for s in STATUSES]])
+            + "<h2>Reconciliation</h2>" + recon
             + _table(["Reason", "Count"], sorted(by_rule.items())))
 
 
@@ -182,7 +207,7 @@ def shift_record(product_dir: Path, since: float, until: float, batch: str, oper
     cl = current(Path(product_dir) / "checklists.jsonl") or {}
     span = " to ".join(datetime.fromtimestamp(t).isoformat(timespec="seconds") for t in (since, until))
     parts = [
-        "<h1>DRAFT — needs QA signature</h1>", _batch_section(product_dir),
+        "<h1>DRAFT — needs QA signature</h1>", _batch_section(product_dir, audit, until),
         f"<p>Product: {e(str(cl.get('product', '')))}<br>Batch: {e(batch)}<br>Operator: {e(operator)}<br>Time range: {e(span)}</p>",
         _checklist_section(cl), _selftest_section(tests), _totals_section(verdicts),
         _rejects_section(verdicts), _held_section(verdicts),

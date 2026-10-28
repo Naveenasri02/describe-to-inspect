@@ -198,3 +198,15 @@ def test_selftest_section_lists_uncovered_kinds():
     from d2i.record import _selftest_section
     t = {"at": "x", "results": [], "passed": True, "skipped": ["double_tablet"]}
     assert "did not cover: double_tablet" in _selftest_section([t])
+
+
+def test_record_lists_missed_hour(product):
+    b = Batches(product)
+    b.clearance({"clear": True, "found": []}, "qa1", T0)
+    b.start("LOT7", "01/2026", "01/2028", "45", "qa1", T0 + 60)
+    b.leak("pass", "qa1", "", T0 + 70, samples=5)
+    b.end("qa1", T0 + 60 + 7300, {"inspected": 4, "passed": 3, "rejected": 1, "held": 0, "no_strip": 0, "balanced": True})
+    html = shift_record(product, T0 - 10, T0 + 8000, "", "")
+    for t in ("<h2>Release</h2>", "<h2>In-process checks</h2>", "<h2>Reconciliation</h2>", "Balanced", "Start-up print check"):
+        assert t in html
+    assert html.count(">missed<") == 1

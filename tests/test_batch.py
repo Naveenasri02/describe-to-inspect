@@ -134,3 +134,20 @@ def test_batch_number_cannot_repeat(tmp_path):
     b.clearance({"clear": True, "found": []}, "qa1", 1300.0)
     with pytest.raises(ValueError, match="Batch no. B1 was already used"):
         b.start("b 1", "01/2026", "01/2028", "45", "qa1", 1310.0)
+
+
+def test_mrp_space_between_digits_refused(tmp_path):
+    for bad in ("45 50", "1 250", "Rs. 45 50/-"):
+        with pytest.raises(ValueError, match="MRP must be one price, e.g. 24.50"):
+            clear_batches(tmp_path).start("B1", "01/2026", "01/2028", bad, "qa1", 1010.0)
+    assert clear_batches(tmp_path).start("B1", "01/2026", "01/2028", " ₹ 1,250 /-", "qa1", 1010.0)["mrp"] == "1250.00"
+
+
+def test_foil_change_leak_samples_and_end_totals(tmp_path):
+    b = clear_batches(tmp_path)
+    with pytest.raises(ValueError, match="No batch"):
+        b.foil_change("op", 1100.0)
+    b.start("B1", "01/2026", "01/2028", "45", "qa1", 1010.0)
+    assert b.foil_change("op", 1100.0)["event"] == "foil_change"
+    assert b.leak("pass", "qa1", "", 1200.0, samples=5)["samples"] == 5
+    assert b.end("qa1", 1300.0, {"inspected": 3})["totals"] == {"inspected": 3}
