@@ -339,6 +339,20 @@ def test_station_strip_cut_named(tmp_path):
     assert [x["kind"] for x in r["results"]].count("strip_cut") == 1 and r["passed"], r
 
 
+def test_full_checks_strip_cut_and_empty_pocket(tmp_path):
+    approve(dict(CHECKLIST, reject_if=list(CHECKS)), "Priya", tmp_path / "checklists.jsonl")
+    st = Station(tmp_path, client=ImageSam(), clock=lambda: T0)
+    st.teach([make_strip(seed=i, shift=(i, 0)) for i in range(6)])
+    good = make_strip(seed=21)
+    assert st._judge(good, None, None).status == "PASS"
+    v = st._judge(paint(good, pocket_box(0), "strip_cut", STRIP_BOX, np.random.default_rng(3)), None, None)
+    # the shortened strip also remaps the taught pockets, so pocket reasons come with it; strip_cut must be among them
+    assert v.status == "REJECT" and any(x["check"] == "strip_cut" for x in v.reasons), v.reasons
+    v = st._judge(make_strip(seed=22, missing=(0, 5)), None, None)  # a whole end column empty: pill bounds shrink
+    assert v.status == "REJECT" and any(x["check"] == "empty_pocket" for x in v.reasons), v.reasons
+    assert not any(x["check"] == "strip_cut" for x in v.reasons), v.reasons
+
+
 def test_strip_cut_skipped_without_profile(station):
     st, _ = station
     st.checklist = dict(st.checklist, reject_if=list(CHECKS))

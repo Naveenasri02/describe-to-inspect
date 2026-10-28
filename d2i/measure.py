@@ -72,7 +72,8 @@ def pocket_check(image, pocket, pills, profile) -> str | None:
 
 
 def strip_features(lay) -> dict | None:
-    """Strip aspect and the gaps (left, top, right, bottom) between the pill bounds and the strip box, as fractions."""
+    """Strip aspect and the gaps (left, top, right, bottom) between the pill bounds and the strip box, as fractions.
+    Margins are None unless every pocket holds exactly one pill (an empty or double pocket moves the bounds)."""
     if not lay.pills:
         return None
     sx0, sy0, sx1, sy1 = lay.strip_box
@@ -81,18 +82,21 @@ def strip_features(lay) -> dict | None:
         return None
     px0, py0 = min(p[0] for p in lay.pills), min(p[1] for p in lay.pills)
     px1, py1 = max(p[2] for p in lay.pills), max(p[3] for p in lay.pills)
+    one_each = all(len(pills_in(pk, lay.pills)) == 1 for pk in lay.pockets)
     return {"aspect": max(w, h) / min(w, h),
-            "margins": [(px0 - sx0) / w, (py0 - sy0) / h, (sx1 - px1) / w, (sy1 - py1) / h]}
+            "margins": [(px0 - sx0) / w, (py0 - sy0) / h, (sx1 - px1) / w, (sy1 - py1) / h] if one_each else None}
 
 
 def teach_strip(layouts) -> dict | None:
     fs = [strip_features(l) for l in layouts]
     if not fs or any(f is None for f in fs):
         return None
-    a, m = np.array([f["aspect"] for f in fs]), np.array([f["margins"] for f in fs])
+    a = np.array([f["aspect"] for f in fs])
+    ms = [f["margins"] for f in fs if f["margins"] is not None]  # photos with an empty or double pocket add no margins
+    m = np.array(ms) if ms else None
     return {"aspect_med": float(np.median(a)), "aspect_tol": float(max(0.06 * np.median(a), 3 * a.std())),
-            "margin_med": [float(v) for v in np.median(m, axis=0)],
-            "margin_tol": [float(max(0.04, 3 * v)) for v in m.std(axis=0)]}
+            "margin_med": [float(v) for v in np.median(m, axis=0)] if ms else None,
+            "margin_tol": [float(max(0.04, 3 * v)) for v in m.std(axis=0)] if ms else None}
 
 
 def strip_check(lay, sprofile) -> bool:
@@ -100,5 +104,8 @@ def strip_check(lay, sprofile) -> bool:
     f = strip_features(lay)
     if f is None:
         return False
-    return (abs(f["aspect"] - sprofile["aspect_med"]) > sprofile["aspect_tol"]
-            or any(abs(a - b) > t for a, b, t in zip(f["margins"], sprofile["margin_med"], sprofile["margin_tol"])))
+    if abs(f["aspect"] - sprofile["aspect_med"]) > sprofile["aspect_tol"]:
+        return True
+    if f["margins"] is None or sprofile["margin_med"] is None:  # margins are judged only when every pocket has one tablet
+        return False
+    return any(abs(a - b) > t for a, b, t in zip(f["margins"], sprofile["margin_med"], sprofile["margin_tol"]))

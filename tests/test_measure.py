@@ -99,7 +99,7 @@ STRIP = (0, 0, 400, 100)  # aspect 4
 def slay(left=0.1, top=0.2, right=0.1, bottom=0.2, strip=STRIP):
     w, h = strip[2] - strip[0], strip[3] - strip[1]
     pill = (strip[0] + left * w, strip[1] + top * h, strip[2] - right * w, strip[3] - bottom * h)
-    return Layout(strip, [], "sam", True, "", [pill])
+    return Layout(strip, [pill], "sam", True, "", [pill])  # one pocket holding the one pill
 
 
 def test_strip_features_margins():
@@ -131,3 +131,23 @@ def test_features_box_partly_outside_returns_none():
     img = foil()  # 140 x 140
     for box in [(-10, 40, 30, 80), (40, 120, 80, 150), (40, -50, 80, -10)]:
         assert features(img, POCKET, box) is None, box
+
+
+def test_margins_only_when_every_pocket_has_one_pill():
+    full = slay()
+    empty = Layout(STRIP, full.pockets + [(300, 40, 340, 60)], "sam", True, "", full.pills)  # pocket without a pill
+    double = Layout(STRIP, full.pockets, "sam", True, "", full.pills * 2)
+    for lay in (empty, double):
+        assert strip_features(lay)["margins"] is None
+        assert abs(strip_features(lay)["aspect"] - 4) < 1e-9
+    p = teach_strip([slay() for _ in range(5)])
+    assert not strip_check(Layout(STRIP, empty.pockets, "sam", True, "", slay(left=0.5).pills), p)  # margin off, pocket empty
+    assert strip_check(Layout((0, 0, 320, 100), empty.pockets, "sam", True, "", full.pills), p)  # aspect still caught
+
+
+def test_teach_strip_skips_margins_of_photos_with_a_bad_pocket():
+    empty = Layout(STRIP, slay().pockets + [(300, 40, 340, 60)], "sam", True, "", slay().pills)
+    p = teach_strip([slay() for _ in range(4)] + [empty])
+    assert p["margin_tol"] == [0.04] * 4 and all(abs(a - b) < 1e-9 for a, b in zip(p["margin_med"], (0.1, 0.2, 0.1, 0.2)))
+    p = teach_strip([empty, empty])
+    assert p["margin_med"] is None and not strip_check(slay(left=0.5), p) and strip_check(slay(strip=(0, 0, 320, 100)), p)
