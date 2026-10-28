@@ -6,36 +6,38 @@
 /* Line board: read-only, 1 s poll. Same tokens and fonts as the station; colours as the stack light. */
 :root{--start:#1F5FA6;--amgrey:#B39A62}
 html,body{height:auto}
-body{display:block;min-width:0;height:100vh;overflow:hidden;background:var(--foil);display:grid;
+body{min-width:0;height:100vh;overflow:hidden;background:var(--foil);display:grid;grid-template-columns:minmax(0,1fr);
   grid-template-rows:auto auto minmax(0,1fr) auto auto}
-.lb-state{--bg:var(--grey);--fg:#fff;background:var(--bg);color:var(--fg);padding:14px 26px 14px;display:grid;
+.lb-state{--bg:var(--grey);--fg:#fff;background:var(--bg);color:var(--fg);padding:12px 26px;display:grid;
   grid-template-columns:minmax(0,1fr) auto;column-gap:24px;align-items:start;position:relative}
 .s-idle{--bg:var(--grey)} .s-starting,.s-complete{--bg:var(--start)} .s-running{--bg:var(--pass)}
 .s-held{--bg:var(--hold);--fg:var(--ink)} .s-suspended{--bg:var(--amgrey);--fg:var(--ink)} .s-stopped{--bg:var(--reject)}
 .lb-top{display:flex;align-items:center;gap:22px;min-width:0}
-.lb-word{font-family:"IBM Plex Sans Condensed","IBM Plex Sans",sans-serif;font-weight:700;font-size:clamp(56px,8.4vw,116px);
+.lb-word{font-family:"IBM Plex Sans Condensed","IBM Plex Sans",sans-serif;font-weight:700;font-size:clamp(56px,7.4vw,100px);
   line-height:.92;letter-spacing:1px;white-space:nowrap}
 .lb-chip{display:inline-flex;align-items:center;gap:8px;font-size:22px;font-weight:600;padding:6px 14px;border-radius:5px;
   background:#fff;color:var(--ink);border-left:10px solid var(--grey);white-space:nowrap}
 .lb-chip small{font-size:15px;font-weight:500;color:var(--steel)}
 .lb-chip.pass{border-color:var(--pass)} .lb-chip.reject{border-color:var(--reject);color:var(--reject)}
 .lb-chip.hold{border-color:var(--hold)} .lb-chip.grey{border-color:var(--grey)}
-.lb-reason{grid-column:1;font-size:clamp(20px,2.3vw,32px);font-weight:600;line-height:1.2;margin-top:10px;
+.lb-reason{grid-column:1;font-size:clamp(20px,2.2vw,30px);font-weight:600;line-height:1.2;margin-top:8px;align-self:center;
   overflow:hidden;text-overflow:ellipsis;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
 .lb-reason span{font-weight:400;opacity:.85}
-.lb-more{grid-column:1/-1;display:flex;gap:18px;align-items:center;margin-top:10px;font-size:18px;min-height:30px;flex-wrap:wrap}
+.lb-more{grid-column:1/-1;display:flex;gap:18px;align-items:center;margin-top:8px;font-size:18px;flex-wrap:wrap}
+.lb-waitfor{grid-column:2;grid-row:2;align-self:center;justify-self:end;margin-top:8px}
+.lb-waitfor:empty{display:none}
 .lb-more:empty{display:none}
-.lb-wait{background:var(--ink);color:#fff;font-weight:700;font-size:19px;letter-spacing:.06em;padding:4px 12px;border-radius:4px}
+.lb-wait{display:inline-block;background:var(--ink);color:#fff;font-weight:700;font-size:20px;letter-spacing:.06em;padding:5px 14px;border-radius:4px;white-space:nowrap}
 .s-stopped .lb-wait,.s-running .lb-wait,.s-starting .lb-wait,.s-complete .lb-wait,.s-idle .lb-wait{background:#fff;color:var(--ink)}
 .lb-inv{font-weight:600;padding-left:12px;border-left:4px solid currentColor}
-.lb-timer{grid-column:2;grid-row:1/3;text-align:right}
+.lb-timer{grid-column:2;grid-row:1;text-align:right;align-self:center}
 .lb-timer small{display:block;font-size:14px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;opacity:.85}
 .lb-timer b{display:block;font-size:clamp(40px,5vw,68px);font-weight:600;line-height:1}
 .lb-stale{display:none;position:absolute;inset:0;background:repeating-linear-gradient(135deg,rgba(23,32,42,.88) 0 18px,rgba(23,32,42,.8) 18px 36px);
   color:#fff;font-size:28px;font-weight:700;align-items:center;justify-content:center;text-align:center;padding:0 24px}
 body.stale .lb-stale{display:flex}
 
-.lb-id{display:grid;grid-template-columns:1.7fr 1fr .8fr 2.4fr .55fr .7fr;background:var(--panel);border-bottom:1px solid var(--rule)}
+.lb-id{display:grid;grid-template-columns:minmax(0,1.7fr) minmax(0,1fr) minmax(0,.8fr) minmax(0,2.4fr) minmax(0,.55fr) minmax(0,.7fr);background:var(--panel);border-bottom:1px solid var(--rule)}
 .lb-id>div{padding:8px 20px;border-right:1px solid var(--rule);min-width:0}
 .lb-id>div:last-child{border-right:0}
 .lb-id small,.lb-h{display:block;font-size:13px;font-weight:600;letter-spacing:.07em;text-transform:uppercase;color:var(--steel)}
@@ -45,7 +47,7 @@ body.stale .lb-stale{display:flex}
   font-size:13px;font-weight:700;color:#fff;background:var(--pass);vertical-align:2px}
 .lb-rel .no{color:var(--steel)} .lb-rel .no i{background:none;border:2px solid var(--hold);color:var(--hold)}
 
-.lb-main{display:grid;grid-template-columns:1.25fr 1fr 1fr;gap:14px;padding:14px 20px;min-height:0}
+.lb-main{display:grid;grid-template-columns:minmax(0,1.25fr) minmax(0,1fr) minmax(0,1fr);gap:14px;padding:14px 20px;min-height:0}
 .lb-zone{background:#fff;border:1px solid var(--rule);border-radius:4px;padding:12px 18px;min-height:0;overflow:hidden;display:flex;flex-direction:column}
 .lb-h{margin-bottom:6px;display:flex;justify-content:space-between;gap:10px}
 .lb-h em{font-style:normal;font-weight:500;letter-spacing:0;text-transform:none}
@@ -53,7 +55,7 @@ body.stale .lb-stale{display:flex}
 .lb-list li{display:grid;grid-template-columns:minmax(0,1fr) auto;column-gap:14px;padding:9px 0 9px 12px;border-top:1px solid var(--rule);
   border-left:5px solid var(--hold)}
 .lb-list li:first-child{border-top:0}
-.lb-list li.crit{border-left-color:var(--reject)}
+.lb-list li.lb-crit{border-left-color:var(--reject)}
 .lb-list .t{font-size:20px;font-weight:600;line-height:1.2;overflow:hidden;text-overflow:ellipsis;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
 .lb-list .m{font-size:14px;color:var(--steel);margin-top:3px;display:flex;gap:10px;align-items:center}
 .lb-list .who{font-size:13px;font-weight:700;letter-spacing:.05em;background:var(--ink);color:#fff;padding:1px 8px;border-radius:3px}
@@ -62,10 +64,10 @@ body.stale .lb-stale{display:flex}
 .lb-list li.lb-none::before{content:"✓";display:inline-grid;place-items:center;width:38px;height:38px;border-radius:50%;background:var(--pass);
   color:#fff;font-size:22px;margin-right:12px;vertical-align:4px;font-family:"Segoe UI Symbol","IBM Plex Sans",sans-serif}
 .lb-col{display:flex;flex-direction:column;gap:14px;min-height:0}
-.lb-due{display:grid;grid-template-columns:1fr auto;font-size:19px;margin:0}
-.lb-due dt,.lb-due dd{margin:0;padding:7px 0;border-top:1px solid var(--rule)}
+.lb-due{display:grid;grid-template-columns:minmax(0,1fr) auto;font-size:18px;margin:0}
+.lb-due dt,.lb-due dd{margin:0;padding:5px 0;border-top:1px solid var(--rule);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .lb-due dt:first-of-type,.lb-due dd:first-of-type{border-top:0}
-.lb-due dd{text-align:right;font-weight:600}
+.lb-due dd{text-align:right;font-weight:600;padding-left:12px}
 .lb-due .soon{color:#8a5f00} .lb-due .late{color:var(--reject)} .lb-due .off{color:var(--steel);font-weight:500}
 .lb-counts{display:grid;grid-template-columns:repeat(5,1fr);margin:2px 0 6px}
 .lb-counts div{padding-right:6px}
@@ -74,18 +76,20 @@ body.stale .lb-stale{display:flex}
 .lb-counts .p b{color:var(--pass)} .lb-counts .r b{color:var(--reject)} .lb-counts .h b{color:#a87500}
 .lb-line{display:flex;justify-content:space-between;gap:12px;font-size:17px;border-top:1px solid var(--rule);padding-top:7px;flex-wrap:wrap}
 .lb-line b{font-weight:600} .lb-line .bad{color:var(--reject)} .lb-line .warn{color:#8a5f00}
-.lb-bars{list-style:none;margin:2px 0 0;padding:0;display:flex;flex-direction:column;gap:9px;overflow:hidden}
+.lb-bars{list-style:none;margin:2px 0 0;padding:0;display:flex;flex-direction:column;gap:8px;overflow:hidden}
 .lb-bars .l{display:flex;justify-content:space-between;gap:10px;font-size:16px;margin-bottom:3px}
 .lb-bars .l span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .lb-bars .l b{font-weight:700;margin-right:6px}
 .lb-bars .l em{font-style:normal;color:var(--steel);white-space:nowrap;font-size:14px}
 .lb-bars .tr{display:flex;align-items:center;gap:10px}
-.lb-bars .bar{height:22px;background:var(--reject);border-radius:2px;min-width:3px}
+.lb-bars .bar{height:18px;background:var(--reject);border-radius:2px;min-width:3px}
 .lb-bars .n{font-size:22px;font-weight:700;color:var(--reject)}
 .lb-muted{color:var(--steel);font-size:18px;margin:auto 0}
 
-.lb-time{background:var(--panel);border-top:1px solid var(--rule);padding:10px 20px 8px}
-.lb-band{position:relative;height:40px;background:var(--foil);border:1px solid var(--rule);border-radius:3px;overflow:hidden;margin-top:4px}
+.lb-time{background:var(--panel);border-top:1px solid var(--rule);padding:8px 20px 6px}
+.lb-time .lb-h{margin-bottom:0}
+.lb-time .lb-h em{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:15px;color:var(--ink)}
+.lb-band{position:relative;height:36px;background:var(--foil);border:1px solid var(--rule);border-radius:3px;overflow:hidden;margin-top:4px}
 .lb-seg{position:absolute;top:0;bottom:0;background:var(--grey);color:#fff;font-size:14px;font-weight:700;display:flex;
   align-items:center;justify-content:center;overflow:hidden;white-space:nowrap;border-right:1px solid rgba(255,255,255,.55)}
 .lb-seg.s-held,.lb-seg.s-suspended{color:var(--ink)}
@@ -100,16 +104,20 @@ body.stale .lb-stale{display:flex}
 .lb-foot b{color:#fff;font-weight:600}
 .lb-foot .bad{color:#ff9d9d}
 .lb-foot .brand{margin-left:auto;color:#fff}
-@media (max-width:1100px){.lb-id{grid-template-columns:1.5fr 1fr .8fr 2.2fr .6fr .7fr}.lb-id>div{padding:8px 12px}.lb-rel{gap:8px;font-size:16px}}
+@media (max-width:1100px){.lb-id>div{padding:8px 12px}.lb-rel{gap:8px;font-size:16px}}
 @media (max-width:760px){
   body{height:auto;overflow:visible;display:block}
   .lb-state{grid-template-columns:1fr;padding:14px 16px}
-  .lb-timer{grid-column:1;grid-row:auto;text-align:left;margin-top:8px}
+  .lb-timer,.lb-waitfor{grid-column:1;grid-row:auto;text-align:left;justify-self:start;margin-top:8px}
   .lb-top{flex-wrap:wrap;gap:12px}
-  .lb-id{grid-template-columns:1fr 1fr}
+  .lb-id{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}
   .lb-id>div{border-bottom:1px solid var(--rule);padding:8px 16px}
-  .lb-id .wide{grid-column:1/-1}
-  .lb-main{grid-template-columns:1fr;padding:12px 16px}
+  .lb-id .lb-wide,.lb-id>div:first-child{grid-column:1/-1}
+  .lb-counts b{font-size:26px}
+  .lb-list .t{-webkit-line-clamp:3}
+  .lb-main{grid-template-columns:minmax(0,1fr);padding:12px 16px}
+  .lb-time .lb-h{flex-direction:column}
+  .lb-time .lb-h em{white-space:normal}
   .lb-time{padding:10px 16px}
   .lb-lost{white-space:normal}
   .lb-foot{flex-wrap:wrap;white-space:normal;gap:6px 18px;padding:10px 16px}
@@ -120,6 +128,7 @@ body.stale .lb-stale{display:flex}
   <div class="lb-top"><div class="lb-word" id="word">…</div><div class="lb-chip" id="chip" hidden></div></div>
   <div class="lb-timer"><small>Time in state</small><b id="timer">–</b></div>
   <div class="lb-reason" id="reason"></div>
+  <div class="lb-waitfor" id="waitfor"></div>
   <div class="lb-more" id="more"></div>
   <div class="lb-stale" id="stale"></div>
 </section>
@@ -127,7 +136,7 @@ body.stale .lb-stale{display:flex}
   <div><small>Product</small><strong id="product">–</strong></div>
   <div><small>Batch no.</small><strong id="batch">–</strong></div>
   <div><small>Checklist</small><strong id="version">–</strong></div>
-  <div class="wide"><small>Release</small><div class="lb-rel" id="release"></div></div>
+  <div class="lb-wide"><small>Release</small><div class="lb-rel" id="release"></div></div>
   <div><small>Shift</small><strong id="shift">–</strong></div>
   <div><small>Time</small><strong id="clock">–</strong></div>
 </header>
@@ -140,7 +149,7 @@ body.stale .lb-stale{display:flex}
   <section class="lb-zone"><div class="lb-h">Rejects by rule <em>this batch · last 60 min</em></div><ul class="lb-bars" id="pareto"></ul></section>
 </main>
 <section class="lb-time">
-  <div class="lb-h">Today <em id="span"></em></div>
+  <div class="lb-h"><span>Today <span id="span"></span></span><em id="resumed"></em></div>
   <div class="lb-band" id="timeline"></div>
   <div class="lb-ticks" id="ticks"></div>
   <div class="lb-lost" id="lost"></div>
@@ -170,14 +179,15 @@ function band(j){
     c.append(mk("small","Last strip"+(v.strip?" "+v.strip:"")),w+(v.rule&&v.status!=="PASS"?" · Rule "+v.rule:""))}
   const r=$("reason");r.replaceChildren(j.reason||(j.state==="RUNNING"?"Inspecting strips":""));
   if(j.by)r.append(mk("span"," — by "+(WHO[j.by]||j.by)));
-  const m=$("more");m.replaceChildren();
-  if(j.waiting_for)m.append(mk("span","WAITING FOR "+j.waiting_for,"lb-wait"));
+  const w=$("waitfor"),m=$("more");w.replaceChildren();m.replaceChildren();
+  if(j.waiting_for)w.append(mk("span","WAITING FOR "+j.waiting_for,"lb-wait"));
   if(j.investigating)m.append(mk("span",j.investigating,"lb-inv"));
   if(j.also.length)m.append(mk("span","Also: "+j.also.join(" · ")));
 }
 function ident(j){
-  $("product").textContent=j.product?cap(j.product)+(j.count?", strip of "+j.count:""):"–";
-  $("batch").textContent=j.batch?j.batch.batch+(j.batch.open?"":" (ended)"):"No batch";
+  $("product").textContent=j.product?cap(j.product):"–";$("product").title=j.count?"Strip of "+j.count:"";
+  $("batch").textContent=j.batch?j.batch.batch:"No batch";
+  $("batch").previousElementSibling.textContent=j.batch&&!j.batch.open?"Last batch (ended)":"Batch no.";
   $("version").textContent=j.checklist_version?"Version "+j.checklist_version:"Not approved";
   const rel=$("release");rel.replaceChildren();
   if(!j.batch||!j.batch.open)rel.append(mk("span","No batch open","no"));
@@ -187,7 +197,7 @@ function ident(j){
 function waiting(j){
   const ul=$("waiting");ul.replaceChildren();
   if(!j.waiting.length)return ul.append(mk("li","Nothing waiting","lb-none"));
-  j.waiting.slice(0,6).forEach(i=>{const li=mk("li","",/^Line held.*Critical|challenge|Quarantine/.test(i.text)?"crit":"");
+  j.waiting.slice(0,6).forEach(i=>{const li=mk("li","",/^Line held.*Critical|challenge|Quarantine/.test(i.text)?"lb-crit":"");
     const meta=mk("div","","m");meta.append(mk("span",i.who,"who"));
     if(i.evidence){if(i.evidence.startsWith("/")){const a=mk("a","photo");a.href=i.evidence;a.target="_blank";meta.append(a)}
       else meta.append(mk("span",i.evidence))}
@@ -203,8 +213,8 @@ function due(j){
     if(d.in<0)return row(d.name,(st?"expired ":"overdue ")+dur(-d.in),"late");
     row(d.name,"in "+(st?Math.floor(d.in/3600)+" h "+pad(Math.floor(d.in%3600/60))+" min":dur(d.in)),d.in<600?"soon":"")});
   const c=j.challenge;
-  row("Last physical challenge",c?hm(c.time)+(c.passed!=null?(c.passed?" — passed":" — FAILED"):" — "+c.label+(c.ejected?", ejected":", not ejected")):
-    j.challenge_set?"none run yet":"no challenge set registered",c&&c.passed===false?"late":c?"":"off");
+  row("Physical challenge",c?hm(c.time)+(c.passed!=null?(c.passed?" passed":" FAILED"):" "+c.label+(c.ejected?" ejected":" not ejected")):
+    j.challenge_set?"none run yet":"none registered",c&&c.passed===false?"late":c?"":"off");
 }
 function counts(j){
   const t=j.counts,box=$("counts");box.replaceChildren();
@@ -221,7 +231,7 @@ function pareto(j){
   const ul=$("pareto");ul.replaceChildren();
   if(!j.rejects_by_rule.length){ul.append(mk("li","No rejects this batch","lb-muted"));return}
   const max=Math.max(1,...j.rejects_by_rule.map(x=>x.batch));
-  j.rejects_by_rule.slice(0,6).forEach(x=>{const li=mk("li"),l=mk("div","","l"),s=mk("span");
+  j.rejects_by_rule.slice(0,5).forEach(x=>{const li=mk("li"),l=mk("div","","l"),s=mk("span");
     s.append(mk("b","Rule "+x.rule),cap(x.text));l.append(s,mk("em","60 min: "+x.hour));
     const tr=mk("div","","tr"),bar=mk("div","","bar");bar.style.width=(x.batch/max*82)+"%";tr.append(bar,mk("span",x.batch,"n"));
     li.append(l,tr);ul.append(li)});
@@ -230,20 +240,22 @@ function timeline(j){
   const box=$("timeline"),ticks=$("ticks");box.replaceChildren();ticks.replaceChildren();
   const segs=j.segments;if(!segs.length)return;
   const t0=segs[0].start,span=Math.max(60,j.now-t0),pct=t=>(t-t0)/span*100;
-  $("span").textContent=hm(t0)+" to now";
+  $("span").textContent="· "+hm(t0)+" to now";
+  const px=box.clientWidth/100;
   segs.forEach(g=>{const d=mk("div","","lb-seg s-"+g.state.toLowerCase()),w=pct(g.end)-pct(g.start);
     d.style.left=pct(g.start)+"%";d.style.width=Math.max(w,.3)+"%";
-    if(["HELD","STOPPED","SUSPENDED"].includes(g.state)&&w>=5)d.textContent=g.state+" "+mins(g.seconds);
+    if(["HELD","STOPPED","SUSPENDED"].includes(g.state))d.textContent=w*px>=110?g.state+" "+mins(g.seconds):w*px>=46?mins(g.seconds):"";
     d.title=g.state+" "+dur(g.seconds)+(g.cause?" — "+g.cause:"")+(g.closed_by?" — then "+g.close_cause+" ("+g.closed_by+")":"");box.append(d)});
   const step=span>10*3600?7200:span>3*3600?3600:span>3600?1800:600;
-  for(let t=Math.ceil(t0/step)*step;t<=j.now;t+=step){const s=mk("span",hm(t));s.style.left=pct(t)+"%";if(pct(t)>3&&pct(t)<97)ticks.append(s)}
+  const z=new Date().getTimezoneOffset()*60;  // ticks on the local clock's hours
+  for(let t=Math.ceil((t0-z)/step)*step+z;t<=j.now;t+=step){const s=mk("span",hm(t));s.style.left=pct(t)+"%";if(pct(t)>3&&pct(t)<97)ticks.append(s)}
+  const h=segs.filter(g=>g.state==="HELD"&&!g.open).pop();
+  $("resumed").textContent=h&&h.closed_by?"Last hold "+mins(h.seconds)+" — "+h.close_cause.replace(/^Resumed: /,"resumed by "+h.closed_by+": "):"";
   const lost=$("lost");lost.replaceChildren();
   if(!j.lost.length){lost.textContent="No held or stopped time today";return}
   const by={};j.lost.forEach(x=>by[x.state]=(by[x.state]||0)+x.seconds);
-  lost.append(mk("b",Object.entries(by).map(([k,v])=>cap(k.toLowerCase())+" "+mins(v)).join(", ")+" today"));
-  j.lost.slice().sort((a,b)=>b.seconds-a.seconds).slice(0,3).forEach(x=>lost.append(" · "+x.cause+" "+mins(x.seconds)));
-  const h=segs.filter(g=>g.state==="HELD"&&!g.open).pop();
-  if(h&&h.closed_by)lost.append(" · Last hold "+mins(h.seconds)+", "+h.close_cause.replace(/^Resumed: /,"resumed by "+h.closed_by+": "));
+  lost.append(mk("b",Object.entries(by).map(([k,v])=>cap(k.toLowerCase())+" "+mins(v)).join(", ")+" today: "));
+  lost.append(j.lost.slice().sort((a,b)=>b.seconds-a.seconds).map(x=>x.cause+" "+mins(x.seconds)).join(" · "));
 }
 function foot(j){
   const f=j.footer,c=$("chain");c.className=f.audit_ok?"":"bad";

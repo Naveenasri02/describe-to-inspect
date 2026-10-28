@@ -899,7 +899,7 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
                 at = due_at(s["batch"], check_events(product_dir, s["batch"]["batch"]))
                 due = [{"name": n, "in": None if at[k] is None else at[k] - now} for k, n in (("leak", "Leak test"),
                                                                                               ("print", "Print check"))]
-            until = st.selftest_until
+            until = None if s["locked"] else st.selftest_until  # a locked station has no valid self-test
             due.append({"name": "Self-test expires", "in": None if until is None else until - now})
             runs = record._lines(product_dir / "challenge_runs.jsonl")
             run_ = runs[-1] if runs else None

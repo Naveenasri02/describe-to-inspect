@@ -154,3 +154,13 @@ def test_board_page_static_checks(tmp_path):
         _node_check(code, tmp_path / f"line.{i}.js")
     assert 'href="/board"' in (STATIC / "index.html").read_text(encoding="utf-8")
     assert "/board" in (Path(__file__).resolve().parent.parent / "README.md").read_text(encoding="utf-8")
+
+
+def test_failed_self_test_stops_the_line_and_no_self_test_counts(tmp_path):
+    c, p = bench(tmp_path)
+    with (p / "selftests.jsonl").open("a", encoding="utf-8") as f:
+        f.write(json.dumps({"passed": False, "failed": ["empty_pocket"], "results": [], "time": time.time(),
+                            "at": datetime.now().isoformat(timespec="seconds"), "checklist_version": 1}) + "\n")
+    j = c.get("/line").json()
+    assert (j["state"], j["reason"], j["waiting_for"]) == ("STOPPED", "Self-test failed", "QA")
+    assert j["due"][-1] == {"name": "Self-test expires", "in": None}
