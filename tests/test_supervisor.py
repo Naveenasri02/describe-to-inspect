@@ -133,7 +133,7 @@ def test_real_defects_keep_hold_no_reteach(bench):
 def test_chat_error_falls_back_to_hold(bench, tmp_path, monkeypatch):
     monkeypatch.setenv("BASETEN_API_KEY", "b")
     monkeypatch.setenv("MODEL_API_KEY", "m")
-    chat = ToolChat(budget(tmp_path), http=FakeHTTP([(500, "Baseten down"), (503, "Meta down")]))
+    chat = ToolChat(budget(tmp_path), http=FakeHTTP([(500, "Baseten down"), (503, "Meta down"), (503, "Meta down")]))
     out = supervisor(bench, chat, make_strip(seed=12)).investigate("self-test failed")
     assert out["fallback"] is True and out["conclusion"] == MODEL_DOWN and "call QA" in out["conclusion"]
     assert out["pending"] == [] and bench.plc.coils[2] is True and chat.last_platform is None

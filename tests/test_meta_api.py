@@ -110,10 +110,63 @@ def test_meta_error_keeps_reservation(tmp_path):
 def test_network_errors_become_meta_error(tmp_path):
     import requests
     schema = {"type": "object", "properties": {}, "required": []}
-    for item in (requests.ConnectionError("no route"), requests.Timeout("read timed out"), (200, "<html>busy</html>")):
-        client = MetaClient(budget(tmp_path), key="k", http=FakeHTTP([item]))
+    for items in ([requests.ConnectionError("no route")] * 2, [requests.Timeout("read timed out")] * 2,
+                  [(200, "<html>busy</html>")]):
+        client = MetaClient(budget(tmp_path), key="k", http=FakeHTTP(items))
         with pytest.raises(MetaError, match="^Meta API unreachable: "):
             client.spark_json("sys", "user", schema)
+
+
+def test_busy_api_is_tried_once_more_after_1_s(tmp_path, monkeypatch):
+    waits = []
+    monkeypatch.setattr("d2i.meta_api.RETRY_WAIT", 1.0)
+    monkeypatch.setattr("d2i.meta_api.time.sleep", waits.append)
+    for first in ((503, "busy"), (429, "slow down"), (500, "boom")):
+        http = FakeHTTP([first, responses_body(sam_text([(0, (10, 20, 30, 40), 0.9)]))])
+        client = MetaClient(budget(tmp_path), key="k", http=http)
+        assert len(client.sam_image(np.zeros((360, 640, 3), np.uint8), "pill")) == 1
+        assert len(http.calls) == 2
+    assert waits == [1.0] * 3
+
+
+def test_each_attempt_reserves_and_a_failed_one_keeps_it(tmp_path):
+    http = FakeHTTP([(503, "busy"), responses_body("")])
+    client = MetaClient(budget(tmp_path), key="k", http=http)
+    client.sam_image(np.zeros((8, 8, 3), np.uint8), "pill")
+    assert client.budget.spent == pytest.approx(2 * 0.0025)
+
+
+def test_other_4xx_is_not_retried(tmp_path):
+    http = FakeHTTP([(400, "bad request"), responses_body("")])
+    client = MetaClient(budget(tmp_path), key="k", http=http)
+    with pytest.raises(MetaError, match="400"):
+        client.sam_image(np.zeros((8, 8, 3), np.uint8), "pill")
+    assert len(http.calls) == 1
+
+
+def test_timeout_twice_gives_up_after_two_posts(tmp_path):
+    import requests
+    http = FakeHTTP([requests.Timeout("read timed out")] * 2 + [responses_body("")])
+    client = MetaClient(budget(tmp_path), key="k", http=http)
+    with pytest.raises(MetaError, match="^Meta API unreachable: "):
+        client.sam_image(np.zeros((8, 8, 3), np.uint8), "pill")
+    assert len(http.calls) == 2
+
+
+def test_busy_twice_gives_up_after_two_posts(tmp_path):
+    http = FakeHTTP([(503, "busy"), (502, "bad gateway"), responses_body("")])
+    client = MetaClient(budget(tmp_path), key="k", http=http)
+    with pytest.raises(MetaError, match="502"):
+        client.sam_image(np.zeros((8, 8, 3), np.uint8), "pill")
+    assert len(http.calls) == 2
+
+
+def test_spend_stop_is_never_retried(tmp_path):
+    http = FakeHTTP([responses_body("")])
+    client = MetaClient(budget(tmp_path, limit=0.001), key="k", http=http)
+    with pytest.raises(BudgetExceeded):
+        client.sam_image(np.zeros((8, 8, 3), np.uint8), "pill")
+    assert http.calls == []
 
 
 def test_image_calls_time_out_after_30_s(tmp_path):
@@ -199,7 +252,7 @@ def test_trace_records_meta_calls(tmp_path):
     assert ev["model"] == "muse-spark-1.3" and ev["platform"] == "Meta API" and ev["job"] == "spark_json"
     assert ev["ok"] and ev["usd"] > 0
     with pytest.raises(MetaError):
-        MetaClient(budget(tmp_path), key="k", http=FakeHTTP([(500, "boom")])).sam_image(
+        MetaClient(budget(tmp_path), key="k", http=FakeHTTP([(500, "boom")] * 2)).sam_image(
             np.zeros((8, 8, 3), np.uint8), "x")
     ev = trace.recent()[-1]
     assert ev["model"] == "sam-3.1" and not ev["ok"] and ev["usd"] == 0

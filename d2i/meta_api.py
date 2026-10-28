@@ -33,6 +33,7 @@ SAM_IMAGE = 2.50 / 1000                        # USD per image
 SAM_FRAME, SAM_MIN_FRAMES = 0.20 / 1000, 50    # USD per video frame, billed minimum
 VOICE_HOUR = 0.18                              # USD per audio hour
 IMAGE_TIMEOUT = 30  # seconds; image calls run inside inspection, which holds the station lock
+RETRY_WAIT = 1.0  # seconds before the one retry of a busy (429, 5xx) or unreachable API
 
 
 def _traced(model):
@@ -130,14 +131,22 @@ class MetaClient:
 
     def _post(self, path, worst, timeout=180, **kw):
         headers = self._headers()
-        self.budget.reserve(worst)  # a failed call keeps its reservation
-        try:
-            r = self.http.post(f"{API}{path}", headers=headers, timeout=timeout, **kw)
-            if r.status_code >= 400:
-                raise MetaError(f"Meta API {r.status_code}: {r.text[:300]}")
-            return r.json()
-        except (requests.RequestException, ValueError) as e:  # network down, timeout, or a body that is not JSON
-            raise MetaError(f"Meta API unreachable: {e}") from e
+        for retry in (True, False):
+            self.budget.reserve(worst)  # every attempt reserves; a failed one keeps its reservation
+            try:
+                r = self.http.post(f"{API}{path}", headers=headers, timeout=timeout, **kw)
+                if retry and (r.status_code == 429 or r.status_code >= 500):
+                    time.sleep(RETRY_WAIT)
+                    continue
+                if r.status_code >= 400:
+                    raise MetaError(f"Meta API {r.status_code}: {r.text[:300]}")
+                return r.json()
+            except (requests.Timeout, requests.ConnectionError) as e:
+                if not retry:
+                    raise MetaError(f"Meta API unreachable: {e}") from e
+                time.sleep(RETRY_WAIT)
+            except (requests.RequestException, ValueError) as e:  # any other request error, or a body that is not JSON
+                raise MetaError(f"Meta API unreachable: {e}") from e
 
     @_traced(SPARK_MODEL)
     def spark_json(self, system: str, user: str, schema: dict, name: str = "result", max_out: int = 4000,

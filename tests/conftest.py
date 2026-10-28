@@ -13,8 +13,9 @@ import pytest
 
 @pytest.fixture(autouse=True)
 def _own_spend_file(tmp_path, monkeypatch):
-    """No test reads or writes the real meta_spend.json."""
+    """No test reads or writes the real meta_spend.json, and no test waits before a retry."""
     monkeypatch.setattr("d2i.meta_api.DEFAULT_SPEND", tmp_path / "meta_spend.json")
+    monkeypatch.setattr("d2i.meta_api.RETRY_WAIT", 0, raising=False)
 
 
 class FakeResponse:

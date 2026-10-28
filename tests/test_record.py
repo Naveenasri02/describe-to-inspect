@@ -123,7 +123,7 @@ def test_record_builds_when_network_is_down(product):
     from d2i.meta_api import Budget, MetaClient
     from tests.conftest import FakeHTTP
     client = MetaClient(Budget(product / "s.json"), key="k",
-                        http=FakeHTTP([requests.Timeout("read timed out")]))
+                        http=FakeHTTP([requests.Timeout("read timed out")] * 2))  # one retry
     html = shift_record(product, 0, T0 + 100, "B", "A", client=client)
     assert "DRAFT — needs QA signature" in html and "Summary not available" in html
 

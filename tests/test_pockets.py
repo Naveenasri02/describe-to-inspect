@@ -77,7 +77,7 @@ def test_network_error_falls_back_to_grid(tmp_path):
     from d2i.meta_api import Budget, MetaClient
     from tests.conftest import FakeHTTP
     client = MetaClient(Budget(tmp_path / "s.json"), key="k",
-                        http=FakeHTTP([requests.ConnectionError("no route to api.meta.ai")]))
+                        http=FakeHTTP([requests.ConnectionError("no route to api.meta.ai")] * 2))  # one retry
     lay = find_layout(make_strip(), CL, client)
     assert lay.source == "grid" and lay.ok
 
