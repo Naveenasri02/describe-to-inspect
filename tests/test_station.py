@@ -354,6 +354,18 @@ def test_full_checks_strip_cut_and_empty_pocket(tmp_path):
     assert not any(x["check"] == "strip_cut" for x in v.reasons), v.reasons
 
 
+def test_full_checks_selftest_catches_and_names_every_kind(tmp_path):
+    """Every check on, SAM pill boxes: each painted kind is caught and named right (a crack is not a spot or a
+    different tablet), over several seeds."""
+    approve(dict(CHECKLIST, reject_if=list(CHECKS)), "Priya", tmp_path / "checklists.jsonl")
+    st = Station(tmp_path, client=ImageSam(), clock=lambda: T0)
+    st.teach([make_strip(seed=i, shift=(i, 0)) for i in range(6)])
+    for seed in range(6):
+        r = st.self_test(make_strip(seed=12), rng_seed=seed, record=False)
+        assert r["skipped"] == [] and {x["kind"] for x in r["results"]} == set(CHECKS), (seed, r)
+        assert r["passed"], (seed, r)
+
+
 def test_strip_cut_skipped_without_profile(station):
     st, _ = station
     st.checklist = dict(st.checklist, reject_if=list(CHECKS))

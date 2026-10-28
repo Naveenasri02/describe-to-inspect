@@ -76,6 +76,12 @@ def test_dark_dot_is_spot():
     assert pocket_check(img, POCKET, [box], profile()) == "tablet_spot"
 
 
+def test_crack_line_is_left_to_the_judge():
+    img, box = one()
+    cv2.line(img, (45, 72), (95, 66), (40, 40, 40), 3)  # a long dark line across the tablet: not a spot, same colour
+    assert pocket_check(img, POCKET, [box], profile()) is None
+
+
 def test_normal_pill_is_none():
     img, box = one()
     assert pocket_check(img, POCKET, [box], profile()) is None

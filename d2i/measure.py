@@ -26,10 +26,14 @@ def features(image, pocket, pill) -> dict | None:
     core, wide = _centre(image, pill, 0.5), _centre(image, pill, 0.7)
     if core.size == 0 or wide.size == 0:
         return None
-    lab = _lab(core).reshape(-1, 3).mean(0)
+    lab = np.median(_lab(core).reshape(-1, 3), axis=0)  # median: a crack across the core does not shift the colour
     ell = _lab(wide)[..., 0]
+    # a spot is a compact dark blob; a long dark line (a crack) is left to the judge, which names it broken
+    _, _, stats, _ = cv2.connectedComponentsWithStats((ell < np.median(ell) - 35).astype(np.uint8))
+    blobs = stats[1:]
+    compact = (blobs[:, cv2.CC_STAT_WIDTH] < 0.4 * ell.shape[1]) & (blobs[:, cv2.CC_STAT_HEIGHT] < 0.4 * ell.shape[0])
     return {"size": float(np.sqrt((pw / kw) * (ph / kh))), "aspect": pw / ph, "area": (pw * ph) / (kw * kh),
-            "lab": [float(v) for v in lab], "spot": float((ell < np.median(ell) - 35).mean())}
+            "lab": [float(v) for v in lab], "spot": float(blobs[compact, cv2.CC_STAT_AREA].sum() / ell.size)}
 
 
 def _delta_e(a, b) -> float:

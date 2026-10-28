@@ -1,3 +1,9 @@
+from contextlib import suppress
+
+with suppress(ImportError):  # not in requirements.txt: when absent there is nothing to clash
+    import torchvision  # noqa: F401  load its native extension before any cv2 work (Windows DLL clash)
+with suppress(ImportError):
+    import pyarrow  # noqa: F401  same clash: transformers pulls it in after cv2 work and crashes there
 import json
 
 import cv2
