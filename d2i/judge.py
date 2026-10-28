@@ -19,7 +19,9 @@ WORST = 0.02     # score = mean of the worst 2% of patch distances
 MARGIN = 1.3     # threshold = worst leave-one-photo-out score x 1.3
 OUTLIER, OUTLIER_MIN = 2.0, 0.25  # a teach photo whose worst pocket is > 2x the others' median and > 0.25 is refused
 BLANK = 128      # grey used to hide pockets when judging the border
-TURNED = 0.005   # radians (about 0.3 degrees): below this the strip edges already meet the taught ones
+# a strip turned more than this is turned upright before its border is judged; below it the edge stays in the outer
+# patch ring, which is never judged. Above pill-box jitter (a box moves about 5 px between calls: about 0.25 deg)
+TURNED = float(np.radians(0.5))
 
 
 def _load_model(name, device):
@@ -72,10 +74,11 @@ def _score(dist):
     return float(flat.topk(k).values.mean())
 
 
-def _border_score(dist, layout):
-    """A small error in a turned strip's measured turn tilts its edge into the outer patch ring (table, not torn
-    foil), so that ring is left out; a torn notch reaches further in than one ring."""
-    return _score(dist[1:-1, 1:-1] if abs(layout.angle) > TURNED else dist)
+def _border_score(dist):
+    """The outer patch ring is left out, at teach and inspect alike: a strip box 1 px too big (SAM jitter) or a small
+    error in a measured turn puts table there (a straight strip 0.045 -> 0.19), not torn foil; a torn notch reaches
+    further in than one ring."""
+    return _score(dist[1:-1, 1:-1])
 
 
 class Judge:
@@ -116,7 +119,7 @@ class Judge:
             keep = photo_of != p
             worsts.append(max(_score(_distances(q, pockets[keep])) for q in pockets[~keep]))
             others = torch.tensor([j for j in range(len(images)) if j != p], device=self.device)
-            worst_border = max(worst_border, _border_score(_distances(borders[p], borders[others]), layouts[p]))
+            worst_border = max(worst_border, _border_score(_distances(borders[p], borders[others])))
         for p, w in enumerate(worsts):  # one odd photo would set the threshold on its own
             if w > OUTLIER * float(np.median(worsts[:p] + worsts[p + 1:])) and w > OUTLIER_MIN:
                 raise ValueError(f"photo {p + 1} does not look like the others (a different strip, a hand or glare "
@@ -131,7 +134,7 @@ class Judge:
         return [_score(_distances(q, self.pocket_bank)) for q in feats]
 
     def score_border(self, image, layout) -> float:
-        return _border_score(_distances(self._patches([_border_crop(image, layout)])[0], self.border_bank), layout)
+        return _border_score(_distances(self._patches([_border_crop(image, layout)])[0], self.border_bank))
 
     def pocket_embeddings(self, image, layout) -> torch.Tensor:
         """One unit vector per pocket: the mean of its patch features."""

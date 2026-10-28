@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 import cv2
 import numpy as np
 
-from d2i.meta_api import BudgetExceeded, MetaError
+from d2i.meta_api import SAM_SIDE, BudgetExceeded, MetaError
 
 MIN_SCORE = 0.5
 STRIP_PROMPTS = ("blister strip", "blister pack", "pill pack")  # "blister strip" finds nothing on close-ups
@@ -70,6 +70,30 @@ def upright(box, angle) -> tuple:
     c, s = abs(np.cos(a)), abs(np.sin(a))
     tw, th = (w * c - h * s) / (c * c - s * s), (h * c - w * s) / (c * c - s * s)
     return (tw, th) if min(tw, th) > 0 else (w, h)
+
+
+def framed(strip, shape) -> bool:
+    """A strip box at the frame edge is the frame (a close-up), not a turned strip's upright box. Within 2 of the
+    pixels SAM 3.1 saw: its copy is at most SAM_SIDE long, so one of its pixels can be several of ours."""
+    e = 2 * max(1.0, max(shape[:2]) / SAM_SIDE)
+    return strip[0] <= e or strip[1] <= e or strip[2] >= shape[1] - e or strip[3] >= shape[0] - e
+
+
+def _on_turned(strip, template, angle):
+    """The taught pocket boxes on a strip turned by `angle` (radians): centres turned with the strip about its centre,
+    sizes from its own straightened size, so a tablet measures the same however the strip lies."""
+    (cx, cy), (tw, th), c, s = _centre(strip), upright(strip, angle), np.cos(angle), np.sin(angle)
+    out = []
+    for x0, y0, x1, y1 in template:
+        x, y = ((x0 + x1) / 2 - 0.5) * tw, ((y0 + y1) / 2 - 0.5) * th
+        px, py, hw, hh = cx + c * x - s * y, cy + s * x + c * y, (x1 - x0) * tw / 2, (y1 - y0) * th / 2
+        out.append((round(px - hw), round(py - hh), round(px + hw), round(py + hh)))
+    return out
+
+
+def turn_of(lay, template) -> float:
+    """How far a taught photo's strip is turned against the taught pockets (radians), from its pills in order."""
+    return _turn([_centre(s) for s in _from_template(lay.strip_box, template)], [_centre(b) for b in lay.pockets])
 
 
 def _turn(ref, found) -> float:
@@ -179,8 +203,7 @@ def find_layout(image: np.ndarray, cl: dict, client=None, template=None) -> Layo
                 px, py = int((x1 - x0) * PAD), int((y1 - y0) * PAD)
                 strip = (max(0, x0 - px), max(0, y0 - py), min(w, x1 + px), min(h, y1 + py))
                 source = "sam-pills"
-            # a strip box at the frame edge is the frame, not the turned strip's upright box: nothing to straighten
-            framed = strip[0] <= 1 or strip[1] <= 1 or strip[2] >= image.shape[1] - 1 or strip[3] >= image.shape[0] - 1
+            at_edge = framed(strip, image.shape)  # a close-up: nothing to straighten
             centres = [((b[0] + b[2]) / 2, (b[1] + b[3]) / 2) for b in pills]
             pills = [b for b, (cx, cy) in zip(pills, centres)
                      if strip[0] <= cx <= strip[2] and strip[1] <= cy <= strip[3]]
@@ -188,14 +211,15 @@ def find_layout(image: np.ndarray, cl: dict, client=None, template=None) -> Layo
                 pockets = _row_major(pills)
                 ok = len(pockets) == cl["count"]
                 note = "" if ok else f"found {len(pockets)} pills, checklist says {cl['count']}"
-                cells = grid(strip, cl["rows"], cl["per_row"]) if ok else []  # row-major, like the pills
-                angle = _turn([_centre(c) for c in cells], [_centre(b) for b in pockets]) if ok and not framed else 0.0
-                return Layout(strip, pockets, source, ok, note, pills, angle=angle)
+                return Layout(strip, pockets, source, ok, note, pills)  # its turn: Station.teach, against the taught pockets
             slots = _from_template(strip, template)
             mine, stray = _follow(slots, pills)  # crops follow the real tablets: a turned strip is not judged askew
-            pockets = [m[0] if m else s for s, m in zip(slots, mine)]  # a pocket with no pill keeps its taught box
             held = [(s, m[0]) for s, m in zip(slots, mine) if m]
-            angle = 0.0 if framed else _turn([_centre(s) for s, _ in held], [_centre(b) for _, b in held])
+            angle = 0.0 if at_edge else _turn([_centre(s) for s, _ in held], [_centre(b) for _, b in held])
+            if angle:  # the taught pockets on the strip as it lies, not stretched over the bigger upright box around it
+                slots = _on_turned(strip, template, angle)  # (tablets read 6% small at 3 deg)
+                mine, stray = _follow(slots, pills)
+            pockets = [m[0] if m else s for s, m in zip(slots, mine)]  # a pocket with no pill keeps its taught box
             note = "object outside the pocket pattern" if stray else ""
             return Layout(strip, pockets, source, not note, note, pills, slots, mine, angle)
         except (MetaError, BudgetExceeded):

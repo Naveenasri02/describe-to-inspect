@@ -113,20 +113,49 @@ def _node_run(code, f):
     return r.stdout.splitlines()
 
 
+def _actions():
+    """busy(), post() and long() from station.js, as they are."""
+    js = (STATIC / "station.js").read_text(encoding="utf-8")
+    return re.search(r"^async function busy\(.*?^const long=.*?$", js, re.M | re.S).group(0)
+
+
+# a page with one card: j() answers /teach after 2.3 s and anything else at once
+PAGE = ('let S={step:"Finding the strip (SAM 3.1)"},running=false,ticking=null,clicked={disabled:false},sent=[];'
+        'const el=()=>({textContent:"",className:"msg"}),card=el(),box=()=>card;'
+        'const show=(o,m=box())=>{m.textContent=o};'
+        'const j=url=>{sent.push(url);return new Promise(r=>setTimeout(()=>r({}),url==="/teach"?2300:10))};\n')
+
+
 def test_long_action_shows_its_step_and_seconds_and_cannot_be_pressed_twice(tmp_path):
     """Rehearsal: inspect about 30 s, self-test about 4 min, and the card only said "Working..."; operators press
-    twice. The pressed button is off while it runs and the card shows the station's step and the seconds."""
-    js = (STATIC / "station.js").read_text(encoding="utf-8")
-    busy = re.search(r"^async function busy\(fn\).*?\}\}$", js, re.M | re.S).group(0)
-    out = _node_run('let S={step:"Finding the strip (SAM 3.1)"},running=false,shown=[];const clicked={disabled:false};'
-                    'const show=t=>shown.push(t);\n' + busy + '''
-(async()=>{let runs=0;const slow=()=>new Promise(r=>setTimeout(()=>{runs++;r("ok")},2300));
-  const a=busy(slow),b=busy(slow);
+    twice. The pressed button is off while it runs and its card shows the station's step and the seconds."""
+    out = _node_run(PAGE + _actions() + '''
+(async()=>{const a=long("/teach",{},"Taught."),b=long("/selftest",{},"x");
   await new Promise(r=>setTimeout(r,1200));
-  console.log(JSON.stringify([clicked.disabled,shown[shown.length-1]]));
-  await a;await b;console.log(JSON.stringify([runs,clicked.disabled]))})()''', tmp_path / "busy.js")
-    assert json.loads(out[0]) == [True, "Finding the strip (SAM 3.1)… 1 s"]
-    assert json.loads(out[1]) == [1, False]
+  console.log(JSON.stringify([clicked.disabled,card.textContent,sent]));
+  await a;await b;console.log(JSON.stringify([sent,clicked.disabled,card.textContent]))})()''', tmp_path / "busy.js")
+    assert json.loads(out[0]) == [True, "Finding the strip (SAM 3.1)… 1 s", ["/teach"]]
+    assert json.loads(out[1]) == [["/teach"], False, "Taught."]
+
+
+def test_hold_and_approvals_are_sent_at_once_even_during_a_long_action(tmp_path):
+    """Review: Hold line (button and voice) went through busy(), so it was dropped without a word while a teach or
+    self-test ran. It is sent at once and its answer stays in the card; long actions alone wait their turn."""
+    out = _node_run(PAGE + _actions() + '''
+(async()=>{const a=long("/teach",{},"Taught.");
+  await new Promise(r=>setTimeout(r,1100));
+  await post("/hold",{},"Line held. QA must resume it.");
+  await new Promise(r=>setTimeout(r,1100));
+  console.log(JSON.stringify([sent,card.textContent]));await a})()''', tmp_path / "hold.js")
+    assert json.loads(out[0]) == [["/teach", "/hold"], "Line held. QA must resume it."]
+    html, js = ((STATIC / f).read_text(encoding="utf-8") for f in ("index.html", "station.js"))
+    assert "onclick=\"post('/hold'" in html and "onclick=\"post('/approve'" in html
+    assert html.count("onclick=\"long('/teach'") == 2 and "onclick=\"long('/selftest'" in html
+    voice = re.search(r"^const ACTIONS=.*?\};$", js, re.M | re.S).group(0)
+    assert "hold:()=>post('/hold'" in voice  # a voice "hold" is never held back either
+    for a in ("long('/selftest',{},selftestSaid,$(\"vcmd\"))", "long('/teach',{capture:true},taught,$(\"vcmd\"))",
+              "inspectNow($(\"vcmd\"))"):
+        assert a in voice, a  # a voice action turns the Voice button off
 
 
 def test_only_the_latest_message_stays_on_screen(tmp_path):
@@ -135,51 +164,82 @@ def test_only_the_latest_message_stays_on_screen(tmp_path):
     js = (STATIC / "station.js").read_text(encoding="utf-8")
     show = re.search(r"^const show=.*?refresh\(\)\};$", js, re.M | re.S).group(0)
     out = _node_run('const el=t=>({textContent:t,className:"msg",style:{cssText:""},classList:{add(){}}});'
-                    'const msgs=[el("Leak test pass recorded"),el("Line resumed"),el("")];'
+                    'const msgs=[el("Leak test pass recorded"),el("Line resumed"),el(""),el("Teaching… 3 s")];'
+                    'const ticking=msgs[3];'  # a long action's own card keeps its seconds
                     'const document={querySelectorAll:()=>msgs};const box=()=>msgs[2],refresh=()=>{};\n' + show +
                     '\nshow("Quarantine released.");console.log(JSON.stringify(msgs.map(m=>m.textContent)))',
                     tmp_path / "show.js")
-    assert json.loads(out[0]) == ["", "", "Quarantine released."]
+    assert json.loads(out[0]) == ["", "", "Quarantine released.", "Teaching… 3 s"]
 
 
-def test_challenge_buttons_are_long_actions(tmp_path):
-    """The challenge Register, Inspect and Record result buttons go through busy(): the card shows the step and the
-    seconds, and a second press while one runs sends nothing (no second challenge verdict or ejected row)."""
+def test_open_batch_totals_line_does_not_claim_reconciled():
     js = (STATIC / "station.js").read_text(encoding="utf-8")
-    busy = re.search(r"^async function busy\(fn\).*?\}\}$", js, re.M | re.S).group(0)
-    chal = re.findall(r"^const chal(?:Register|Inspect|Eject)=\(\)=>busy\(async\(\)=>\{.*?\}\);$", js, re.M | re.S)
-    assert len(chal) == 3
-    out = _node_run('let S={step:"Finding the strip (SAM 3.1)"},running=false,shown=[],calls=[];'
-                    'const clicked={disabled:false};const show=t=>shown.push(t);const $=()=>({value:"C1",checked:true});'
+    assert "Reconciled when the batch ends" in js and "Reconciled against the counts" not in js
+
+
+def _show():
+    js = (STATIC / "station.js").read_text(encoding="utf-8")
+    return re.search(r"^const show=.*?refresh\(\)\};$", js, re.M | re.S).group(0)
+
+
+def test_a_finished_long_action_never_blanks_a_line_held_message_in_its_card(tmp_path):
+    """Integration: Hold pressed in the same card while an Inspect runs said "Line held. QA must resume it."; the
+    inspect then finished with an empty answer (one reason: the band says it) and blanked it. The held message stays
+    and a non-empty answer goes below it; a long action alone in its card still replaces its own count."""
+    out = _node_run('let S={step:"Finding the strip (SAM 3.1)"},running=false,ticking=null,tickText=null,'
+                    'clicked={disabled:false};const el=t=>({textContent:t||"",className:"msg",style:{cssText:""},'
+                    'classList:{add(){}}});const card=el(),other=el("Leak test pass recorded");'
+                    'const document={querySelectorAll:()=>[card,other]};const box=()=>card,refresh=()=>{};'
+                    'const j=url=>new Promise(r=>setTimeout(()=>r({}),url==="/hold"?10:1300));\n'
+                    + _show() + "\n" + _actions() + '''
+const held=async()=>{await new Promise(r=>setTimeout(r,300));await post("/hold",{},"Line held. QA must resume it.")};
+(async()=>{let a=busy(async m=>{await j("/inspect");show("",m)});await held();await a;console.log(JSON.stringify(card.textContent));
+  a=long("/teach",{},"Taught.");await held();await a;console.log(JSON.stringify(card.textContent));
+  await long("/teach",{},"Taught.");console.log(JSON.stringify([card.textContent,other.textContent,running,ticking]))})()''',
+                    tmp_path / "held.js")
+    assert json.loads(out[0]) == "Line held. QA must resume it."
+    assert json.loads(out[1]) == "Line held. QA must resume it.\nTaught."
+    assert json.loads(out[2]) == ["Taught.", "", False, None]
+
+
+def test_challenge_inspect_is_long_register_and_record_result_are_sent_at_once(tmp_path):
+    """Challenge Inspect is a SAM 3.1 call: a busy() action in its own card (a second press sends nothing). Register
+    (QA saves the camera frame) and Record result (the Ejected tick) are sent at once, like Hold, even meanwhile."""
+    js = (STATIC / "station.js").read_text(encoding="utf-8")
+    chal = [re.search(rf"^{p}.*?(\}}\);|\}})$", js, re.M | re.S).group(0) for p in (
+        r"const chalInspect=\(\)=>busy\(async m=>", r"async function chalRegister\(\)", r"async function chalEject\(\)")]
+    out = _node_run('let S={step:"Finding the strip (SAM 3.1)"},running=false,ticking=null,tickText=null,calls=[];'
+                    'const clicked={disabled:false},card={textContent:"",className:"msg"},box=()=>card;'
+                    'const show=(o,m=box())=>{m.textContent=typeof o==="string"?o:o.message};const $=()=>({value:"C1",checked:true});'
                     'class FormData{append(){}};'
                     'const fetch=u=>{calls.push(u);return new Promise(r=>setTimeout(()=>r({json:()=>({message:"done "+u,'
-                    'strips:[{label:"C1"}],result:{},next:"Place C2"})}),1500))};'
-                    'const j=async u=>(await fetch(u)).json();\n' + "\n".join([busy] + chal) + '''
-(async()=>{const a=chalInspect(),b=chalInspect(),c=chalEject(),d=chalRegister();
-  await new Promise(r=>setTimeout(r,1100));
-  console.log(JSON.stringify([clicked.disabled,shown[shown.length-1]]));
-  await a;await b;await c;await d;console.log(JSON.stringify([calls,clicked.disabled,shown[shown.length-1]]));
-  await chalEject();console.log(JSON.stringify(calls))})()''', tmp_path / "chal.js")
-    assert json.loads(out[0]) == [True, "Finding the strip (SAM 3.1)… 1 s"]
-    assert json.loads(out[1]) == [["/challenge/inspect"], False, "done /challenge/inspect"]
-    assert json.loads(out[2]) == ["/challenge/inspect", "/challenge/eject"]
+                    'strips:[{label:"C1"}],result:{},next:"Place C2"})}),u==="/challenge/inspect"?1500:10))};'
+                    'const j=async u=>(await fetch(u)).json();\n' + _actions() + "\n" + "\n".join(chal) + '''
+(async()=>{const a=chalInspect(),b=chalInspect();
+  await new Promise(r=>setTimeout(r,1100));const busyNow=[clicked.disabled,card.textContent];
+  await chalEject();await chalRegister();
+  console.log(JSON.stringify([busyNow,calls]));await a;await b;console.log(JSON.stringify([calls,clicked.disabled]))})()''',
+                    tmp_path / "chal.js")
+    assert json.loads(out[0]) == [[True, "Finding the strip (SAM 3.1)… 1 s"],
+                                  ["/challenge/inspect", "/challenge/eject", "/challenge/register"]]
+    assert json.loads(out[1]) == [["/challenge/inspect", "/challenge/eject", "/challenge/register"], False]
 
 
-def test_missed_check_notes_keep_what_qa_types_and_go_through_busy(tmp_path):
+def test_missed_check_notes_keep_what_qa_types_and_are_sent_at_once(tmp_path):
     """Task 35 (b): the QA tab lists each missed hourly window with a note field and a button. The 2 s refresh must
-    not wipe a note being typed, and the button is a busy() action whose answer is the latest message."""
+    not wipe a note being typed; the note is a QA action, sent at once (never held back by a long action)."""
     html = (STATIC / "index.html").read_text(encoding="utf-8")
     js = (STATIC / "station.js").read_text(encoding="utf-8")
     assert 'id="missedbox"' in html and 'id="missed"' in html and 'id="mpw"' in html
-    src = re.search(r"^let missedKey=.*?show\(r\.error\?r:\"Review note saved: \"\+m\.text\+\"\.\"\)\}\);$", js,
+    src = re.search(r"^let missedKey=.*?show\(r\.error\?r:\"Review note saved: \"\+m\.text\+\"\.\"\)\}$", js,
                     re.M | re.S).group(0)
-    assert "missedRefresh();" in js.split("function qaTab")[1].split("\n}\n")[0]
+    assert "busy(" not in src and "missedRefresh();" in js.split("function qaTab")[1].split("\n}\n")[0]
     out = _node_run('''const el=()=>({hidden:false,value:"",children:[],append(...k){this.children.push(...k)},
   replaceChildren(){this.rebuilt=(this.rebuilt||0)+1;this.children=[]},setAttribute(){}});
 const els={missedbox:el(),missed:el(),mpw:el()},$=id=>els[id],mk=()=>el(),posted=[],shown=[];
 let list=[{kind:"leak",text:"Leak test missed",start:0,end:3600,window:"leak 1970-01-01T00:00:00"}];
 const fetch=async()=>({json:async()=>({missed:list})});
-const j=async(u,b)=>{posted.push([u,b]);return {}};const busy=async fn=>fn();const show=t=>shown.push(t);
+const j=async(u,b)=>{posted.push([u,b]);return {}};const show=t=>shown.push(t);
 ''' + src + '''
 (async()=>{await missedRefresh();await missedRefresh();
   const li=els.missed.children[0],note=li.children[2],btn=li.children[3];note.value="tested 10:05";

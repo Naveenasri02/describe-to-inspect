@@ -252,3 +252,12 @@ def test_strip_box_at_the_frame_edge_is_not_straightened():
     _, pills = _turned(3.0)
     lay = find_layout(make_strip(), CL, FakeSam([frame], pills), template)
     assert lay.ok and lay.pockets == [b for b, _ in pills] and lay.angle == 0.0
+
+
+def test_close_up_guard_counts_in_the_pixels_sam_saw():
+    """SAM sees a copy at most 1280 px long: on a 1280 x 3487 photo one of its pixels is 2.7 of ours, so a strip box
+    "at the frame edge" can be 2-5 px in. The guard allows 2 of SAM's pixels, not 1 of ours."""
+    from d2i.pockets import framed
+    tall = (3487, 1280, 3)
+    assert framed((3, 4, 1277, 3483), tall) and not framed((12, 12, 1268, 3475), tall)
+    assert framed((1, 70, 560, 290), (360, 640, 3)) and not framed((3, 70, 560, 290), (360, 640, 3))

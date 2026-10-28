@@ -3,6 +3,7 @@ import argparse
 import html
 import hashlib
 import json
+import math
 import mimetypes
 import re
 import secrets
@@ -407,8 +408,8 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
             with lock:  # inspect and publish together so verdicts land in order
                 rc = recheck.current(product_dir) if held_now() else None  # a re-check runs on a held line only
                 mark = {"recheck": True, "window_id": rc["window_id"]} if rc else None
-                try:  # a re-checked strip keeps its real verdict while the line is held
-                    v = st.inspect(im, held=held_now() and not rc, batch=no, user=user, extra=mark)
+                try:  # a re-checked strip keeps its real verdict while the line is held; camera: not an upload
+                    v = st.inspect(im, held=held_now() and not rc, batch=no, user=user, extra=mark, camera=image is None)
                 except Exception:  # logged and held, never a 500 that leaves the PLC on the previous verdict
                     v = Verdict("HOLD", [{"rule": None, "check": "inspection_error", "pocket": None,
                                           "text": INSPECT_ERROR}], at=st._now())
@@ -589,13 +590,20 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
             name = qa(request)
             keys = ("received", "good_tray", "reject_box", "samples", "unused",
                     "foil_issued", "foil_used", "foil_returned", "foil_destroyed")
+            for k in ("received", "good_tray", "reject_box", "foil_issued"):
+                if not str(f.get(k, "")).strip():
+                    return {"error": f"{k.replace('_', ' ').capitalize()} must be entered"}  # blank is never read as 0
             try:
                 counts = {k: float(f.get(k) or 0) for k in keys}
                 limits = {"strips": float(f.get("strips_limit") or 0), "foil": float(f.get("foil_limit") or 0.5)}
             except ValueError:
                 return {"error": "Counts and limits must be numbers"}
+            if not all(map(math.isfinite, (*counts.values(), *limits.values()))):
+                return {"error": "Counts and limits must be numbers"}
             if min(*counts.values(), *limits.values()) < 0:
                 return {"error": "Counts and limits cannot be negative"}
+            if any(counts[k] != int(counts[k]) for k in keys[:5]):
+                return {"error": "Strip counts must be whole numbers"}
             for k in keys[:5]:
                 counts[k] = int(counts[k])
             if str(f.get("cleared", "")).lower() not in ("true", "1", "on"):

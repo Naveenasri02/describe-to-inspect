@@ -875,6 +875,21 @@ def test_batch_end_needs_the_clearance_tick_and_a_limit_applies(tmp_path):
     assert c.post("/batch/end", data=wide).json()["totals"]["status"] == "within"
 
 
+def test_batch_end_refuses_bad_numbers_and_blank_required_fields(tmp_path):
+    c, p = bench(tmp_path)
+    login(c, "qa1", "pw-qa")
+    for bad in ({"received": "nan"}, {"unused": "inf"}, {"samples": "-inf"}, {"foil_used": "nan"}, {"foil_issued": "inf"},
+                {"strips_limit": "nan"}, {"foil_limit": "inf"}, {"foil_limit": "-inf"}, {"received": "2.5"}, {"unused": "0.5"}):
+        r = c.post("/batch/end", data=dict(END_OK, **bad)).json()
+        assert "error" in r and Batches(p).open, bad
+    assert "numbers" in c.post("/batch/end", data=dict(END_OK, received="nan")).json()["error"]
+    assert "whole" in c.post("/batch/end", data=dict(END_OK, received="2.5")).json()["error"]
+    for k in ("received", "good_tray", "reject_box", "foil_issued"):
+        r = c.post("/batch/end", data=dict(END_OK, **{k: ""})).json()
+        assert "error" in r and "must be entered" in r["error"] and Batches(p).open, k
+    assert c.post("/batch/end", data=dict(END_OK, unused="", foil_used="")).json()["event"] == "end"
+
+
 def test_selftest_not_run_is_not_a_failed_selftest_row(tmp_path, monkeypatch):
     c, p = bench(tmp_path)
     login(c, "qa1", "pw-qa")
@@ -980,6 +995,27 @@ def test_status_says_what_a_running_inspection_is_doing(tmp_path):
         go.set()
         t.join(30)
     assert c.get("/status").json()["step"] == ""
+
+
+def test_only_a_camera_inspection_leaves_its_layout_for_the_supervisor(tmp_path):
+    """An uploaded photo is not the camera's view: its layout must not be read against camera frames."""
+    folder = tmp_path / "cam"
+    folder.mkdir()
+    frame = make_strip(seed=15)
+    cv2.imwrite(str(folder / "a.png"), frame)
+    c, p = bench(tmp_path, source=str(folder))
+    st, src = c.app.state.station, c.app.state.source
+    try:
+        for _ in range(100):
+            if src.get() is not None:
+                break
+            time.sleep(0.05)
+        c.post("/inspect", files=up(frame))
+        assert st.layout_for(src.get()) is None
+        c.post("/inspect")  # the camera frame
+        assert st.layout_for(src.get()) is not None and st.layout_for(src.get()).ok
+    finally:
+        src.stop.set()
 
 
 def test_pass_saves_no_photo(tmp_path):

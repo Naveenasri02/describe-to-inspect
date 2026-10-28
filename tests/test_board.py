@@ -16,7 +16,7 @@ import d2i.openitems as openitems_mod
 from d2i.audit import AuditLog
 from d2i.station import FINDER_DOWN, Verdict
 from tests.conftest import make_strip
-from tests.test_app import ScriptChat, _audit, _fake_judge, bench, call, login, up, wait_done
+from tests.test_app import END_OK, ScriptChat, _audit, _fake_judge, bench, call, login, up, wait_done
 from tests.test_static import STATIC, _node_check
 
 CRIT = "Critical: Rule 5 failed: pocket 1 has a different tablet"
@@ -121,7 +121,7 @@ def test_finder_down_suspends_until_it_answers(tmp_path):
 def test_end_batch_is_complete_until_the_record_is_signed(tmp_path):
     c, p = bench(tmp_path)
     login(c, "qa1", "pw-qa")
-    assert c.post("/batch/end", data={"cleared": "true"}).json()["totals"]["status"] == "within"
+    assert c.post("/batch/end", data=END_OK).json()["totals"]["status"] == "within"  # blank counts are refused
     j = c.get("/line").json()
     assert (j["state"], j["footer"]["record"], j["batch"]["open"]) == ("COMPLETE", "draft", False)
     assert [i["kind"] for i in j["waiting"]] == ["record_unsigned"] and j["reconciliation"] == "within"

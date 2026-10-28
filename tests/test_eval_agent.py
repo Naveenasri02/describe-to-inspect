@@ -40,6 +40,18 @@ def test_score_cause_keyword():
     assert score(result("The camera moved."), sc)["cause_right"] is False
 
 
+def test_eval_operator_says_a_plain_yes_to_the_self_test_gate_question():
+    """The gate opens only for a plain yes to a question naming a good strip and the camera: the eval's operator must
+    answer exactly that question with "Yes." when a good strip is in view, and nothing else with yes."""
+    from d2i.supervisor import GOOD_STRIP_FIRST, NOT_YES, PLAIN_YES
+    gate_q = GOOD_STRIP_FIRST.split('"')[1]
+    assert gate_q == "Is a known-good strip under the camera now?"
+    answer = eval_agent.operator_answer(gate_q, True)
+    assert answer == "Yes." and PLAIN_YES.fullmatch(answer.lower()) and not NOT_YES & set(answer.lower().split())
+    assert eval_agent.operator_answer("Is a good strip in place?", True) == "No, nothing changed."  # no camera named
+    assert eval_agent.operator_answer(gate_q, False) == "No, nothing changed."  # empty tray / real defects
+
+
 def test_scenarios_shapes():
     sc = by_name()
     assert list(sc) == ["lamp", "bump", "smudge", "real_defects", "empty_tray"] == list(FORBIDDEN)
