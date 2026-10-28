@@ -26,12 +26,16 @@ def _batch_key(s) -> str:
 
 
 def _month(s):
-    return parse_month(re.sub(r"^\s*(?:MFG|MFD|EXP)\b\.?\s*:?", "", str(s), flags=re.I))
+    """The first month/year in the text ("Mfg.Dt. OCT.2026", "USE BEFORE 09/2028"); ValueError when there is none."""
+    s = re.sub(r"^\s*(?:MFG|MFD|EXP)\b\.?\s*:?", "", str(s), flags=re.I)
+    m = re.search(r"(?:(?<!\d)\d{1,2}|(?<![A-Za-z])[A-Za-z]{3})\s*[-/. ]\s*(?:\d{4}|\d{2})(?!\d)", s)
+    return parse_month(m.group(0) if m else "")
 
 
 def _mrp(s) -> float:
-    s = re.sub(r"^\s*mrp\.?\s*:?", "", str(s), flags=re.I)
-    return round(float(re.sub(r"rs\.?|₹|/-|[\s,]", "", s, flags=re.I)), 2)
+    """The first price in the text ("M.R.P. Rs. 45.00", "Rs. 45.00 Incl. of all taxes"); ValueError when there is none."""
+    m = re.search(r"\d[\d,]*(?:\.\d+)?", re.sub(r"^\s*mrp\.?\s*:?", "", str(s), flags=re.I))
+    return round(float((m.group(0) if m else "").replace(",", "")), 2)
 
 
 def check_print(read: dict, batch: dict, today: date) -> dict:
@@ -42,29 +46,35 @@ def check_print(read: dict, batch: dict, today: date) -> dict:
     def differ(label, got, want):
         why.append(f"{label} on strip is {got}, batch record says {want}")
 
+    def unreadable(label):  # holds this check only: an unparsed value is not a proven mismatch
+        why.append(f"{label} not readable — check by hand")
+
     fields = {"Batch no.": "batch", "MFG": "mfg", "EXP": "exp", "MRP": "mrp"}
     vals = {k: str(read.get(f) or "").strip() for k, f in fields.items()}
     for k, v in vals.items():
         if not v:
             why.append(f"{k} not printed or not readable")
-    if vals["Batch no."] and _batch_key(vals["Batch no."]) != _batch_key(batch["batch"]):
-        differ("Batch no.", vals["Batch no."], batch["batch"])
+    if vals["Batch no."]:
+        if not _batch_key(vals["Batch no."]):
+            unreadable("Batch no.")
+        elif _batch_key(vals["Batch no."]) != _batch_key(batch["batch"]):
+            differ("Batch no.", vals["Batch no."], batch["batch"])
     months = {}
     for k, f in (("MFG", "mfg"), ("EXP", "exp")):
         if vals[k]:
             try:
                 months[k] = _month(vals[k])
             except ValueError:
-                months[k] = None
+                unreadable(k)
+                continue
             if months[k] != parse_month(batch[f]):
                 differ(k, vals[k], batch[f])
     if vals["MRP"]:
         try:
-            ok = _mrp(vals["MRP"]) == round(float(batch["mrp"]), 2)
+            if _mrp(vals["MRP"]) != round(float(batch["mrp"]), 2):
+                differ("MRP", vals["MRP"], batch["mrp"])
         except ValueError:
-            ok = False
-        if not ok:
-            differ("MRP", vals["MRP"], batch["mrp"])
+            unreadable("MRP")
     m, e = months.get("MFG"), months.get("EXP")
     if m and e and e <= m:
         why.append("Expiry is not after manufacture")

@@ -56,6 +56,21 @@ def test_garbled_date_holds():
     assert run(mfg="1O/2O26")["status"] == "HOLD"
 
 
+def test_common_label_text_is_print_ok():
+    for k, v in [("mrp", "M.R.P. Rs. 45.00"), ("mrp", "Rs. 45.00 Incl. of all taxes"), ("mfg", "MFG.DATE: 10/2026"),
+                 ("mfg", "Mfg.Dt. OCT.2026"), ("mfg", "MFG10/2026")]:
+        assert run(**{k: v}) == {"status": "PRINT_OK", "reasons": []}, v
+    r = check_print(dict(GOOD, exp="USE BEFORE 09/2028"), dict(BATCH, exp="09/2028"), TODAY)
+    assert r == {"status": "PRINT_OK", "reasons": []}, r
+
+
+def test_unparseable_value_is_not_readable_not_a_mismatch():
+    for k, label in [("mfg", "MFG"), ("exp", "EXP"), ("mrp", "MRP"), ("batch", "Batch no.")]:
+        r = run(**{k: "B.No." if k == "batch" else "1O/2O26" if k != "mrp" else "Rs. --"})
+        assert r == {"status": "HOLD", "reasons": [f"{label} not readable — check by hand"]}, r
+        assert wrong_print(r["reasons"]) is None  # holds this check only, not the line
+
+
 def test_prompt_never_contains_expected_values():
     seen = []
 
