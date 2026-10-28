@@ -20,7 +20,9 @@ document.querySelectorAll("nav button").forEach(b=>b.onclick=()=>go(b.dataset.ta
 let where=null,clicked=null,running=false;
 document.addEventListener("click",e=>{const b=e.target.closest("button");if(b){where=b.closest(".card,.tab");clicked=b}},true);
 const box=()=>(where&&!where.closest("[hidden]")&&where.querySelector(".msg"))||[...document.querySelectorAll("main .msg")].find(m=>!m.closest("[hidden]"));
-const show=o=>{const m=box();m.className="msg";m.style.cssText="";
+const show=o=>{const m=box();
+  document.querySelectorAll("main .msg").forEach(x=>{if(x!==m){x.textContent="";x.className="msg";x.style.cssText=""}});  // only the latest message stays
+  m.className="msg";m.style.cssText="";
   m.textContent=typeof o==="string"?o:(o.error||o.message||JSON.stringify(o,null,1));if(o&&o.error)m.classList.add("err");refresh()};
 const red=vs=>{if(vs.some(v=>(v.reasons||[]).some(r=>r.severity==="critical")))box().classList.add("crit")};
 window.addEventListener("unhandledrejection",e=>show({error:"Could not finish: "+((e.reason&&e.reason.message)||e.reason)}));

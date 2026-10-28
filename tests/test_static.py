@@ -128,3 +128,15 @@ def test_long_action_shows_its_step_and_seconds_and_cannot_be_pressed_twice(tmp_
     assert json.loads(out[0]) == [True, "Finding the strip (SAM 3.1)… 1 s"]
     assert json.loads(out[1]) == [1, False]
 
+
+def test_only_the_latest_message_stays_on_screen(tmp_path):
+    """Rehearsal: the QA screen showed "Leak test pass recorded", "Line resumed" and "Quarantine released." at once,
+    one in each card. Only the latest message stays."""
+    js = (STATIC / "station.js").read_text(encoding="utf-8")
+    show = re.search(r"^const show=.*?refresh\(\)\};$", js, re.M | re.S).group(0)
+    out = _node_run('const el=t=>({textContent:t,className:"msg",style:{cssText:""},classList:{add(){}}});'
+                    'const msgs=[el("Leak test pass recorded"),el("Line resumed"),el("")];'
+                    'const document={querySelectorAll:()=>msgs};const box=()=>msgs[2],refresh=()=>{};\n' + show +
+                    '\nshow("Quarantine released.");console.log(JSON.stringify(msgs.map(m=>m.textContent)))',
+                    tmp_path / "show.js")
+    assert json.loads(out[0]) == ["", "", "Quarantine released."]
