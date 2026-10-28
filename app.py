@@ -3,6 +3,7 @@ import argparse
 import html
 import hashlib
 import json
+import math
 import mimetypes
 import re
 import secrets
@@ -564,13 +565,20 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
             name = qa(request)
             keys = ("received", "good_tray", "reject_box", "samples", "unused",
                     "foil_issued", "foil_used", "foil_returned", "foil_destroyed")
+            for k in ("received", "good_tray", "reject_box", "foil_issued"):
+                if not str(f.get(k, "")).strip():
+                    return {"error": f"{k.replace('_', ' ').capitalize()} must be entered"}  # blank is never read as 0
             try:
                 counts = {k: float(f.get(k) or 0) for k in keys}
                 limits = {"strips": float(f.get("strips_limit") or 0), "foil": float(f.get("foil_limit") or 0.5)}
             except ValueError:
                 return {"error": "Counts and limits must be numbers"}
+            if not all(map(math.isfinite, (*counts.values(), *limits.values()))):
+                return {"error": "Counts and limits must be numbers"}
             if min(*counts.values(), *limits.values()) < 0:
                 return {"error": "Counts and limits cannot be negative"}
+            if any(counts[k] != int(counts[k]) for k in keys[:5]):
+                return {"error": "Strip counts must be whole numbers"}
             for k in keys[:5]:
                 counts[k] = int(counts[k])
             if str(f.get("cleared", "")).lower() not in ("true", "1", "on"):

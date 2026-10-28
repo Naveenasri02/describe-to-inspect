@@ -869,6 +869,21 @@ def test_batch_end_needs_the_clearance_tick_and_a_limit_applies(tmp_path):
     assert c.post("/batch/end", data=wide).json()["totals"]["status"] == "within"
 
 
+def test_batch_end_refuses_bad_numbers_and_blank_required_fields(tmp_path):
+    c, p = bench(tmp_path)
+    login(c, "qa1", "pw-qa")
+    for bad in ({"received": "nan"}, {"unused": "inf"}, {"samples": "-inf"}, {"foil_used": "nan"}, {"foil_issued": "inf"},
+                {"strips_limit": "nan"}, {"foil_limit": "inf"}, {"foil_limit": "-inf"}, {"received": "2.5"}, {"unused": "0.5"}):
+        r = c.post("/batch/end", data=dict(END_OK, **bad)).json()
+        assert "error" in r and Batches(p).open, bad
+    assert "numbers" in c.post("/batch/end", data=dict(END_OK, received="nan")).json()["error"]
+    assert "whole" in c.post("/batch/end", data=dict(END_OK, received="2.5")).json()["error"]
+    for k in ("received", "good_tray", "reject_box", "foil_issued"):
+        r = c.post("/batch/end", data=dict(END_OK, **{k: ""})).json()
+        assert "error" in r and "must be entered" in r["error"] and Batches(p).open, k
+    assert c.post("/batch/end", data=dict(END_OK, unused="", foil_used="")).json()["event"] == "end"
+
+
 def test_selftest_not_run_is_not_a_failed_selftest_row(tmp_path, monkeypatch):
     c, p = bench(tmp_path)
     login(c, "qa1", "pw-qa")

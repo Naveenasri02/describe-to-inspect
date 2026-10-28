@@ -140,3 +140,8 @@ def test_only_the_latest_message_stays_on_screen(tmp_path):
                     '\nshow("Quarantine released.");console.log(JSON.stringify(msgs.map(m=>m.textContent)))',
                     tmp_path / "show.js")
     assert json.loads(out[0]) == ["", "", "Quarantine released."]
+
+
+def test_open_batch_totals_line_does_not_claim_reconciled():
+    js = (STATIC / "station.js").read_text(encoding="utf-8")
+    assert "Reconciled when the batch ends" in js and "Reconciled against the counts" not in js

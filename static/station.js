@@ -179,7 +179,7 @@ function qaTab(s){
   const t=s.totals,tb=$("recon");tb.replaceChildren();
   if(t)[["Passed",t.passed],["Rejected",t.rejected],["Held for QA",t.held],["No strip found",t.no_strip],["Inspected",t.inspected,"sum"]]
     .forEach(([k,n,c])=>{const tr=mk("tr","",c);tr.append(mk("td",k),mk("td",n));tb.append(tr)});
-  $("bal").className="bal";$("bal").textContent=t?"Reconciled against the counts typed at End batch":"No batch open";
+  $("bal").className="bal";$("bal").textContent=t?"Reconciled when the batch ends":"No batch open";
   // the one main action on this screen: the next thing QA has to do
   const main=s.held?"go-resume":!b?"go-start":s.blockers.includes(REL[1])?"go-print":s.blockers.includes(REL[2])?"go-spec":"";
   document.querySelectorAll("#qa .go").forEach(x=>x.classList.toggle("primary",x.id===main));
