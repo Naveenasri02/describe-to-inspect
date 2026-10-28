@@ -1,5 +1,6 @@
 import hashlib
 import json
+import time
 from datetime import datetime
 
 import pytest
@@ -405,11 +406,43 @@ def test_state_change_after_signing_is_not_green(product):
     audit = _signed_setup(product, "Approved")
     d = audit.entries()[-1]["details"]
     assert d["files_sha256"]["states.jsonl"] == hashlib.sha256((product / "states.jsonl").read_bytes()).hexdigest()
-    state(T0 + 95, "COMPLETE", "IDLE")  # the signature's own effect
-    assert "badge signed" in shift_record(product, T0 - 10, T0 + 100, "LOT9", "A", audit=audit)
-    state(T0 + 99, "IDLE", "STARTING")
+    signed = (product / "states.jsonl").read_bytes()
+    green = lambda: "badge signed" in shift_record(product, T0 - 10, T0 + 100, "LOT9", "A", audit=audit)  # noqa: E731
+    state(T0 + 95, "COMPLETE", "IDLE")  # the signature's own effect: the last row, written after the signature
+    assert green()
+    state(T0 + 99, "IDLE", "STARTING")  # no longer the last row: it counts, and so does the new one
     late = shift_record(product, T0 - 10, T0 + 100, "LOT9", "A", audit=audit)
     assert "badge signed" not in late and "changed since signing, re-sign needed" in late
+    (product / "states.jsonl").write_bytes(signed)
+    assert green()
+    state(time.time() - 600, "COMPLETE", "IDLE")  # a COMPLETE -> IDLE row older than the signature is a change
+    assert not green()
+    (product / "states.jsonl").write_bytes(signed)
+    state(T0 + 50, "RUNNING", "COMPLETE")  # any other added row too
+    state(T0 + 95, "COMPLETE", "IDLE")
+    assert not green()
+
+
+def test_review_notes_show_in_the_record_and_unsign_it(product):
+    """Fix round 1 (b): each missed window's QA review note shows in In-process checks (who, when, note), and a note
+    added after signing makes the record "changed since signing"."""
+    from d2i.audit import Users, sign_record
+    from d2i.openitems import window_id
+    b, audit, users = Batches(product), AuditLog(product / "audit.jsonl"), Users(product / "users.json")
+    users.add("qa1", "qa", "pw")
+    b.clearance({"clear": True, "found": []}, "qa1", T0)
+    b.start("LOT7", "01/2026", "01/2028", "45", "qa1", T0 + 60)
+    b.leak("pass", "qa1", "", T0 + 70, samples=5)
+    b.end("qa1", T0 + 60 + 7300, {"inspected": 4, "passed": 3, "rejected": 1, "held": 0, "no_strip": 0, "balanced": True})
+    sign_record("x", audit, users, "qa1", "pw", meaning="Reviewed", batch="LOT7", extra=fingerprint(product, T0 - 10, T0 + 8000))
+    html = lambda: shift_record(product, T0 - 10, T0 + 8000, "LOT7", "", audit=audit)  # noqa: E731
+    assert "badge signed" in html()
+    b._write("reviews.jsonl", {"time": T0 + 7500, "at": _at(T0 + 7500), "kind": "missed_check",
+                               "window": window_id("print", T0 + 60), "by": "qa2", "note": "checked on paper at 10:05"})
+    checks = html().split("<h2>In-process checks</h2>")[1].split("<h2>")[0]
+    assert checks.count(">Missed<") == 3 and "qa2" in checks and "checked on paper at 10:05" in checks
+    assert _human(T0 + 7500) in checks  # when the note was written
+    assert "badge signed" not in html() and "changed since signing" in html()
 
 
 def test_other_window_of_same_batch_is_draft(product):

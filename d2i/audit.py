@@ -163,9 +163,20 @@ def sign_record(html: str, audit: AuditLog, users: Users, name: str, password: s
     """With product_dir, the signed entry also pins the verdict files (log.jsonl, selftests.jsonl) and the line state
     log (states.jsonl) by sha256.
     Signature manifest: name (the entry's user), local time with its UTC offset, meaning, and the batch shown."""
+    check_signer(users, name, password, meaning)
+    return write_signature(html, audit, name, meaning, product_dir, batch, extra)
+
+
+def check_signer(users: Users, name: str, password: str, meaning: str) -> None:
+    """The meaning, then the QA password (slow on purpose: a caller does this before taking a lock)."""
     if meaning not in SIGN_MEANINGS:
         raise ValueError("Pick the meaning of your signature: Reviewed or Approved")
     _require_qa(users, name, password)
+
+
+def write_signature(html: str, audit: AuditLog, name: str, meaning: str, product_dir: Path | None = None,
+                    batch: str = "", extra: dict | None = None) -> dict:
+    """The sign entry itself; only after check_signer passed for this name, password and meaning."""
     sha = hashlib.sha256(html.encode("utf-8")).hexdigest()
     details = {"record_sha256": sha, "meaning": meaning, "batch": batch,
                "signed_at": datetime.now().astimezone().isoformat(timespec="seconds")}

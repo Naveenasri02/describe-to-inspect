@@ -7,7 +7,7 @@ from pathlib import Path
 
 from d2i.audit import AuditLog, quarantine_list
 from d2i.batch import Batches
-from d2i.ipqc import check_events, missed_windows
+from d2i.ipqc import check_events, missed_windows, window_id  # noqa: F401 (window_id: the reviews.jsonl key, used here)
 from d2i.linestate import holder
 from d2i.supervisor import hold_state
 
@@ -33,17 +33,12 @@ def _rows(path: Path) -> list[dict]:
     return [json.loads(x) for x in path.read_text(encoding="utf-8").splitlines() if x.strip()]
 
 
-def window_id(kind: str, start: float) -> str:
-    """The id of one missed hourly window, as reviews.jsonl names it: "leak|print <window start, local ISO>"."""
-    return f"{kind} {datetime.fromtimestamp(start).isoformat(timespec='seconds')}"
-
-
-def missed_checks(product_dir: Path, now: float) -> list[dict]:
-    """The last started batch's missed hourly windows with no QA review note yet:
-    {kind ("leak" | "print"), text, start, end, window (the reviews.jsonl key)}, oldest first."""
+def missed_checks(product_dir: Path, now: float, batch: str | None = None) -> list[dict]:
+    """A batch's missed hourly windows with no QA review note yet (default: the last started batch):
+    {kind ("leak" | "print"), text, start, end, window (the reviews.jsonl key), batch}, oldest first."""
     p = Path(product_dir)
     rows = Batches(p).rows
-    start = next((r for r in reversed(rows) if r["event"] == "start"), None)
+    start = next((r for r in reversed(rows) if r["event"] == "start" and (batch is None or r["batch"] == batch)), None)
     if not start:
         return []
     end = next((r for r in rows if r["event"] == "end" and r["batch"] == start["batch"] and r["time"] >= start["time"]), None)
@@ -52,8 +47,17 @@ def missed_checks(product_dir: Path, now: float) -> list[dict]:
     for text, a, b in missed_windows(start, check_events(p, start["batch"]), end["time"] if end else now):
         kind = "leak" if text.startswith("Leak") else "print"
         if window_id(kind, a) not in reviewed:
-            out.append({"kind": kind, "text": text, "start": a, "end": b, "window": window_id(kind, a)})
+            out.append({"kind": kind, "text": text, "start": a, "end": b, "window": window_id(kind, a),
+                        "batch": start["batch"]})
     return out
+
+
+def missed_text(m: dict) -> str:
+    return f"{m['text']} {_hm(m['start'])}–{_hm(m['end'])} — QA review note needed"
+
+
+def last_started(product_dir: Path) -> str | None:
+    return next((r["batch"] for r in reversed(Batches(product_dir).rows) if r["event"] == "start"), None)
 
 
 def record_unsigned(batch_rows: list[dict], audit_rows: list[dict]) -> dict | None:
@@ -117,8 +121,7 @@ def open_items(product_dir: Path, now: float, requests=()) -> list[dict]:
 
     def missed_check():
         for m in missed_checks(p, now):
-            add("missed_check", f"{m['text']} {_hm(m['start'])}–{_hm(m['end'])} — QA review note needed", m["end"],
-                evidence="record: In-process checks")
+            add("missed_check", missed_text(m), m["end"], evidence="record: In-process checks")
 
     def challenge_failed():
         runs = _rows(p / "challenge_runs.jsonl")

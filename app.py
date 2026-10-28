@@ -24,13 +24,13 @@ from fastapi.staticfiles import StaticFiles
 from d2i import challenge, recheck, record, trace
 from d2i.commands import KEYWORDS, match
 from d2i.audit import (AuditLog, Users, _require_qa, log_physical_challenge, quarantine_list, release_quarantine,
-                       sign_record)
+                       check_signer, write_signature)
 from d2i.batch import Batches, line_clearance
 from d2i.checklist import approve, make_checklist
 from d2i.llm import ToolChat
 from d2i.meta_api import Budget, MetaClient
 from d2i.ipqc import DRIFT_REJECTS, check_events, due, reconcile, reject_run, release_blockers
-from d2i.openitems import missed_checks, open_items, window_id
+from d2i.openitems import last_started, missed_checks, missed_text, open_items, window_id
 from d2i.printcheck import check_print, read_print, wrong_print
 from d2i.pockets import find_layout
 from d2i.station import FINDER_DOWN, NEED_TEACH, Station, Verdict
@@ -665,38 +665,47 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
             rec = records.get(str(body.get("record_id", "")))
             if rec is None:
                 return {"error": RECORD_EXPIRED}
-            with sup_lock:  # a copy: the agent's thread adds requests
-                pending = list(inv["sup"].pending.values()) if inv["sup"] else []
-            left = [i["text"] for i in open_items(product_dir, clock(), requests=pending) if i["kind"] != "record_unsigned"]
-            if left:  # the board's "waiting for a person" list: each one is closed first
-                return {"error": "Sign refused — still waiting: " + "; ".join(left)}
-            return sign_record(rec[0], audit, users, name, str(body.get("password", "")),
-                               meaning=str(body.get("meaning", "")), product_dir=product_dir, batch=rec[2], extra=rec[3])
+            meaning = str(body.get("meaning", ""))
+            check_signer(users, name, str(body.get("password", "")), meaning)  # the slow hash, before the lock
+            with lock:  # holds, quarantine, challenge results and requests are written under it: none lands in between
+                with sup_lock:  # a copy: the agent's thread adds requests
+                    pending = list(inv["sup"].pending.values()) if inv["sup"] else []
+                now, batch = clock(), rec[2]
+                left = [i["text"] for i in open_items(product_dir, now, requests=pending) if i["kind"] != "record_unsigned"]
+                if batch and batch != last_started(product_dir):  # an older batch: its own missed checks too
+                    left += [f"Batch {batch}: " + missed_text(m) for m in missed_checks(product_dir, now, batch=batch)]
+                if left:  # the board's "waiting for a person" list: each one is closed first
+                    more = f"; and {len(left) - 5} more" if len(left) > 5 else ""
+                    return {"error": "Sign refused — still waiting: " + "; ".join(left[:5]) + more}
+                return write_signature(rec[0], audit, name, meaning, product_dir=product_dir, batch=batch, extra=rec[3])
         return paid(run)
 
     @app.get("/missed")
-    def missed():  # the missed hourly windows still waiting for a QA review note
-        return paid(lambda: {"missed": missed_checks(product_dir, clock())})
+    def missed(batch: str = ""):  # a batch's missed hourly windows still waiting for a QA review note
+        return paid(lambda: {"missed": missed_checks(product_dir, clock(), batch=batch or None)})
 
     @app.post("/review-missed")
     def review_missed(body: dict, request: Request):
         def run():
             name = qa(request)
             _require_qa(users, name, str(body.get("password", "")))  # re-typed password, as Resume line
-            note, kind = str(body.get("note", "")).strip(), str(body.get("kind", ""))
+            note = " ".join(str(body.get("note", "")).splitlines()).strip()  # U+2028 and kin would split the JSONL row
             if not note:
                 raise ValueError("Write the review note")
-            try:
-                w = window_id(kind, float(body.get("window")))
+            raw, kind = body.get("window"), str(body.get("kind", ""))
+            try:  # the window's start time, or its id as GET /missed gives it
+                w = window_id(kind, float(raw))
             except (TypeError, ValueError, OverflowError, OSError):
-                raise ValueError("No such missed window") from None
-            now = clock()
+                w = str(raw)
+            batch, now = str(body.get("batch", "")) or None, clock()
             with meta:
-                if not any(m["window"] == w for m in missed_checks(product_dir, now)):  # one note per missed window
+                m = next((m for m in missed_checks(product_dir, now, batch=batch) if m["window"] == w and m["kind"] == kind),
+                         None)  # one note per missed window
+                if m is None:
                     return {"error": "No missed check waits for a note in that window"}
                 row = batches._write("reviews.jsonl", {"time": now, "at": datetime.fromtimestamp(now).isoformat(
-                    timespec="seconds"), "kind": "missed_check", "window": w, "by": name, "note": note})
-            audit.append("review_missed", name, {"window": w}, note)
+                    timespec="seconds"), "kind": "missed_check", "window": w, "by": name, "note": note, "batch": m["batch"]})
+            audit.append("review_missed", name, {"window": w, "batch": m["batch"]}, note)
             return row
         return paid(run)
 

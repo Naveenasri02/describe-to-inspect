@@ -189,19 +189,22 @@ function qaTab(s){
   document.querySelectorAll("#qa .go").forEach(x=>x.classList.toggle("primary",x.id===main));
   missedRefresh();
 }
-// missed hourly windows: each needs a QA review note before the record can be signed
-let missedKey="";
+// missed hourly windows of a batch (blank = the last started): each needs a QA review note before its record is signed
+let missedKey="",missedNotes={};  // missedNotes: the note fields by window, so a rebuild keeps what QA typed in other rows
 async function missedRefresh(){
-  let r;try{r=await (await fetch("/missed")).json()}catch(e){return}
-  const ms=r.missed||[],key=JSON.stringify(ms.map(m=>m.window));$("missedbox").hidden=!ms.length;
+  const bt=$("mbatch").value.trim();
+  let r;try{r=await (await fetch("/missed?batch="+encodeURIComponent(bt))).json()}catch(e){return}
+  const ms=r.missed||[],key=bt+"|"+JSON.stringify(ms.map(m=>m.window));
   if(key===missedKey)return;missedKey=key;  // the same windows: keep the notes being typed
-  const ul=$("missed");ul.replaceChildren();
+  const ul=$("missed"),old=missedNotes;ul.replaceChildren();missedNotes={};
+  if(!ms.length){const li=mk("li","","off");li.append(mk("span","✓"),mk("div","No missed hourly check waits for a note"));ul.append(li)}
   ms.forEach(m=>{const li=mk("li","","todo"),at=t=>new Date(t*1000).toTimeString().slice(0,5);
     const note=mk("input");note.placeholder="Review note";note.setAttribute("aria-label","Review note: "+m.text+" "+at(m.start));
+    note.value=old[m.window]?old[m.window].value:"";missedNotes[m.window]=note;
     const btn=mk("button","Add review note (QA)","btn");btn.onclick=()=>reviewMissed(m,note);
-    li.append(mk("span","!"),mk("div",m.text+" "+at(m.start)+"–"+at(m.end)),note,btn);ul.append(li)})}
-async function reviewMissed(m,note){const r=await j("/review-missed",{window:m.start,kind:m.kind,note:note.value,password:$("mpw").value});  // QA action: sent at once
-  $("mpw").value="";if(!r.error)missedKey="";show(r.error?r:"Review note saved: "+m.text+".")}
+    li.append(mk("span","!"),mk("div","Batch "+m.batch+": "+m.text+" "+at(m.start)+"–"+at(m.end)),note,btn);ul.append(li)})}
+async function reviewMissed(m,note){const r=await j("/review-missed",{batch:m.batch,window:m.window,kind:m.kind,note:note.value,password:$("mpw").value});  // QA action: sent at once
+  $("mpw").value="";if(!r.error){missedKey="";note.value=""}show(r.error?r:"Review note saved: "+m.text+".")}
 async function quarantine(n,err){
   $("qbanner").hidden=$("qrel").hidden=!n&&!err;
   if(err){$("qbanner").textContent="Quarantine status unknown — check the record";$("qlist").replaceChildren();return}

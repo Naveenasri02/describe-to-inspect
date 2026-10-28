@@ -137,10 +137,11 @@
       <div class="field"><input id="spw" type="password" placeholder="QA password" aria-label="QA password for the specimen">
         <button class="btn go" id="go-spec" onclick="specimen()">Sign start-up specimen (QA)</button></div>
       <div class="dueline" id="due" hidden></div>
-      <div id="missedbox" hidden>
+      <div id="missedbox">
         <h3>Missed hourly checks: QA review note</h3>
         <ul class="check" id="missed"></ul>
-        <div class="field"><input id="mpw" type="password" placeholder="QA password" aria-label="QA password for the review note"></div>
+        <div class="field"><input id="mbatch" class="narrow" placeholder="Batch (blank = current)" aria-label="Batch whose missed checks to list">
+          <input id="mpw" type="password" placeholder="QA password" aria-label="QA password for the review note"></div>
       </div>
       <div id="nobatch">
         <h3>Start a batch</h3>

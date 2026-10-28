@@ -76,6 +76,11 @@ def due(batch: dict, rows: list[dict], now: float) -> list[str]:
     return [text for ev, text in (("leak", "Leak test due"), ("print", "Print check due")) if at[ev] is None or now > at[ev]]
 
 
+def window_id(kind: str, start: float) -> str:
+    """The id of one missed hourly window, as reviews.jsonl names it: "leak|print <window start, local ISO>"."""
+    return f"{kind} {datetime.fromtimestamp(start).isoformat(timespec='seconds')}"
+
+
 def missed_windows(batch: dict, rows: list[dict], until: float) -> list[tuple[str, float, float]]:
     """Whole IPQC_EVERY_S windows up to `until`, per kind (the print windows restart at each foil change, the leak
     windows do not), with no leak test / no print check: (text, window start, window end), matching due()."""

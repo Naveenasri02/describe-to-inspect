@@ -12,7 +12,7 @@ from d2i.audit import AuditLog, config_hashes, quarantine_list
 from d2i.batch import Batches
 from d2i.challenge import NO_SET, RUNS, SET, load_set, runs as challenge_runs
 from d2i.checklist import current
-from d2i.ipqc import check_events, missed_windows, strip_counts
+from d2i.ipqc import check_events, missed_windows, strip_counts, window_id
 from d2i.meta_api import BudgetExceeded, MetaError
 
 STATUSES = ("PASS", "REJECT", "HOLD", "LOCKED", "NO_STRIP")
@@ -253,39 +253,46 @@ def fingerprint(product_dir: Path, since: float, until: float) -> dict:
     p = Path(product_dir)
     verdicts, tests = _records(p, since, until)
     h = hashlib.sha256(_compact(verdicts).encode() + b"|" + _compact(tests).encode())
-    for n in ("batches.jsonl", "prints.jsonl", SET, RUNS):  # the challenge set and runs are shown in the record too
+    for n in ("batches.jsonl", "prints.jsonl", SET, RUNS, "reviews.jsonl"):  # also shown in the record
         h.update(b"|" + ((p / n).read_bytes() if (p / n).exists() else b""))
     files = {n: hashlib.sha256((p / n).read_bytes()).hexdigest() if (p / n).exists() else None
              for n in ("log.jsonl", "selftests.jsonl", "states.jsonl")}
-    return {"since": since, "until": until, "content_sha256": h.hexdigest(), "files_sha256": files,
-            "states_sha256": _states_sha256(p)}
+    return {"since": since, "until": until, "content_sha256": h.hexdigest(), "files_sha256": files}
 
 
-def _states_sha256(p: Path) -> str:
-    """states.jsonl as a signature compares it. A COMPLETE -> IDLE row is the signature's own effect (the ended batch's
-    record stops waiting for one), not a change to what was signed; every other line counts, unreadable ones too."""
-    f, keep = p / "states.jsonl", []
-    for line in f.read_text(encoding="utf-8", errors="replace").splitlines() if f.exists() else []:
-        try:
-            r = json.loads(line)
-        except ValueError:
-            r = None
-        if not (isinstance(r, dict) and r.get("from") == "COMPLETE" and r.get("to") == "IDLE"):
-            keep.append(line)
-    return hashlib.sha256("\n".join(keep).encode("utf-8")).hexdigest()
+def _states_sha256_at(p: Path, signed: float) -> str | None:
+    """states.jsonl as it was when signed. Only a last COMPLETE -> IDLE row written at or after the signature is left
+    out: it is the signature's own effect (the ended batch's record stops waiting for one). Anything else counts."""
+    f = p / "states.jsonl"
+    if not f.exists():
+        return None
+    data = f.read_bytes()
+    body = data.rstrip(b"\r\n")
+    cut = body.rfind(b"\n") + 1  # where the last line starts
+    try:
+        last = json.loads(body[cut:])
+        own = last.get("from") == "COMPLETE" and last.get("to") == "IDLE" and float(last["time"]) >= signed
+    except (ValueError, TypeError, KeyError, AttributeError):
+        own = False
+    return hashlib.sha256(data[:cut] if own else data).hexdigest()
 
 
-def _signed_rows(audit: AuditLog | None, batch: str, fp: dict) -> tuple[list[dict], list[dict]]:
-    """(signatures on exactly this content, every signature on this batch). The raw states.jsonl hash is kept as
-    evidence; the state log is compared through states_sha256, which leaves out the signature's own state change."""
+def _signed_rows(audit: AuditLog | None, batch: str, fp: dict, product_dir: Path) -> tuple[list[dict], list[dict]]:
+    """(signatures on exactly this content, every signature on this batch). states.jsonl is compared per signature,
+    as it was at that signature's time."""
     rows = [r for r in (audit.entries() if audit else []) if r.get("action") == "sign"
             and isinstance(r.get("details"), dict) and r["details"].get("batch", "") == batch]
 
     def same(r):
-        d = r["details"]
-        return (d.get("content_sha256") == fp["content_sha256"] and d.get("states_sha256") == fp["states_sha256"]
-                and all((d.get("files_sha256") or {}).get(n, "") == fp["files_sha256"][n]
-                        for n in ("log.jsonl", "selftests.jsonl")))
+        d, p = r["details"], Path(product_dir)
+        files = d.get("files_sha256") or {}
+        try:
+            signed = datetime.fromisoformat(r["at"]).timestamp()
+        except (KeyError, TypeError, ValueError):
+            signed = float("inf")  # unreadable time: nothing is left out
+        return (d.get("content_sha256") == fp["content_sha256"]
+                and all(files.get(n, "") == fp["files_sha256"][n] for n in ("log.jsonl", "selftests.jsonl"))
+                and files.get("states.jsonl", "") == _states_sha256_at(p, signed))
     return [r for r in rows if same(r)], rows
 
 
@@ -407,7 +414,11 @@ def _batch_section(product_dir: Path, audit: AuditLog | None = None, until: floa
     checks = [(r["time"], [_when(r["at"]), "Leak test" if r["event"] == "leak" else "Print check", r["by"],
                            _chip(r["result"] if r["event"] == "leak" else r["status"])]) for r in ev if r["event"] != "foil_change"]
     checks += [(r["time"], [_when(r["time"]), "Foil roll changed", r["by"], ""]) for r in ev if r["event"] == "foil_change"]
-    checks += [(a, [_span(a, b), text, "", _chip("Missed")]) for text, a, b in missed_windows(start, ev, end["time"] if end else until)]
+    notes = {r.get("window"): r for r in _lines(Path(product_dir) / "reviews.jsonl")}  # QA review notes, per window
+    for text, a, b in missed_windows(start, ev, end["time"] if end else until):
+        n = notes.get(window_id("leak" if text.startswith("Leak") else "print", a))
+        checks.append((a, [_span(a, b), text, n["by"] if n else "",
+                           _Html(_chip("Missed") + (e(f" — QA note {_when(n['at'])}: {n['note']}") if n else ""))]))
     checks = [row for _, row in sorted(checks, key=lambda c: (c[0], c[1][1]))]  # by time: shown times do not sort as text
     tot = end.get("totals") if end else None
     if tot and "lines" in tot:
@@ -450,7 +461,7 @@ def shift_record(product_dir: Path, since: float, until: float, batch: str, oper
     verdicts, tests = _records(product_dir, since, until)
     cl = current(Path(product_dir) / "checklists.jsonl") or {}
     shown = shown_batch(product_dir, batch)  # as the Batch section
-    sgs, every = _signed_rows(audit, shown, fingerprint(product_dir, since, until))
+    sgs, every = _signed_rows(audit, shown, fingerprint(product_dir, since, until), product_dir)
     line = lambda r: f"Signed by {r['user']} — {r['details'].get('meaning')} — {_signed_at(r)}"  # noqa: E731
     if sgs:
         badge = "".join(f"<span class='badge signed'>{e(line(r))}</span>" for r in sgs)

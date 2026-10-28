@@ -230,23 +230,28 @@ def test_missed_check_notes_keep_what_qa_types_and_are_sent_at_once(tmp_path):
     not wipe a note being typed; the note is a QA action, sent at once (never held back by a long action)."""
     html = (STATIC / "index.html").read_text(encoding="utf-8")
     js = (STATIC / "station.js").read_text(encoding="utf-8")
-    assert 'id="missedbox"' in html and 'id="missed"' in html and 'id="mpw"' in html
+    assert 'id="missedbox"' in html and 'id="missed"' in html and 'id="mpw"' in html and 'id="mbatch"' in html
     src = re.search(r"^let missedKey=.*?show\(r\.error\?r:\"Review note saved: \"\+m\.text\+\"\.\"\)\}$", js,
                     re.M | re.S).group(0)
     assert "busy(" not in src and "missedRefresh();" in js.split("function qaTab")[1].split("\n}\n")[0]
     out = _node_run('''const el=()=>({hidden:false,value:"",children:[],append(...k){this.children.push(...k)},
   replaceChildren(){this.rebuilt=(this.rebuilt||0)+1;this.children=[]},setAttribute(){}});
-const els={missedbox:el(),missed:el(),mpw:el()},$=id=>els[id],mk=()=>el(),posted=[],shown=[];
-let list=[{kind:"leak",text:"Leak test missed",start:0,end:3600,window:"leak 1970-01-01T00:00:00"}];
-const fetch=async()=>({json:async()=>({missed:list})});
-const j=async(u,b)=>{posted.push([u,b]);return {}};const show=t=>shown.push(t);
+const els={missedbox:el(),missed:el(),mpw:el(),mbatch:el()},$=id=>els[id],mk=()=>el(),posted=[],shown=[],urls=[];
+const W=(kind,text,s)=>({kind,text,start:s,end:s+3600,batch:"B1",window:kind+" "+s});
+let list=[W("leak","Leak test missed",0),W("print","Print check missed",0)];
+const fetch=async u=>{urls.push(u);return {json:async()=>({missed:list})}};
+const j=async(u,b)=>{posted.push([u,b]);list=list.slice(1);return {}};const show=t=>shown.push(t);
 ''' + src + '''
 (async()=>{await missedRefresh();await missedRefresh();
-  const li=els.missed.children[0],note=li.children[2],btn=li.children[3];note.value="tested 10:05";
-  await missedRefresh();els.mpw.value="pw";await btn.onclick();
-  console.log(JSON.stringify([els.missed.rebuilt,li.children[2].value,posted,els.mpw.value,shown]))})()''',
-                    tmp_path / "missed.js")
-    rebuilt, note, posted, pw, shown = json.loads(out[0])
-    assert rebuilt == 1 and note == "tested 10:05"  # refreshed twice more, never rebuilt: the note stays
-    assert posted == [["/review-missed", {"window": 0, "kind": "leak", "note": "tested 10:05", "password": "pw"}]]
-    assert pw == "" and shown == ["Review note saved: Leak test missed."]
+  const [a,b]=els.missed.children.map(li=>li.children[2]),btn=els.missed.children[0].children[3];
+  a.value="tested 10:05";b.value="print read by hand";
+  await missedRefresh();els.mpw.value="pw";await btn.onclick();await missedRefresh();
+  els.mbatch.value=" B0 ";await missedRefresh();
+  console.log(JSON.stringify([els.missed.rebuilt,b.value,els.missed.children.map(li=>li.children[2].value),posted,
+    els.mpw.value,shown,urls.slice(-1)]))})()''', tmp_path / "missed.js")
+    rebuilt, typed, rows, posted, pw, shown, url = json.loads(out[0])
+    assert typed == "print read by hand" and rows == ["print read by hand"]  # another row's note survives a save
+    assert rebuilt == 3  # built once, then only when the windows or the batch changed (a save; another batch)
+    assert posted == [["/review-missed", {"batch": "B1", "window": "leak 0", "kind": "leak", "note": "tested 10:05",
+                                          "password": "pw"}]]
+    assert pw == "" and shown == ["Review note saved: Leak test missed."] and url == ["/missed?batch=B0"]

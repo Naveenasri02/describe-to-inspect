@@ -1207,8 +1207,9 @@ def test_sign_refused_while_anything_waits_for_a_person(tmp_path):
     b._write("challenge_runs.jsonl", {"time": now, "at": "x", "by": "op", "batch": "B1", "passed": False, "results": []})
     refused("Physical challenge failed")
     b._write("challenge_runs.jsonl", {"time": now + 1, "at": "x", "by": "op", "batch": "B1", "passed": True, "results": []})
-    _backdate_batch(p, 7300)
-    refused("Leak test missed")
+    _backdate_batch(p, 4 * 3600 + 100)  # 4 hours with no checks: 8 missed windows
+    out = _sign(c)["error"]  # at most 5 items listed, then how many more
+    assert out.count("Leak test missed") + out.count("Print check missed") == 5 and out.endswith("; and 3 more")
     for m in c.get("/missed").json()["missed"]:
         assert c.post("/review-missed", json={"window": m["start"], "kind": m["kind"], "password": "pw-qa",
                                               "note": "done on paper"}).json()["window"] == m["window"]
@@ -1244,7 +1245,7 @@ def test_review_note_closes_a_missed_check(tmp_path):
     login(c, "qa1", "pw-qa")
     row = c.post("/review-missed", json=dict(body, password="pw-qa")).json()
     assert row == {"time": row["time"], "at": row["at"], "kind": "missed_check", "window": m["window"], "by": "qa1",
-                   "note": note}
+                   "note": note, "batch": "B1"}
     assert [json.loads(x) for x in (p / "reviews.jsonl").read_text(encoding="utf-8").splitlines()] == [row]
     e = _audit(p)[-1]
     assert (e["action"], e["user"], e["reason"], e["details"]["window"]) == ("review_missed", "qa1", note, m["window"])
@@ -1252,3 +1253,84 @@ def test_review_note_closes_a_missed_check(tmp_path):
     waiting = [i["text"] for i in c.get("/line").json()["waiting"] if i["kind"] == "missed_check"]
     assert len(waiting) == 1 and waiting[0].startswith("Print check missed")
     assert "error" in c.post("/review-missed", json=dict(body, password="pw-qa")).json()  # one note per window
+    p2 = missed[1]  # the GET's string id is taken as well as the start number; line separators never split a row
+    row = c.post("/review-missed", json={"window": p2["window"], "kind": "print", "password": "pw-qa",
+                                         "note": " checked on paper by\u0085qa\r\nlater\x0b "}).json()
+    assert row["window"] == p2["window"] and row["note"] == "checked on paper by qa later"
+    assert len((p / "reviews.jsonl").read_text(encoding="utf-8").splitlines()) == 2 and c.get("/missed").json()["missed"] == []
+
+
+# --- Task 35 (b,d) fix round 1 ---
+def _sign_batch(c, batch, password="pw-qa"):
+    r = c.get("/record", params={"batch": batch})
+    assert "X-Record-Id" in r.headers, r.text[:300]
+    return c.post("/sign", json={"record_id": r.headers["X-Record-Id"], "password": password, "meaning": "Approved"}).json()
+
+
+def test_a_hold_between_the_gate_and_the_signature_cannot_get_in(tmp_path, monkeypatch):
+    """Review: the gate read "nothing waits" and the signature was written later, outside the station lock that every
+    hold is written under, so a hold could land in between and the record was signed on a held line."""
+    real, armed, threads = app_mod.open_items, threading.Event(), []
+
+    def slow(*a, **k):
+        out = real(*a, **k)
+        if armed.is_set():  # the gate has just read the open items
+            armed.clear()
+            threads.append(threading.Thread(target=lambda: TestClient(c.app).post("/hold", json={"reason": "foil jam"})))
+            threads[0].start()
+            time.sleep(0.8)  # long enough for the hold to land if nothing stops it
+        return out
+
+    monkeypatch.setattr(app_mod, "open_items", slow)
+    c, p = bench(tmp_path)
+    login(c, "qa1", "pw-qa")
+    rid = c.get("/record").headers["X-Record-Id"]
+    armed.set()
+    out = c.post("/sign", json={"record_id": rid, "password": "pw-qa", "meaning": "Approved"}).json()
+    threads[0].join()
+    acts = [e["action"] for e in _audit(p)]
+    assert out.get("signed_by") == "qa1" and acts.index("sign") < acts.index("hold_line")  # the hold waited
+
+
+def test_an_older_batch_signs_only_after_its_own_missed_checks_have_notes(tmp_path):
+    """Review probe: B1 missed its hourly checks, then B2 started. B1's misses stopped counting anywhere, so B1 signed
+    with no notes, and no note could be written for them. Now B1's record waits for B1's notes, and QA can write them."""
+    c, p = bench(tmp_path)
+    _backdate_batch(p, 3700)  # B1: one whole hour with no leak test and no print check
+    now = time.time() - 5  # B1 ended a moment ago; B2's line clearance comes after it
+    Batches(p)._write("batches.jsonl", {"event": "end", "batch": "B1", "by": "qa1", "time": now,
+                                        "at": datetime.fromtimestamp(now).isoformat(timespec="seconds"),
+                                        "totals": {"status": "within", "lines": []}})
+    open_batch(p, "B2")
+    release_batch(p, "B2")
+    login(c, "qa1", "pw-qa")
+    assert c.get("/missed").json()["missed"] == []  # the last started batch (B2) has missed nothing yet
+    b1 = c.get("/missed", params={"batch": "B1"}).json()["missed"]
+    assert [(m["kind"], m["batch"]) for m in b1] == [("leak", "B1"), ("print", "B1")]
+    assert _sign_batch(c, "B1", password="wrong")["error"] == "QA login required"  # the password first, then the list
+    out = _sign_batch(c, "B1")["error"]
+    assert out.startswith("Sign refused — still waiting: Batch B1: Leak test missed") and "Batch B1: Print check missed" in out
+    m = b1[0]
+    assert "error" in c.post("/review-missed", json={"window": m["window"], "kind": m["kind"], "password": "pw-qa",
+                                                     "note": "x"}).json()  # B1's window is not in B2
+    for m in b1:
+        row = c.post("/review-missed", json={"batch": "B1", "window": m["window"], "kind": m["kind"], "password": "pw-qa",
+                                             "note": "tested on paper"}).json()
+        assert (row["window"], row["batch"], row["by"]) == (m["window"], "B1", "qa1")
+    assert c.get("/missed", params={"batch": "B1"}).json()["missed"] == []
+    assert _sign_batch(c, "B1")["signed_by"] == "qa1"
+    assert "tested on paper" in c.get("/record", params={"batch": "B1"}).text.split("<h2>In-process checks</h2>")[1]
+
+
+def test_sign_refused_while_the_reconciliation_is_outside_without_a_reason(tmp_path):
+    c, p = bench(tmp_path)
+    now = time.time()
+    end = {"event": "end", "batch": "B1", "by": "qa1", "time": now, "at": datetime.fromtimestamp(now).isoformat(timespec="seconds"),
+           "totals": {"status": "outside", "lines": []}}
+    Batches(p)._write("batches.jsonl", end)
+    login(c, "qa1", "pw-qa")
+    assert _sign(c)["error"] == "Sign refused — still waiting: Reconciliation outside limit — batch B1, no investigation reason"
+    rows = (p / "batches.jsonl").read_text(encoding="utf-8").splitlines()[:-1]  # the same end row, with QA's reason
+    end["totals"]["investigated"] = {"by": "qa1", "reason": "recounted the reject box"}
+    (p / "batches.jsonl").write_text("".join(x + "\n" for x in rows + [json.dumps(end)]), encoding="utf-8")
+    assert _sign(c)["signed_by"] == "qa1"
