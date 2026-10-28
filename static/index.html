@@ -93,14 +93,14 @@
         <h2 id="teachh">Teach good strips</h2>
         <p>Place a good strip under the camera and save it. Move or turn it a little each time, so the station learns what normal looks like.</p>
         <div class="slots" id="slots"></div>
-        <div class="actions"><button class="btn big primary" onclick="post('/teach',{capture:true},taught)">Save this strip</button>
-          <button class="btn big" onclick="post('/teach',{},taught)">Use saved photos</button></div>
+        <div class="actions"><button class="btn big primary" onclick="long('/teach',{capture:true},taught)">Save this strip</button>
+          <button class="btn big" onclick="long('/teach',{},taught)">Use saved photos</button></div>
         <div class="msg"></div>
       </div>
       <div class="card" data-panel="4" hidden>
         <h2>Self-test</h2>
         <p>The station paints fake defects onto the good strip in view and checks that each one is caught and named, and that the real strip passes. A per-shift functional check — it runs on top of the physical challenge strip.</p>
-        <div class="actions"><button class="btn big primary" onclick="post('/selftest',{},selftestSaid)">Run self-test</button></div>
+        <div class="actions"><button class="btn big primary" onclick="long('/selftest',{},selftestSaid)">Run self-test</button></div>
         <h3 id="sth" hidden></h3>
         <ul class="check" id="stresults"></ul>
         <div class="small" id="uncovered"></div>

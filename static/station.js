@@ -17,38 +17,41 @@ function go(t){tab=t;document.querySelectorAll("main>.tab").forEach(x=>x.hidden=
 document.querySelectorAll("nav button").forEach(b=>b.onclick=()=>go(b.dataset.tab));
 
 // an answer shows in the card (or tab) whose button was pressed
-let where=null,clicked=null,running=false;
+let where=null,clicked=null,running=false,ticking=null;  // ticking: the box a long action counts its seconds in
 document.addEventListener("click",e=>{const b=e.target.closest("button");if(b){where=b.closest(".card,.tab");clicked=b}},true);
 const box=()=>(where&&!where.closest("[hidden]")&&where.querySelector(".msg"))||[...document.querySelectorAll("main .msg")].find(m=>!m.closest("[hidden]"));
-const show=o=>{const m=box();
-  document.querySelectorAll("main .msg").forEach(x=>{if(x!==m){x.textContent="";x.className="msg";x.style.cssText=""}});  // only the latest message stays
+const show=(o,m=box())=>{
+  document.querySelectorAll("main .msg").forEach(x=>{if(x!==m&&x!==ticking){x.textContent="";x.className="msg";x.style.cssText=""}});  // only the latest message stays
   m.className="msg";m.style.cssText="";
   m.textContent=typeof o==="string"?o:(o.error||o.message||JSON.stringify(o,null,1));if(o&&o.error)m.classList.add("err");refresh()};
-const red=vs=>{if(vs.some(v=>(v.reasons||[]).some(r=>r.severity==="critical")))box().classList.add("crit")};
+const red=(vs,m=box())=>{if(vs.some(v=>(v.reasons||[]).some(r=>r.severity==="critical")))m.classList.add("crit")};
 window.addEventListener("unhandledrejection",e=>show({error:"Could not finish: "+((e.reason&&e.reason.message)||e.reason)}));
 async function j(url,body){const r=await fetch(url,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body||{})});return r.json()}
 async function form(url,o){const r=await fetch(url,{method:"POST",body:new URLSearchParams(o||{})});return r.json()}
-// a long action: the pressed button is off and its card shows the station's step and the seconds; a second press does nothing
-async function busy(fn){if(running)return;running=true;const b=clicked,t0=Date.now();if(b)b.disabled=true;
-  const tick=()=>show((S.step||"Working")+"… "+Math.round((Date.now()-t0)/1000)+" s");tick();const iv=setInterval(tick,1000);
-  try{return await fn()}finally{clearInterval(iv);running=false;if(b)b.disabled=false}}
-const post=(url,b,ok)=>busy(async()=>{const r=await j(url,b);show(r.error?r:typeof ok==="function"?ok(r):ok||r)});
+// a long action (SAM 3.1, DINOv2): its button is off, its own card shows the station's step and the seconds (until another
+// message takes that card), and a second long action does nothing meanwhile. Hold, resume and approvals never wait here.
+async function busy(fn,b=clicked){if(running)return;running=true;const m=ticking=box(),t0=Date.now();let mine=null;if(b)b.disabled=true;
+  const tick=()=>{if(mine!==null&&m.textContent!==mine)return;m.className="msg";m.textContent=mine=(S.step||"Working")+"… "+Math.round((Date.now()-t0)/1000)+" s"};
+  tick();const iv=setInterval(tick,1000);
+  try{return await fn(m)}finally{clearInterval(iv);running=false;ticking=null;if(b)b.disabled=false}}
+async function post(url,b,ok,m){const r=await j(url,b);show(r.error?r:typeof ok==="function"?ok(r):ok||r,m)}  // sent at once, always
+const long=(url,b,ok,btn)=>busy(m=>post(url,b,ok,m),btn);
 const taught=r=>r.taught?"Taught from "+r.taught+" photos."+(r.skipped.length?" Unreadable, skipped: "+r.skipped.join(", "):""):"Saved "+r.saved+" of "+r.need+" photos.";
 const selftestSaid=r=>r.not_run||(r.passed?"Self-test passed.":"Self-test missed: "+r.failed.join(", "));
 const uncovered=s=>(s.selftest_skipped||[]).length?"Self-test did not cover: "+s.selftest_skipped.map(k=>k.replace(/_/g," ")).join(", "):"";
 const reasonText=r=>r.text+(r.severity?" ["+r.severity+"]":"");
 
-const inspectNow=()=>busy(async()=>{const v=await (await fetch("/inspect",{method:"POST"})).json();
-  if(v.error)return show(v);
-  if(v.status==="NO_CHECKLIST")return show(v.reasons[0].text);
-  show(v.reasons.length>1?"All reasons: "+v.reasons.map(reasonText).join("; "):"");red([v])});
-const printNow=()=>busy(async()=>{const r=await j("/print");
-  if(r.error)return show(r);show((r.status==="PRINT_OK"?"PRINT OK":"HOLD")+(r.reasons.length?"\n"+r.reasons.join("\n"):""));
-  const m=box();m.classList.add("print");m.style.background=r.status==="PRINT_OK"?"var(--pass)":"var(--hold)"});
-const trayNow=()=>busy(async()=>{const r=await j("/tray");
-  show(r.verdicts?r.verdicts.map(v=>"Strip "+(v.strip_id??"-")+": "+v.status+" "+v.reasons.map(reasonText).join("; ")).join("\n"):r);if(r.verdicts)red(r.verdicts)});
-const clearance=()=>busy(async()=>{const r=await form("/clearance");
-  $("clr").textContent=r.error?"":(r.clear?"Clear":"Not clear: "+r.found.map(f=>f.count+" "+f.prompt).join(", "));show(r.error?r:"Line clearance: "+(r.clear?"clear":"NOT clear"))});
+const inspectNow=btn=>busy(async m=>{const v=await (await fetch("/inspect",{method:"POST"})).json();
+  if(v.error)return show(v,m);
+  if(v.status==="NO_CHECKLIST")return show(v.reasons[0].text,m);
+  show(v.reasons.length>1?"All reasons: "+v.reasons.map(reasonText).join("; "):"",m);red([v],m)},btn);
+const printNow=()=>busy(async m=>{const r=await j("/print");
+  if(r.error)return show(r,m);show((r.status==="PRINT_OK"?"PRINT OK":"HOLD")+(r.reasons.length?"\n"+r.reasons.join("\n"):""),m);
+  m.classList.add("print");m.style.background=r.status==="PRINT_OK"?"var(--pass)":"var(--hold)"});
+const trayNow=()=>busy(async m=>{const r=await j("/tray");
+  show(r.verdicts?r.verdicts.map(v=>"Strip "+(v.strip_id??"-")+": "+v.status+" "+v.reasons.map(reasonText).join("; ")).join("\n"):r,m);if(r.verdicts)red(r.verdicts,m)});
+const clearance=()=>busy(async m=>{const r=await form("/clearance");
+  $("clr").textContent=r.error?"":(r.clear?"Clear":"Not clear: "+r.found.map(f=>f.count+" "+f.prompt).join(", "));show(r.error?r:"Line clearance: "+(r.clear?"clear":"NOT clear"),m)});
 async function batchStart(){const r=await form("/batch/start",{batch:$("bn").value,mfg:$("bm").value,exp:$("be").value,mrp:$("bp").value});
   show(r.error?r:"Batch "+r.batch+" started.")}
 async function leak(x){const r=await form("/leak",{result:x,note:$("bnote").value,samples:$("bsamp").value||0});
@@ -60,8 +63,8 @@ async function batchEnd(){if(!confirm("End this batch? Its batch number cannot b
     foil_issued:$("e-fissued").value,foil_used:$("e-fused").value,foil_returned:$("e-freturned").value,foil_destroyed:$("e-fdestroyed").value,
     strips_limit:$("e-slimit").value,foil_limit:$("e-flimit").value,cleared:$("e-cleared").checked,password:$("e-pw").value,reason:$("e-reason").value});
   $("e-pw").value="";show(r.error?r:"Batch "+r.batch+" ended ("+r.totals.status+").")}
-const describe=()=>busy(async()=>shown(await j("/describe",{text:$("text").value})));
-function shown(r){if(r.error)return show(r);if(r.transcript)$("text").value=r.transcript;show("Check the rules, then Approve.")}
+const describe=()=>busy(async m=>shown(await j("/describe",{text:$("text").value}),m));
+function shown(r,m){if(r.error)return show(r,m);if(r.transcript)$("text").value=r.transcript;show("Check the rules, then Approve.",m)}
 let recId="";
 async function rec(){const q=new URLSearchParams({batch:$("batch").value,operator:$("op").value});
   const r=await fetch("/record?"+q);recId=r.headers.get("X-Record-Id")||"";const html=await r.text();
@@ -234,8 +237,8 @@ function wav(chunks,rate){
   for(let i=0;i<len;i++){const s=Math.max(-1,Math.min(1,all[Math.floor(i*ratio)]));pcm.setInt16(44+i*2,s<0?s*0x8000:s*0x7fff,true)}
   return new Blob([pcm],{type:"audio/wav"});
 }
-const ACTIONS={self_test:()=>post('/selftest',{},selftestSaid),teach:()=>post('/teach',{capture:true},taught),inspect:inspectNow,
-  record:rec,hold:()=>post('/hold',{reason:'operator voice command'},'Line held. QA must resume it.')};
+const ACTIONS={self_test:()=>long('/selftest',{},selftestSaid,$("vcmd")),teach:()=>long('/teach',{capture:true},taught,$("vcmd")),
+  inspect:()=>inspectNow($("vcmd")),record:rec,hold:()=>post('/hold',{reason:'operator voice command'},'Line held. QA must resume it.')};
 async function send(blob,mode){
   show("Working...");$("heard").textContent="";const f=new FormData();f.append("audio",blob,"rule.wav");
   const l=$("lang").value;if(l!=="Auto")f.append("languages",l);
