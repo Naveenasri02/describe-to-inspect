@@ -755,17 +755,20 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
         return paid(run)
 
     def snap(image, v):
-        """Annotated JPEG of a REJECT/HOLD strip in rejects/; returns its file name. Offline: the same finder as the stream."""
-        try:
-            lay = find_layout(image, st.checklist, None, st._template)
-        except Exception:
-            lay = None
+        """Annotated JPEG of a REJECT/HOLD strip in rejects/; returns its file name. Drawn on the layout the strip was
+        judged on; the offline finder (as the stream) only for a verdict without one, e.g. an inspection error."""
+        lay = v.layout
+        if lay is None:
+            try:
+                lay = find_layout(image, st.checklist, None, st._template)
+            except Exception:
+                lay = None
         f = image.copy()
         sb = tuple(int(v) for v in lay.strip_box) if lay and lay.strip_box else None
         if sb:
             cv2.rectangle(f, sb[:2], sb[2:], BLUE, 3)
         bad = {r["pocket"]: r["rule"] for r in v.reasons if r.get("pocket") is not None}
-        draw_pockets(f, lay.pockets if lay and lay.ok else [], set(bad), bad)
+        draw_pockets(f, lay.pockets if lay else [], set(bad), bad)
         if sb and any(r.get("pocket") is None for r in v.reasons):
             cv2.rectangle(f, sb[:2], sb[2:], RED, 5)  # a strip-level reason: the whole outline
         d = product_dir / "rejects"

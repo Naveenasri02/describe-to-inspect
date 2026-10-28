@@ -5,6 +5,7 @@ import threading
 import time
 
 import cv2
+import numpy as np
 import pytest
 from fastapi.testclient import TestClient
 
@@ -16,11 +17,12 @@ from d2i.audit import AuditLog, Users
 from d2i.batch import Batches
 from d2i.checklist import CHECKS, approve
 from d2i.meta_api import SamTrackPoint
+from d2i.pockets import Layout
 from d2i.record import _lines
 from d2i.station import Verdict
 from d2i.supervisor import set_hold
 from d2i.plc import Plc
-from tests.conftest import make_strip
+from tests.conftest import make_strip, pocket_box
 from tests.test_station import CHECKLIST
 
 
@@ -930,6 +932,27 @@ def test_reject_saves_photo_and_logs_name(tmp_path):
     row = _lines(p / "log.jsonl")[-1]
     assert re.fullmatch(r"[0-9]{8}-[0-9]{6}-[0-9]+\.jpg", row["photo"])
     assert cv2.imread(str(p / "rejects" / row["photo"])) is not None
+
+
+def test_reject_photo_draws_the_layout_the_strip_was_judged_on(tmp_path):
+    """Rehearsal: the reject photo ran the offline finder again, which saw no strip on the close-up, so the photo had
+    no outline and no red box. It now draws the verdict's own layout (no second search)."""
+    c, p = bench(tmp_path)
+    st = c.app.state.station
+
+    def judged(image, sid, name):
+        v = Verdict("REJECT", [st._reason("empty_pocket", 6)], strip_id=sid, image_name=name)
+        v.layout = Layout((80, 70, 560, 290), [pocket_box(i) for i in range(10)], "sam", True)
+        return v
+    st._judge = judged
+    flat = np.full((360, 640, 3), 128, np.uint8)  # the offline finder sees no strip in this frame
+    assert c.post("/inspect", files=up(flat)).json()["status"] == "REJECT"
+    photo = cv2.imread(str(p / "rejects" / _lines(p / "log.jsonl")[-1]["photo"])).astype(int)
+    near = lambda px, bgr: (np.abs(px - bgr).max(axis=-1) < 50).mean()
+    x0, y0, x1, y1 = pocket_box(6)
+    assert near(photo[y0 + 8:y1 - 8, x0], app_mod.RED) > 0.9  # pocket 7: a red box
+    assert near(photo[y0 + 8:y1 - 8, pocket_box(5)[0]], app_mod.GREEN) > 0.9  # the others green
+    assert near(photo[80:280, 80], app_mod.BLUE) > 0.9  # the strip outline
 
 
 def test_pass_saves_no_photo(tmp_path):
