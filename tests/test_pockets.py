@@ -74,9 +74,9 @@ def test_meta_error_falls_back_to_grid():
 
 def test_network_error_falls_back_to_grid(tmp_path):
     import requests
-    from d2i.meta_api import CREDIT_END_UTC, Budget, MetaClient
+    from d2i.meta_api import Budget, MetaClient
     from tests.conftest import FakeHTTP
-    client = MetaClient(Budget(tmp_path / "s.json", clock=lambda: CREDIT_END_UTC - 3600), key="k",
+    client = MetaClient(Budget(tmp_path / "s.json"), key="k",
                         http=FakeHTTP([requests.ConnectionError("no route to api.meta.ai")]))
     lay = find_layout(make_strip(), CL, client)
     assert lay.source == "grid" and lay.ok

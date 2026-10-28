@@ -53,10 +53,10 @@ def test_approve_versions(tmp_path):
 
 
 def test_make_checklist_uses_full_answer_budget(tmp_path):
-    from d2i.meta_api import Budget, CREDIT_END_UTC, MetaClient
+    from d2i.meta_api import Budget, MetaClient
     from tests.conftest import FakeHTTP
     answer = {"product": "p", "rows": 2, "per_row": 5, "item": "tablet", "reject_if": ["empty_pocket"], "unclear": []}
     http = FakeHTTP([{"choices": [{"message": {"content": __import__("json").dumps(answer)}}], "usage": {}}])
-    client = MetaClient(Budget(tmp_path / "s.json", clock=lambda: CREDIT_END_UTC - 3600), key="k", http=http)
+    client = MetaClient(Budget(tmp_path / "s.json"), key="k", http=http)
     make_checklist("Ten tablets in two rows of five.", client)
     assert http.calls[0]["json"]["max_tokens"] == 4000 and http.calls[0]["json"]["reasoning_effort"] == "low"

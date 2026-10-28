@@ -12,7 +12,6 @@ import threading
 import time
 import wave
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from pathlib import Path
 
 import cv2
@@ -25,7 +24,6 @@ from d2i import trace
 API = "https://api.meta.ai/v1"
 KEY_FILE = Path.home() / ".secrets" / "meta_model_api_key.txt"
 LIMIT_USD = 50.0
-CREDIT_END_UTC = datetime(2026, 11, 5, 2, 0, tzinfo=timezone.utc).timestamp()
 DEFAULT_SPEND = Path(__file__).resolve().parent.parent / "meta_spend.json"  # the one spend file, at the repo root
 _SPEND_LOCK = threading.Lock()  # read-check-write of the spend file as one step, across all Budget objects
 
@@ -65,8 +63,8 @@ class MetaError(RuntimeError):
 class Budget:
     """The spend total lives only in the file, so every Budget on it (app, agent chat, tools) shares one $50 stop."""
 
-    def __init__(self, path: Path | None = None, limit: float = LIMIT_USD, clock=time.time):
-        self.path, self.limit, self.clock = Path(path or DEFAULT_SPEND), limit, clock
+    def __init__(self, path: Path | None = None, limit: float = LIMIT_USD):
+        self.path, self.limit = Path(path or DEFAULT_SPEND), limit
 
     def _read(self) -> float:
         if not self.path.exists():
@@ -90,8 +88,6 @@ class Budget:
             return self._read()
 
     def reserve(self, worst: float) -> None:
-        if self.clock() > CREDIT_END_UTC and os.environ.get("D2I_ALLOW_PAID") != "1":
-            raise BudgetExceeded("free credit window ended (set D2I_ALLOW_PAID=1 to pay with the card)")
         with _SPEND_LOCK:
             spent = self._read()
             if spent + worst > self.limit:

@@ -13,7 +13,7 @@ from d2i.audit import AuditLog, Users
 from d2i.checklist import approve
 from d2i.judge import Judge
 from d2i.llm import ToolChat
-from d2i.meta_api import CREDIT_END_UTC, Budget
+from d2i.meta_api import Budget
 from d2i.plc import Plc
 from d2i.station import Station
 from d2i.supervisor import MAX_STEPS, MODEL_DOWN, STEP_LIMIT, Supervisor, baseline_from, resume_line
@@ -48,7 +48,7 @@ class ScriptedChat:
 
 
 def budget(tmp_path):
-    return Budget(tmp_path / "spend.json", clock=lambda: CREDIT_END_UTC - 3600)
+    return Budget(tmp_path / "spend.json")
 
 
 @pytest.fixture(scope="module")

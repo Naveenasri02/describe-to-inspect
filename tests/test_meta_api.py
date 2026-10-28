@@ -6,14 +6,12 @@ import cv2
 import numpy as np
 import pytest
 
-from d2i.meta_api import (CREDIT_END_UTC, Budget, BudgetExceeded, MetaClient, MetaError, SamObject)
+from d2i.meta_api import (Budget, BudgetExceeded, MetaClient, MetaError, SamObject)
 from tests.conftest import FakeHTTP, responses_body, sam_text
-
-BEFORE_END = CREDIT_END_UTC - 3600
 
 
 def budget(tmp_path, limit=50.0):
-    return Budget(tmp_path / "spend.json", limit=limit, clock=lambda: BEFORE_END)
+    return Budget(tmp_path / "spend.json", limit=limit)
 
 
 def chat_body(content, prompt_tokens=100, completion_tokens=10):
@@ -53,7 +51,7 @@ def test_corrupt_spend_file_refuses_paid_calls(tmp_path):
     import d2i.meta_api as m
     assert m.DEFAULT_SPEND.name == "meta_spend.json" and Budget().path == m.DEFAULT_SPEND
     m.DEFAULT_SPEND.write_text("garbage")
-    b = Budget(clock=lambda: BEFORE_END)  # building it does not crash
+    b = Budget()  # building it does not crash
     with pytest.raises(BudgetExceeded, match="^spend file unreadable — check meta_spend.json$"):
         b.reserve(0.01)
     assert m.DEFAULT_SPEND.read_text() == "garbage"  # never reset to $0
@@ -72,16 +70,6 @@ def test_concurrent_reserves_lose_no_spend(tmp_path):
     for t in threads:
         t.join()
     assert budgets[0].spent == pytest.approx(2.0)
-
-
-def test_budget_refuses_after_credit_window(tmp_path, monkeypatch):
-    monkeypatch.delenv("D2I_ALLOW_PAID", raising=False)
-    b = Budget(tmp_path / "spend.json", clock=lambda: CREDIT_END_UTC + 1)
-    with pytest.raises(BudgetExceeded, match="window"):
-        b.reserve(0.01)
-    monkeypatch.setenv("D2I_ALLOW_PAID", "1")
-    b.reserve(0.01)
-    assert b.spent == pytest.approx(0.01)
 
 
 def test_spark_json_sends_schema_and_settles(tmp_path):

@@ -114,9 +114,9 @@ def test_agent_text_in_the_audit_table_carries_the_credit(product):
 
 def test_record_builds_when_network_is_down(product):
     import requests
-    from d2i.meta_api import CREDIT_END_UTC, Budget, MetaClient
+    from d2i.meta_api import Budget, MetaClient
     from tests.conftest import FakeHTTP
-    client = MetaClient(Budget(product / "s.json", clock=lambda: CREDIT_END_UTC - 3600), key="k",
+    client = MetaClient(Budget(product / "s.json"), key="k",
                         http=FakeHTTP([requests.Timeout("read timed out")]))
     html = shift_record(product, 0, T0 + 100, "B", "A", client=client)
     assert "DRAFT — needs QA signature" in html and "Summary not available" in html
