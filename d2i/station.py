@@ -195,13 +195,14 @@ class Station:
         if lay.note == "no strip":
             v.status = "NO_STRIP"
             return v
-        if not lay.ok:
+        cut = bool(lay.pills and self.strip_profile and strip_check(lay, self.strip_profile))
+        if not lay.ok and not cut:  # a strip cut wrong no longer fits the taught pattern: it is named cut, below
             v.status, v.reasons = "HOLD", [{"rule": 1, "check": "count", "pocket": None,
                                             "text": f"Rule 1 failed: {lay.note}", "severity": "major"}]
             return v
         v.pocket_scores = self.judge.score_pockets(image, lay)
         listed, unlisted, measured = [], [], set()
-        if lay.pills and self.strip_profile and strip_check(lay, self.strip_profile):
+        if cut:
             # the taught pocket template no longer fits a mis-sized strip, so per-pocket findings would be false
             self._find("strip_cut", listed, unlisted)
             v.skipped.append("pocket checks (strip cut)")

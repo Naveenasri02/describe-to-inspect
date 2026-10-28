@@ -41,7 +41,7 @@ def test_paint_is_seeded():
     assert np.array_equal(a, b) and not np.array_equal(a, img)
 
 
-@pytest.mark.parametrize("kind", ["double_tablet", "wrong_tablet", "tablet_spot"])
+@pytest.mark.parametrize("kind", ["wrong_tablet", "tablet_spot"])
 @pytest.mark.parametrize("pocket", [0, 7])
 def test_tablet_kinds_change_only_inside_pocket(kind, pocket):
     img = make_strip()
@@ -62,3 +62,18 @@ def test_paint_strip_cut_changes_end_only():
     assert (diff[:, :int(cut) - 1] > 0).sum() == 0, "only the end changes"
     assert (diff[:, int(cut):] > 20).sum() >= 300
     assert abs(out[STRIP_BOX[1]:STRIP_BOX[3], int(cut) + 2:STRIP_BOX[2]].mean() - np.median(img[:20])) < 15
+
+
+@pytest.mark.parametrize("pocket", [2, 4])  # a middle pocket and one at the strip's end
+def test_double_tablet_shows_past_a_pocket_box_that_hugs_the_tablet(pocket):
+    """Rehearsal p17 pocket 5: the pocket box is SAM's pill box, which hugs one tablet; the copy clipped to it was a
+    tablet with a straight cut edge, SAM saw one normal pill and the station named it broken. Two tablets in one
+    pocket overlap past that box; the copy stays on the strip and in the pocket's rows."""
+    img = make_strip()
+    cx, cy = 128 + 96 * pocket, 125  # make_strip tablet centre, radius 30
+    x0, y0, x1, y1 = box = (cx - 39, cy - 39, cx + 39, cy + 39)  # an ImageSam / SAM pill box
+    out = paint(img, box, "double_tablet", STRIP_BOX, np.random.default_rng(1))
+    diff = np.abs(out.astype(int) - img.astype(int)).max(axis=2)
+    assert (diff[y0:y1, x1:] > 20).sum() >= 300, "the second tablet shows past the box"
+    assert (diff[:, :x0] > 0).sum() == 0 and (diff[:y0] > 0).sum() == 0 and (diff[y1:] > 0).sum() == 0
+    assert (diff[:, STRIP_BOX[2]:] > 0).sum() == 0, "kept on the strip"

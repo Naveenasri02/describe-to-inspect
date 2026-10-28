@@ -420,6 +420,56 @@ def test_turned_and_moved_strip_passes_and_an_empty_pocket_is_still_caught(sam_s
         assert v.status == "REJECT" and any(r["check"] == "empty_pocket" and r["pocket"] == 7 for r in v.reasons),             (turn, v.reasons)
 
 
+class DomeSam(ImageSam):
+    """Like SAM 3.1 in the rehearsal: the clear dome of an empty pocket is outlined as a pill too."""
+
+    def sam_image(self, image, prompt):
+        objs = super().sam_image(image, prompt)
+        if prompt == "blister strip":
+            return objs
+        strip = _strip_by_contour(image)
+        for i in range(10):
+            x0, y0, x1, y1 = pocket_box(i, strip=strip)
+            if not any(x0 <= (o.box[0] + o.box[2]) / 2 <= x1 and y0 <= (o.box[1] + o.box[3]) / 2 <= y1 for o in objs):
+                cx, cy = (x0 + x1) // 2, (y0 + y1) // 2
+                objs.append(SamObject(len(objs), (cx - 40, cy - 40, cx + 40, cy + 40), 0.9, None))
+        return objs
+
+
+def test_empty_pocket_outlined_by_sam_is_named_empty(tmp_path):
+    """Rehearsal: SAM outlined the painted empty pocket, so it was measured as a different tablet and every self-test
+    said "empty_pocket: caught, named wrong". A real empty pocket (bare foil under the dome) is named empty too."""
+    approve(CHECKLIST, "Priya", tmp_path / "checklists.jsonl")
+    st = Station(tmp_path, client=DomeSam(), clock=lambda: T0)
+    st.teach([make_strip(seed=i, shift=(i, 0)) for i in range(6)])
+    r = st.self_test(make_strip(seed=12), rng_seed=5, record=False)
+    got = {x["kind"]: x for x in r["results"]}
+    assert got["empty_pocket"]["caught"] and got["empty_pocket"]["named_right"] and r["passed"], r
+    v = st._judge(make_strip(seed=13, missing=(6,)), None, None)
+    assert v.status == "REJECT" and v.reasons[0]["text"] == "Rule 2 failed: pocket 7 is empty", v.reasons
+
+
+class CutSam(ImageSam):
+    """Rehearsal p17_strip_cut: SAM's strip box ended where the cut end began, the taught pockets no longer fitted
+    the tablets and one of them read as outside the pocket pattern."""
+
+    def sam_image(self, image, prompt):
+        objs = super().sam_image(image, prompt)
+        if prompt == "blister strip":
+            x0, y0, x1, y1 = objs[0].box
+            return [SamObject(0, (x0, y0, x0 + int(0.8 * (x1 - x0)), y1), 0.95, None)]
+        return objs + [SamObject(99, (214, 170, 234, 190), 0.9, None)]  # between the rows, off the pattern
+
+
+def test_cut_strip_is_named_cut_when_its_tablets_no_longer_fit_the_pattern(tmp_path):
+    approve(dict(CHECKLIST, reject_if=list(CHECKS)), "Priya", tmp_path / "checklists.jsonl")
+    st = Station(tmp_path, client=ImageSam(), clock=lambda: T0)
+    st.teach([make_strip(seed=i, shift=(i, 0)) for i in range(6)])
+    st.client = CutSam()
+    v = st._judge(make_strip(seed=21), None, None)
+    assert v.status == "REJECT" and [r["check"] for r in v.reasons] == ["strip_cut"], v.reasons
+
+
 def test_teach_records_the_layout_source(sam_station, taught):
     st = sam_station
     assert st.layout_source == "sam" and torch.load(st.dir / "model.pt")["layout_source"] == "sam"

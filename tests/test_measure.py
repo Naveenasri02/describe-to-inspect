@@ -157,3 +157,34 @@ def test_teach_strip_skips_margins_of_photos_with_a_bad_pocket():
     assert p["margin_tol"] == [0.04] * 4 and all(abs(a - b) < 1e-9 for a, b in zip(p["margin_med"], (0.1, 0.2, 0.1, 0.2)))
     p = teach_strip([empty, empty])
     assert p["margin_med"] is None and not strip_check(slay(left=0.5), p) and strip_check(slay(strip=(0, 0, 320, 100)), p)
+
+
+def lab_bgr(L, a, b):
+    return tuple(int(round(v * 255)) for v in cv2.cvtColor(np.float32([[[L, a, b]]]), cv2.COLOR_LAB2BGR)[0, 0])
+
+
+PINK, SILVER = lab_bgr(91.1, 7.6, -1.8), lab_bgr(75.7, -1.0, -10.0)  # rehearsal web17: taught tablet, foil ring
+
+
+def test_foil_coloured_pill_is_an_empty_pocket():
+    """Rehearsal p17 pocket 8: SAM outlined the painted empty pocket as a pill of Lab (75.4, -1.2, -9.5), 19.6 from
+    the taught tablet and 0.6 from the foil around it, and the station named it a different tablet (Rule 5)."""
+    layouts, images = [], []
+    for _ in range(6):
+        img = np.full((140, 140, 3), SILVER, np.uint8)
+        layouts.append(Layout((0, 0, 140, 140), [POCKET], "sam", True, "", [disc(img, 70, 70, 30, PINK)]))
+        images.append(img)
+    prof = teach_profile(images, layouts)
+    box = (40, 40, 100, 100)
+    bare = np.full((140, 140, 3), SILVER, np.uint8)  # the painted empty pocket: foil colour where the tablet was
+    assert pocket_check(bare, POCKET, [box], prof) == "empty_pocket"
+    dome = bare.copy()  # a real empty pocket: the clear dome over the foil, a little lighter, with a highlight
+    disc(dome, 70, 70, 30, lab_bgr(79.0, -1.0, -9.0))
+    cv2.ellipse(dome, (70, 70), (27, 27), 0, 200, 250, (250, 250, 250), 2)
+    assert pocket_check(dome, POCKET, [box], prof) == "empty_pocket"
+    tablet = bare.copy()
+    disc(tablet, 70, 70, 30, PINK)
+    assert pocket_check(tablet, POCKET, [box], prof) is None
+    other = bare.copy()  # a tablet of another colour is still a different tablet
+    disc(other, 70, 70, 30, lab_bgr(85.0, 5.0, 45.0))
+    assert pocket_check(other, POCKET, [box], prof) == "wrong_tablet"

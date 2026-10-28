@@ -2,6 +2,7 @@
 import cv2
 import numpy as np
 
+from d2i.defects import _foil_colour
 from d2i.pockets import upright
 
 
@@ -58,8 +59,14 @@ def teach_profile(images, layouts) -> dict | None:
             "spot_max": float(max(0.01, 2 * col("spot").max())), "area_med": float(np.median(col("area")))}
 
 
+def _foil_lab(image, box):
+    """Lab of the foil in a ring just around a box: what an empty pocket shows through its clear dome."""
+    ring = _foil_colour(image, box, (0, 0, image.shape[1], image.shape[0]))
+    return _lab(np.uint8([[ring]]))[0, 0]
+
+
 def pocket_check(image, pocket, mine, profile) -> str | None:
-    """double_tablet, wrong_tablet or tablet_spot; None for no pill (the judge's job) or a normal one.
+    """empty_pocket, double_tablet, wrong_tablet or tablet_spot; None for no pill (the judge's job) or a normal one.
     pocket: the taught pocket box (the size scale); mine: the pills in this pocket, nearest first."""
     if not mine:
         return None
@@ -68,6 +75,9 @@ def pocket_check(image, pocket, mine, profile) -> str | None:
     f = features(image, pocket, mine[0])
     if f is None:
         return None
+    foil = _delta_e(f["lab"], _foil_lab(image, mine[0]))
+    if foil <= profile["colour_tol"] and foil < _delta_e(f["lab"], profile["lab_med"]):
+        return "empty_pocket"  # SAM outlined the pocket itself: the foil's colour through the dome, not a tablet's
     if f["area"] >= 1.7 * profile["area_med"]:
         return "double_tablet"
     if (abs(f["size"] - profile["size_med"]) > profile["size_tol"]
