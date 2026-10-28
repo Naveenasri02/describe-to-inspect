@@ -52,16 +52,22 @@ def _done(r, ev) -> bool:
     return r["event"] == ev and (ev != "leak" or r.get("result") == "pass")  # a failed leak test is not a done one
 
 
+def due_at(batch: dict, rows: list[dict]) -> dict:
+    """When each hourly check falls due, {"leak": t, "print": t}; None = due now (none done since its clock started).
+    A foil roll change restarts the print-check clock (the leak-test clock keeps running)."""
+    foil = max([batch["time"]] + [r["time"] for r in rows if r["event"] == "foil_change"])
+    out = {}
+    for ev, start in (("leak", batch["time"]), ("print", foil)):
+        last = max((r["time"] for r in rows if _done(r, ev) and r["time"] >= start), default=None)
+        out[ev] = None if last is None else last + IPQC_EVERY_S
+    return out
+
+
 def due(batch: dict, rows: list[dict], now: float) -> list[str]:
     """Leak test due: none since batch start, or the last pass is over an hour old. Print check: the same, but a foil
     roll change restarts its clock (the leak-test clock keeps running)."""
-    foil = max([batch["time"]] + [r["time"] for r in rows if r["event"] == "foil_change"])
-    out = []
-    for ev, text, start in (("leak", "Leak test due", batch["time"]), ("print", "Print check due", foil)):
-        last = max((r["time"] for r in rows if _done(r, ev) and r["time"] >= start), default=None)
-        if last is None or now - last > IPQC_EVERY_S:
-            out.append(text)
-    return out
+    at = due_at(batch, rows)
+    return [text for ev, text in (("leak", "Leak test due"), ("print", "Print check due")) if at[ev] is None or now > at[ev]]
 
 
 def missed_windows(batch: dict, rows: list[dict], until: float) -> list[tuple[str, float, float]]:

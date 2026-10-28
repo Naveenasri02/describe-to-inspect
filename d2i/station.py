@@ -92,13 +92,20 @@ class Station:
         tests = self._selftests()
         if tests and not tests[-1]["passed"]:
             return "Self-test missed: " + (", ".join(tests[-1]["failed"]) or "see result")
-        version = self.checklist and self.checklist["version"]
-        ok = [t for t in tests if t["passed"] and t["checklist_version"] == version and t["taught_at"] == self.taught_at]
-        if not ok:  # also covers a re-teach after the last pass
+        until = self.selftest_until
+        if until is None:  # also covers a re-teach after the last pass
             return "No self-test this shift"
-        if self.clock() - ok[-1]["time"] > self.shift_hours * 3600:
+        if self.clock() > until:
             return f"Last self-test was more than {self.shift_hours:g} hours ago"
         return ""
+
+    @property
+    def selftest_until(self) -> float | None:
+        """When the latest passed self-test of this checklist and teaching runs out; None when there is none."""
+        version = self.checklist and self.checklist["version"]
+        ok = [t for t in self._selftests() if t["passed"] and t["checklist_version"] == version
+              and t["taught_at"] == self.taught_at]
+        return ok[-1]["time"] + self.shift_hours * 3600 if ok else None
 
     @property
     def locked(self) -> bool:

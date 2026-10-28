@@ -818,6 +818,133 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
     def stream():
         return StreamingResponse(frames(), media_type="multipart/x-mixed-replace; boundary=f")
 
+    # --- Line board (read-only): the stack light with reasons. The state is worked out after every POST and on every
+    # /status and /line poll (time-driven changes, the agent's thread); each change appends one row to states.jsonl ---
+    from collections import Counter
+    from d2i.ipqc import due_at
+    from d2i.linestate import RELEASE, finder_down, investigating, line_state, read_rows, record_change, segments
+    from d2i.openitems import _t, open_items
+
+    states_path = product_dir / "states.jsonl"
+
+    def batch_rows(b):
+        return [r for r in log_rows() if b and r.get("batch") == b["batch"]]
+
+    def line_now(request):
+        """(status, line state, open items, now); appends to states.jsonl when the state changed."""
+        s, now = status(request), clock()
+        held_by, sup = hold_state(product_dir)[1], inv["sup"]
+        items = open_items(product_dir, now, requests=list(sup.pending.values()) if sup else [])
+        ls = line_state({"checklist": bool(s["checklist"]), "taught": s["taught"], "locked": s["locked"],
+                         "lock_reason": s["lock_reason"], "batch_open": bool(s["batch"]), "blockers": s["blockers"],
+                         "held": s["held"], "held_by": held_by,
+                         "hold_reason": s["hold_reason"] or ("Shift Supervisor investigating" if held_by == "supervisor" else ""),
+                         "quarantine": s["quarantine_count"] or s["quarantine_error"],
+                         "suspended": finder_down(batch_rows(s["batch"]), st._selftests()),
+                         "record_unsigned": any(i["kind"] == "record_unsigned" for i in items)})
+
+        def why(prev):
+            cause, by = ls["reason"], ls["by"]
+            if prev and prev["to"] == "HELD":  # QA lifted the hold: their name and reason
+                r = next((e for e in reversed(audit.entries()) if _t(e["at"]) >= int(prev["time"]) and (
+                    e["action"] == "resume_line" or (e["action"] == "agent_approve" and e["details"].get("kind") == "resume"
+                                                     and e["details"].get("approved")))), None)
+                if r:
+                    cause, by = "Resumed: " + r["reason"], r["user"]
+            cause = cause or {"STARTING": "Batch released", "SUSPENDED": "Pocket finder answered",
+                              "STOPPED": "Station unlocked"}.get(prev and prev["to"], "Line running")
+            m = re.search(r"\bRule (\d+)\b", cause)
+            return cause, by, int(m.group(1)) if m else None, s["totals"]["inspected"] if s["totals"] else None
+
+        record_change(states_path, now, ls["state"], why)
+        return s, ls, items, now
+
+    @app.middleware("http")
+    async def line_state_log(request: Request, call_next):
+        response = await call_next(request)
+        if request.method == "POST" or request.url.path == "/status":
+            try:
+                await run_in_threadpool(line_now, request)
+            except Exception:
+                pass  # the state log never fails a request; the next poll writes the change
+        return response
+
+    @app.get("/board", response_class=HTMLResponse)
+    def board():
+        return (STATIC / "line.html").read_text(encoding="utf-8")
+
+    @app.get("/line")
+    def line(request: Request):
+        def run():
+            s, ls, items, now = line_now(request)
+            cur = s["batch"] or next((r for r in reversed(batches.rows) if r["event"] == "start"), None)  # else the last
+            mine, rows, sup = batch_rows(cur), log_rows(), inv["sup"]
+            last = mine[-1] if mine else None
+            first = next((r for r in (last or {}).get("reasons", []) if r.get("rule") is not None), None)
+            names = {int(m[1]): m[2] for m in (re.match(r"Rule (\d+)(?: \(\w+\))?: (.*)", t) for t in s["rules"]) if m}
+
+            def per_rule(rs):  # a strip counts once per rule
+                return Counter(k for r in rs if r["status"] == "REJECT" for k in {x.get("rule") for x in r["reasons"]}
+                               if k is not None)
+
+            def recent(r):
+                try:
+                    return _t(r["at"]) >= now - 3600
+                except (KeyError, TypeError, ValueError):
+                    return False
+
+            nb, nh = per_rule(mine), per_rule([r for r in rows if recent(r)])
+            due = []
+            if s["batch"]:
+                at = due_at(s["batch"], check_events(product_dir, s["batch"]["batch"]))
+                due = [{"name": n, "in": None if at[k] is None else at[k] - now} for k, n in (("leak", "Leak test"),
+                                                                                              ("print", "Print check"))]
+            until = st.selftest_until
+            due.append({"name": "Self-test expires", "in": None if until is None else until - now})
+            runs = record._lines(product_dir / "challenge_runs.jsonl")
+            run_ = runs[-1] if runs else None
+            known = bool(s["batch"]) and all(b in RELEASE for b in s["blockers"])  # an unreadable record ticks nothing
+            phys = next((e for e in reversed(audit.entries()) if e["action"] == "physical_challenge"), None)
+            states_ = read_rows(states_path)
+            day = datetime.fromtimestamp(now).replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+            segs, lost = segments(states_, day, now), {}
+            for g in segs:
+                if g["state"] in ("HELD", "STOPPED"):
+                    lost[(g["state"], g["cause"])] = lost.get((g["state"], g["cause"]), 0) + g["seconds"]
+            ok, bad = audit.verify()
+            unsigned = any(i["kind"] == "record_unsigned" for i in items)
+            sign = next((e for e in reversed(audit.entries()) if e["action"] == "sign"), None) \
+                if cur and not s["batch"] and not unsigned else None
+            cl = s["checklist"] or {}
+            return {
+                "now": now, "state": ls["state"], "since": states_[-1]["time"] if states_ else now, "reason": ls["reason"],
+                "by": ls["by"], "waiting_for": ls["waiting_for"], "also": ls["also"],
+                "investigating": investigating(inv["running"], [x["tool"] for x in sup.steps] if sup else [],
+                                               len(sup.pending) if sup else 0),
+                "product": cl.get("product"), "count": cl.get("count"), "checklist_version": s["checklist_version"],
+                "batch": cur and {k: cur[k] for k in ("batch", "mfg", "exp", "mrp")} | {"open": bool(s["batch"])},
+                "release": [{"item": x, "done": known and x not in s["blockers"]} for x in RELEASE],
+                "chip": last and {"status": last["status"], "rule": first and first["rule"], "at": last.get("at"),
+                                  "text": first["text"] if first else "; ".join(r.get("text", "") for r in last["reasons"]),
+                                  "strip": sum(r["status"] != "LOCKED" for r in mine)},
+                "waiting": [dict(i, age=now - i["since"]) for i in items], "due": due,
+                "challenge": {"time": run_["time"], "passed": run_["passed"]} if run_ else
+                {"time": _t(phys["at"]), "label": phys["details"].get("strip_label"), "ejected": phys["details"].get("ejected")}
+                if phys else None,
+                "challenge_set": (product_dir / "challenge_set.json").exists(),
+                "counts": reconcile(mine, cur["batch"]) if cur else None,
+                "reconciliation": s["reconciliation"],
+                "reject_run": {"n": reject_run(rows, s["batch"]["batch"], last_resume()) if s["batch"] else 0,
+                               "of": DRIFT_REJECTS},
+                "rejects_by_rule": [{"rule": k, "text": names.get(k, ""), "batch": nb[k], "hour": nh[k]}
+                                    for k in sorted(set(nb) | set(nh), key=lambda k: (-nb[k], -nh[k], k))],
+                "day_start": day, "segments": segs,
+                "lost": [{"state": k[0], "cause": k[1], "seconds": round(v, 1)} for k, v in lost.items()],
+                "footer": {"audit_ok": ok, "audit_entries": len(audit.entries()), "audit_broken_at": bad,
+                           "record": None if not cur else "draft" if s["batch"] or unsigned else "signed",
+                           "signed_by": sign and sign["user"], "signed_at": sign and _t(sign["at"])}}
+        return paid(run)
+
     return app
 
 

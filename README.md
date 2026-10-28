@@ -62,6 +62,7 @@ The batch is the unit of work. All of this is logged and printed in the shift re
 5. **Foil change.** "Foil roll changed" starts the hourly clock again; the next print check is due after it.
 6. **Drift rule.** Three rejects in a row hold the line, and so does any critical reject, a wrong print or a failed leak test (a failed leak test also stays due until one passes). QA resumes the line with the QA password and a reason.
 7. **Reconciliation.** "End batch" counts inspected = passed + rejected + held + no strip and writes whether the totals balance.
+8. **Line board (read-only).** `/board` is the stack light with reasons, for a screen beside the line: the state (IDLE, STARTING, RUNNING, HELD, SUSPENDED, STOPPED, COMPLETE), why, since when, what waits for a person and who must act, what is due next, the batch counts, rejects by rule and today's timeline. It refreshes every second, needs no login and has no buttons: every action stays on the station behind a personal login. Each state change is appended to `data/<product>/states.jsonl` (time, from, to, cause, by, rule, strip). It is also linked from the System tab.
 
 ## Run it
 
