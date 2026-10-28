@@ -101,6 +101,7 @@ main{flex:1;min-height:0;display:flex;flex-direction:column}
 .status .brand::before{display:none}
 /* Run: physical challenge run, one row under the verdict */
 .chal{flex:none;margin:0 20px 14px;padding:12px 18px;display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+.run:has(+ .chal:not([hidden])){min-height:auto}  /* the row below never covers the action buttons: the tab scrolls */
 .chal>b{font-size:16px}
 .chal #chnext{font-size:18px;font-weight:600}
 .chal img{height:56px;border-radius:4px;border:1px solid var(--rule)}
