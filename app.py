@@ -154,6 +154,8 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
         return state["last"]
 
     def station_hold(reason):  # the existing hold (hold.json + PLC coil + audit), raised by the station itself
+        if held_now():  # already held: the first hold stays open, no second one
+            return
         hold_line(product_dir, plc or _NoPlc(), audit, "station", reason)
 
     def last_resume():  # Unix time of the latest QA "Resume line" (audit log, UTC), 0 if none

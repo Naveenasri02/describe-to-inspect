@@ -713,3 +713,14 @@ def test_failing_hold_still_records_the_print(tmp_path, monkeypatch):
     monkeypatch.setattr(app_mod, "hold_line", lambda *a: 1 / 0)
     assert "error" in c.post("/print", files=up(make_strip(seed=1))).json()
     assert _lines(p / "prints.jsonl")[0]["status"] == "HOLD"
+
+
+def test_wrong_print_while_held_adds_no_second_hold(tmp_path):
+    read = {"batch": "B9", "mfg": "01/2026", "exp": "01/2028", "mrp": "45", "readable": True}
+    c, p = _print_bench(tmp_path, read=read)
+    c.post("/hold", json={})
+    first = (p / "hold.json").read_text(encoding="utf-8")
+    n = len(_holds(p))
+    assert c.post("/print", files=up(make_strip(seed=1))).json()["status"] == "HOLD"
+    assert len(_lines(p / "prints.jsonl")) == 1 and len(_holds(p)) == n
+    assert (p / "hold.json").read_text(encoding="utf-8") == first
