@@ -519,6 +519,24 @@ def test_teach_measures_each_photo_turn_against_the_taught_pockets(tmp_path):
     assert all(abs(a) < 1e-3 for a in seen), seen
 
 
+def test_tablet_size_does_not_change_when_the_strip_is_turned(tmp_path):
+    """Review: on a turned strip the taught pockets were stretched over the upright box around it, so tablets read
+    about 6% small at 3 deg (half the 12% tolerance) and a tablet 15% larger read only 8% larger and passed."""
+    from d2i.measure import features
+    approve(dict(CHECKLIST, reject_if=list(CHECKS)), "Priya", tmp_path / "checklists.jsonl")
+    st = Station(tmp_path, client=ImageSam(), clock=lambda: T0)
+    st.teach([make_strip(seed=i, shift=(i, 0)) for i in range(6)])
+    sizes = []
+    for turn in (0.0, 3.0):
+        good = make_strip(seed=15, shift=(10, 6), turn=turn)
+        lay = st._layout(good)
+        sizes.append(features(good, lay.slots[0], lay.in_pocket[0][0])["size"])
+        assert st._judge(good, None, None).status == "PASS", turn
+        v = st._judge(make_strip(seed=15, shift=(10, 6), turn=turn, big=(3,)), None, None)
+        assert any(r["check"] == "wrong_tablet" and r["pocket"] == 4 for r in v.reasons), (turn, v.reasons)
+    assert abs(sizes[1] - sizes[0]) < 0.02, sizes
+
+
 def test_teach_records_the_layout_source(sam_station, taught):
     st = sam_station
     assert st.layout_source == "sam" and torch.load(st.dir / "model.pt")["layout_source"] == "sam"

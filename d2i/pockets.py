@@ -79,6 +79,18 @@ def framed(strip, shape) -> bool:
     return strip[0] <= e or strip[1] <= e or strip[2] >= shape[1] - e or strip[3] >= shape[0] - e
 
 
+def _on_turned(strip, template, angle):
+    """The taught pocket boxes on a strip turned by `angle` (radians): centres turned with the strip about its centre,
+    sizes from its own straightened size, so a tablet measures the same however the strip lies."""
+    (cx, cy), (tw, th), c, s = _centre(strip), upright(strip, angle), np.cos(angle), np.sin(angle)
+    out = []
+    for x0, y0, x1, y1 in template:
+        x, y = ((x0 + x1) / 2 - 0.5) * tw, ((y0 + y1) / 2 - 0.5) * th
+        px, py, hw, hh = cx + c * x - s * y, cy + s * x + c * y, (x1 - x0) * tw / 2, (y1 - y0) * th / 2
+        out.append((round(px - hw), round(py - hh), round(px + hw), round(py + hh)))
+    return out
+
+
 def turn_of(lay, template) -> float:
     """How far a taught photo's strip is turned against the taught pockets (radians), from its pills in order."""
     return _turn([_centre(s) for s in _from_template(lay.strip_box, template)], [_centre(b) for b in lay.pockets])
@@ -202,9 +214,12 @@ def find_layout(image: np.ndarray, cl: dict, client=None, template=None) -> Layo
                 return Layout(strip, pockets, source, ok, note, pills)  # its turn: Station.teach, against the taught pockets
             slots = _from_template(strip, template)
             mine, stray = _follow(slots, pills)  # crops follow the real tablets: a turned strip is not judged askew
-            pockets = [m[0] if m else s for s, m in zip(slots, mine)]  # a pocket with no pill keeps its taught box
             held = [(s, m[0]) for s, m in zip(slots, mine) if m]
             angle = 0.0 if at_edge else _turn([_centre(s) for s, _ in held], [_centre(b) for _, b in held])
+            if angle:  # the taught pockets on the strip as it lies, not stretched over the bigger upright box around it
+                slots = _on_turned(strip, template, angle)  # (tablets read 6% small at 3 deg)
+                mine, stray = _follow(slots, pills)
+            pockets = [m[0] if m else s for s, m in zip(slots, mine)]  # a pocket with no pill keeps its taught box
             note = "object outside the pocket pattern" if stray else ""
             return Layout(strip, pockets, source, not note, note, pills, slots, mine, angle)
         except (MetaError, BudgetExceeded):

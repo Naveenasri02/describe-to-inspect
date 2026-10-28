@@ -76,9 +76,10 @@ def pocket_box(i, rows=2, per_row=5, margin=0.06, strip=STRIP_BOX):
             round(x0 + (col + 1 - margin) * cw), round(y0 + (row + 1 - margin) * ch))
 
 
-def make_strip(rows=2, per_row=5, missing=(), cracked=(), torn=False, shift=(0, 0), seed=0, turn=0.0):
+def make_strip(rows=2, per_row=5, missing=(), cracked=(), torn=False, shift=(0, 0), seed=0, turn=0.0, big=()):
     """Synthetic 640x360 blister strip: dark table, silver foil, white tablets in a grid. turn: degrees the strip is
-    placed turned about its centre, drawn turned (not resampled, so the foil keeps its pixel noise)."""
+    placed turned about its centre, drawn turned (not resampled, so the foil keeps its pixel noise). big: pockets
+    whose tablet is 15% larger."""
     rng = np.random.default_rng(seed)
     img = np.full((360, 640, 3), 40, np.uint8)
     x0, y0, x1, y1 = 80 + shift[0], 70 + shift[1], 560 + shift[0], 290 + shift[1]
@@ -104,7 +105,7 @@ def make_strip(rows=2, per_row=5, missing=(), cracked=(), torn=False, shift=(0, 
         cx, cy = at(x0 + (col + 0.5) * cw, y0 + (row + 0.5) * ch)
         if i in missing:
             continue
-        cv2.circle(img, (cx, cy), r, (235, 235, 235), -1)
+        cv2.circle(img, (cx, cy), int(r * 1.15) if i in big else r, (235, 235, 235), -1)
         if i in cracked:
             pts = np.array([[cx - r, cy - 3], [cx - r // 2, cy + 4], [cx, cy - 4],
                             [cx + r // 2, cy + 5], [cx + r, cy - 2]], np.int32)
