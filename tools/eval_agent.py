@@ -78,7 +78,7 @@ def run(product_dir: Path, runs: int, bad_dir: Path, chat=None) -> tuple[str, li
             secs = []
             for i in range(runs):
                 frame = sc["frames"][i % len(sc["frames"])]
-                ask = lambda q, g=sc["name"] in GOOD_IN_VIEW: ("Yes, a known-good strip is under the camera."
+                ask = lambda q, g=sc["name"] in GOOD_IN_VIEW: ("Yes."
                                                                 if g and "good strip" in q.lower() else "No, nothing changed.")
                 sup = Supervisor(st, Plc(port=0), AuditLog(work / "audit.jsonl"), chat, ask,
                                  baseline_from(good), ref, lambda f=frame: f, work / "good")

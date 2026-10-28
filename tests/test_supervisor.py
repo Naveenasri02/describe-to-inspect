@@ -305,6 +305,33 @@ def test_agent_self_test_waits_for_the_operator_to_confirm_a_good_strip(bench):
     assert steps[1]["result"]["passed"] is True  # confirmed: it runs
 
 
+@pytest.mark.parametrize("question, answer, ok", [
+    ("Is a known-good strip under the camera now?", "yes", True),
+    ("Is a known-good strip under the camera now?", "Yes, it is.", True),
+    ("Is a known good strip under the camera?", "ok placed", True),
+    ("Is a good strip under the camera now?", "Done", True),
+    ("Is a known-good strip under the camera now?", "y", True),
+    ("Is the lighting good?", "yes", False),  # not a question about the strip
+    ("Have you got a good strip?", "yes", False),  # not "under the camera"
+    ("Is a known-good strip under the camera now?", "ok give me a minute", False),
+    ("Is a known-good strip under the camera now?", "Okay I will fetch one", False),
+    ("Is a known-good strip under the camera now?", "Yes, but it is the rejected one", False),
+    ("Is a known-good strip under the camera now?", "no", False),
+    ("Is a known-good strip under the camera now?", "not yet", False),
+    ("Is a known-good strip under the camera now?", "wait", False),
+    ("Is a known-good strip under the camera now?", "yes later", False),
+    ("Is a known-good strip under the camera now?", "yes, the bad one", False),
+    ("Is a known-good strip under the camera now?", "no answer", False),  # the screen's timeout
+])
+def test_self_test_gate_needs_a_plain_yes_to_a_good_strip_under_the_camera(bench, question, answer, ok):
+    """Review: "Is the lighting good?" -> "yes", "ok give me a minute", "Okay I will fetch one" and "Yes, but it is
+    the rejected one" all let the self-test run on whatever was in view."""
+    sup = supervisor(bench, ScriptedChat(), make_strip(seed=12))
+    sup._steps = [{"tool": "ask_operator", "args": {"question": question}, "result": answer}]
+    assert sup._good_strip_confirmed() is ok
+    assert "Is a known-good strip under the camera now?" in GOOD_STRIP_FIRST
+
+
 def test_supervisor_sees_the_strip_the_last_inspection_found(bench, monkeypatch):
     """Rehearsal: with a strip in view the offline finder answered "no strip" (camera_shift dx -640,
     compare_to_last_good an error). The tools use the layout of the station's most recent inspection; no paid call."""

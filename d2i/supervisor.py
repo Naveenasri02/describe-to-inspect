@@ -28,9 +28,11 @@ STEP_LIMIT = "Step limit reached — line held, call QA"
 TOO_MANY = "investigation stopped: too many tool calls — call QA"
 MODEL_DOWN = "Model unavailable — line held, call QA"
 GLARE_FLOOR = 0.001  # a few hot pixels on a glare-free baseline are not drift
-GOOD_STRIP_FIRST = ("not run: first ask the operator (ask_operator) whether a known-good strip is under the camera "
-                    "now; run the self-test only after they answer yes")
-YES = re.compile(r"\s*(yes|yeah|yep|y|ok|okay|confirmed)\b", re.I)
+GOOD_STRIP_FIRST = ('not run: first ask the operator (ask_operator) exactly "Is a known-good strip under the camera '
+                    'now?"; run the self-test only after a plain yes')
+# a plain yes, nothing else: "ok give me a minute" or "yes, but it is the rejected one" is not one
+PLAIN_YES = re.compile(r"(yes|y|ok|okay|done|placed)(,? (it is|placed|it is placed))?[.!]?")
+NOT_YES = {"but", "not", "no", "wait", "minute", "will", "later", "rejected", "bad"}
 
 
 def _tool(name, description, **params):
@@ -217,9 +219,13 @@ class Supervisor:
         return dict(camera_shift(lay, self.ref_box), note=lay.note)
 
     def _good_strip_confirmed(self) -> bool:
-        """The operator's latest answer in this investigation to a question about a good strip is yes."""
-        said = [s["result"] for s in self._steps if s["tool"] == "ask_operator" and "good" in str(s["args"]).lower()]
-        return bool(said) and bool(YES.match(str(said[-1])))
+        """The operator's latest answer in this investigation to a question about a good strip under the camera is a
+        plain yes."""
+        asked = lambda s: " ".join(str(s["args"]).lower().replace("-", " ").split())
+        said = [s["result"] for s in self._steps
+                if s["tool"] == "ask_operator" and "good strip" in asked(s) and "camera" in asked(s)]
+        answer = " ".join(str(said[-1]).lower().split()) if said else ""
+        return bool(PLAIN_YES.fullmatch(answer)) and not NOT_YES & set(re.findall(r"[a-z]+", answer))
 
     def _self_test(self):
         if not self._good_strip_confirmed():  # on a bad strip a failed run would lock the station and open quarantine
