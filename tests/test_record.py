@@ -19,6 +19,12 @@ def _at(t):
     return datetime.fromtimestamp(t).isoformat(timespec="seconds")
 
 
+def _human(t):
+    """How the record shows a time: local, e.g. 28 Oct 2026, 13:29:14."""
+    d = datetime.fromtimestamp(t)
+    return f"{d.day} {d:%b %Y, %H:%M:%S}"
+
+
 def _verdict(i, status, reasons=()):
     return {"status": status, "reasons": list(reasons), "pocket_scores": [], "strip_id": i,
             "image_name": f"s{i}.png", "at": _at(T0 + i), "checklist_version": 1}
@@ -163,7 +169,7 @@ def test_record_quarantine_open_until_qa_release(product):
     quarantine = "<h2>Quarantine</h2>"
     assert quarantine not in shift_record(product, 0, now + 100, "B", "A")  # no audit: the old rule
     html = shift_record(product, 0, now + 100, "B", "A", audit=audit)
-    assert quarantine in html and _at(now - 50) in html.split(quarantine)[1]
+    assert quarantine in html and _human(now - 50) in html.split(quarantine)[1]
     release_quarantine(product, audit, users, "qa1", "pw", "re-checked by hand")
     assert quarantine not in shift_record(product, 0, now + 100, "B", "A", audit=audit)
     rows = (product / "audit.jsonl").read_text().splitlines()
@@ -184,7 +190,7 @@ def test_record_has_batch_section_first(product):
         f.write("".join(json.dumps(r) + chr(10) for r in rows))
     html = shift_record(product, T0 - 10, T0 + 100, "", "")
     assert html.index("<h2>Batch</h2>") < html.index("Checklist")
-    for t in ("LOT7", "01/2028", "45.00", "still open", "clear", "FAIL", "bubbles", "Rule 2"):
+    for t in ("LOT7", "01/2028", "45.00", "still open", "Clear", "Failed", "bubbles", "Rule 2"):
         assert t in html
 
 
@@ -197,7 +203,7 @@ def test_totals_list_checks_not_run():
 def test_selftest_section_lists_uncovered_kinds():
     from d2i.record import _selftest_section
     t = {"at": "x", "results": [], "passed": True, "skipped": ["double_tablet"]}
-    assert "did not cover: double_tablet" in _selftest_section([t])
+    assert "did not cover: double tablet" in _selftest_section([t])
 
 
 def test_record_lists_missed_hour(product):
@@ -209,7 +215,7 @@ def test_record_lists_missed_hour(product):
     html = shift_record(product, T0 - 10, T0 + 8000, "", "")
     for t in ("<h2>Release</h2>", "<h2>In-process checks</h2>", "<h2>Reconciliation</h2>", "Balanced", "Start-up print check"):
         assert t in html
-    assert html.count(">missed<") == 3 and html.count("Leak test missed") == 1 and html.count("Print check missed") == 2
+    assert html.count(">Missed<") == 3 and html.count("Leak test missed") == 1 and html.count("Print check missed") == 2
 
 
 def test_record_missed_is_per_kind(product):
@@ -242,3 +248,58 @@ def test_record_shows_reject_thumbnails(product):
     html = shift_record(product, T0 - 10, T0 + 100, "", "")
     assert html.count("<img") == 12 and 'href="/rejects/20261101-000013-13.jpg"' in html
     assert "20261101-000000-0.jpg" not in html and "pocket 7 is empty" in html  # the latest 12, each with its reason
+
+
+def _filled(product):
+    """A batch with release lines, a print check, a leak test, verdicts and a QA specimen signature (UTC in the audit log)."""
+    audit = AuditLog(product / "audit.jsonl")
+    b = Batches(product)
+    b.clearance({"clear": True, "found": []}, "qa1", T0)
+    b.start("LOT9", "01/2026", "01/2028", "45", "qa1", T0 + 60)
+    b.leak("pass", "qa1", "", T0 + 70)
+    pr = {"at": _at(T0 + 80), "time": T0 + 80, "batch": "LOT9", "read": {"batch": "LOT9", "mfg": None}, "status": "PRINT_OK",
+          "reasons": [], "by": "qa1"}
+    (product / "prints.jsonl").write_text(json.dumps(pr) + chr(10), encoding="utf-8")
+    sig = audit.append("specimen_signed", "qa1", {"batch": "LOT9", "print_at": pr["at"]})
+    rows = [dict(_verdict(30, "NO_STRIP"), batch="LOT9"), dict(_verdict(31, "REJECT", [R2]), batch="LOT9", photo="p.jpg")]
+    with (product / "log.jsonl").open("a", encoding="utf-8") as f:
+        f.write("".join(json.dumps(r) + chr(10) for r in rows))
+    return audit, sig
+
+
+def test_record_shows_local_human_times_only(product):
+    import re
+    audit, sig = _filled(product)
+    html = shift_record(product, T0 - 10, T0 + 100, "LOT9", "Asha", audit=audit)
+    assert not re.search(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}", html) and "+00:00" not in html
+    local = datetime.fromisoformat(sig["at"]).astimezone()  # the audit log stores UTC; the record shows station time
+    assert f"{local.day} {local:%b %Y, %H:%M:%S}" in html and _human(T0 + 70) in html
+    assert "+00:00" in (product / "audit.jsonl").read_text()  # display only: the stored value is unchanged
+
+
+def test_record_uses_plain_words_not_codes(product):
+    audit, _ = _filled(product)
+    html = shift_record(product, 0, T0 + 100, "LOT9", "Asha", audit=audit)
+    assert "Print OK" in html and "No strip" in html and "Specimen signed" in html
+    for code in ("PRINT_OK", "NO_STRIP", "empty_pocket", "specimen_signed", "None"):
+        assert code not in html, code
+    assert 'href="/rejects/p.jpg" target="_blank" rel="noopener"' in html
+
+
+def test_record_look_draft_badge_and_fonts(product):
+    html = shift_record(product, T0 - 10, T0 + 100, "B", "A")
+    assert "DRAFT — needs QA signature</span>" in html and "<h1>Shift record</h1>" in html
+    for w in ("Regular", "Medium", "SemiBold", "Bold"):
+        assert f"url(/static/fonts/IBMPlexSans-{w}.woff2)" in html
+    assert "Arial" not in html and "<script" not in html
+
+
+def test_in_process_checks_sort_by_time_not_text(product):
+    b = Batches(product)
+    b.clearance({"clear": True, "found": []}, "qa1", T0)
+    b.start("LOT7", "01/2026", "01/2028", "45", "qa1", T0 + 60)
+    late = T0 + 17 * 86400  # a later month: "1 Feb" sorts before "15 Jan" as text
+    b.leak("pass", "qa1", "", T0 + 70)
+    b.leak("pass", "qa1", "", late)
+    html = shift_record(product, T0 - 10, late + 10, "", "").split("<h2>In-process checks</h2>")[1]
+    assert html.index(_human(T0 + 70)) < html.index(_human(late))
