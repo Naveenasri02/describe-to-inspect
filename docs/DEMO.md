@@ -35,7 +35,7 @@ Notes
 - The line board gets two beats of about 6 s each (1:30 and 2:29), each showing a state a person must act on. It never opens the video and is not in the thumbnail.
 - Type End batch counts that match what the bench saw (the challenge strip and the start-up print strip are not inspected strips): for example "Strips received" 4, "Good tray" 1, "Reject box" 3 (the two rejects and the strip held in the Wi-Fi-off shot), the rest 0. Outside a limit, End batch asks for the QA password and an investigation reason.
 - Signing is refused while anything waits for a person ("Sign refused — still waiting: ..."). Before the End batch shot, approve every request the agent made: a pending request stays on the board and blocks the signature. If the agent asks for a re-teach, approving it locks the station until a self-test passes; take that shot again.
-- Film from "Start batch" to the signature within one hour: a missed hourly check needs a QA review note before the record can be signed.
+- Film from "Start batch" to the signature within one hour: a missed hourly check needs a QA review note before the record can be signed (QA tab, "Missed hourly checks: QA review note", with the QA password).
 - If SAM 3.1 does not answer in a take (outside the Wi-Fi-off shot), the strip is held, not judged; keep the take as proof, or film it again.
 - "Ask about the records" stays out of the video.
 - Say "packaging-line QA", "tamper-evident" and "draft record — QA signs it". Give no accuracy number except what `EVAL.md` holds.
