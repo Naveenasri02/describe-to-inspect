@@ -177,6 +177,13 @@ class Station:
             return v
         v.pocket_scores = self.judge.score_pockets(image, lay)
         listed, unlisted, measured = [], [], set()
+        if lay.pills and self.strip_profile and strip_check(lay, self.strip_profile):
+            # the taught pocket template no longer fits a mis-sized strip, so per-pocket findings would be false
+            self._find("strip_cut", listed, unlisted)
+            v.skipped.append("pocket checks (strip cut)")
+            v.reasons = listed + unlisted
+            v.status = "REJECT" if listed else "HOLD"
+            return v
         if lay.pills and self.profile:
             usable = 0
             for i, pocket in enumerate(lay.pockets):
@@ -190,10 +197,7 @@ class Station:
                 v.skipped.append("tablet measurements")
         else:
             v.skipped.append("tablet measurements")
-        if lay.pills and self.strip_profile:
-            if strip_check(lay, self.strip_profile):
-                self._find("strip_cut", listed, unlisted)
-        else:
+        if not (lay.pills and self.strip_profile):
             v.skipped.append("strip size")
         failing = [i for i, s in enumerate(v.pocket_scores) if s > self.judge.pocket_threshold and i not in measured]
         if failing:

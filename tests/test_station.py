@@ -346,8 +346,8 @@ def test_full_checks_strip_cut_and_empty_pocket(tmp_path):
     good = make_strip(seed=21)
     assert st._judge(good, None, None).status == "PASS"
     v = st._judge(paint(good, pocket_box(0), "strip_cut", STRIP_BOX, np.random.default_rng(3)), None, None)
-    # the shortened strip also remaps the taught pockets, so pocket reasons come with it; strip_cut must be among them
-    assert v.status == "REJECT" and any(x["check"] == "strip_cut" for x in v.reasons), v.reasons
+    assert v.status == "REJECT" and [x["check"] for x in v.reasons] == ["strip_cut"], v.reasons
+    assert v.skipped == ["pocket checks (strip cut)"], v.skipped
     v = st._judge(make_strip(seed=22, missing=(0, 5)), None, None)  # a whole end column empty: pill bounds shrink
     assert v.status == "REJECT" and any(x["check"] == "empty_pocket" for x in v.reasons), v.reasons
     assert not any(x["check"] == "strip_cut" for x in v.reasons), v.reasons
