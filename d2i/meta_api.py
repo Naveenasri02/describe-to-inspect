@@ -32,7 +32,7 @@ SPARK_IN, SPARK_OUT = 1.25e-6, 4.25e-6       # USD per token
 SAM_IMAGE = 2.50 / 1000                        # USD per image
 SAM_FRAME, SAM_MIN_FRAMES = 0.20 / 1000, 50    # USD per video frame, billed minimum
 VOICE_HOUR = 0.18                              # USD per audio hour
-IMAGE_TIMEOUT = 30  # seconds; image calls run inside inspection, which holds the station lock
+IMAGE_TIMEOUT = 45  # seconds; image calls run inside inspection (station lock); 4 at once took up to 35.7 s each
 # longest side sent to SAM 3.1 (it works at about 1000 px): a 1280 x 3487 photo took 13.3 s per call sent whole, 4.4 s
 # at 1024 px; the upload, not the model, set the time. Boxes come back on the full image.
 SAM_SIDE = 1280

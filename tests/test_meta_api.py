@@ -169,14 +169,15 @@ def test_spend_stop_is_never_retried(tmp_path):
     assert http.calls == []
 
 
-def test_image_calls_time_out_after_30_s(tmp_path):
+def test_image_calls_time_out_after_45_s(tmp_path):
+    """Four SAM 3.1 calls in flight at once took up to 35.7 s each in a real self-test: 30 s would cut them off."""
     img = np.zeros((8, 8, 3), np.uint8)
     http = FakeHTTP([responses_body(""), chat_body(json.dumps({"count": 1, "points": [[1, 2]]})), chat_body('{}')])
     client = MetaClient(budget(tmp_path), key="k", http=http)
     client.sam_image(img, "pill")
     client.spark_count(img, "tablet")
     client.spark_json("s", "u", {"type": "object", "properties": {}, "required": []})
-    assert [c["timeout"] for c in http.calls] == [30, 30, 180]
+    assert [c["timeout"] for c in http.calls] == [45, 45, 180]
 
 
 def test_no_key_raises_with_key_file_hint(tmp_path, monkeypatch):
