@@ -177,14 +177,29 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
     def last_resume():  # Unix time of the latest QA "Resume line" (audit log, UTC), 0 if none
         return next((datetime.fromisoformat(e["at"]).timestamp() for e in reversed(audit._rows()) if e["action"] == "resume_line"), 0.0)
 
-    def after_verdicts(vs, no):  # call inside `lock`, after the verdicts are logged
+    def log_rows():  # log.jsonl verdict rows; an unreadable line is skipped, so it never errors /status or /inspect
+        rows = []
+        try:
+            for line in (product_dir / "log.jsonl").read_text(encoding="utf-8", errors="replace").splitlines():
+                try:
+                    row = json.loads(line)
+                    if isinstance(row, dict) and isinstance(row.get("status"), str):
+                        rows.append(row)
+                except ValueError:
+                    pass
+        except OSError:
+            pass
+        return rows
+
+    def after_verdicts(vs, no):  # call inside `lock`, after the verdicts are logged (the last len(vs) log rows)
         if held_now():  # already held: the first hold stays open, no second one
             return
         crit = next((r["text"] for v in vs for r in v.reasons if r.get("severity") == "critical"), None)
+        rows, since = log_rows(), last_resume()
         if crit:
             station_hold("Critical: " + crit)
-        elif reject_run(record._lines(product_dir / "log.jsonl"), no, last_resume()) >= DRIFT_REJECTS:
-            station_hold("3 rejects in a row — check the machine")
+        elif any(reject_run(rows[:n], no, since) >= DRIFT_REJECTS for n in range(len(rows) - len(vs) + 1, len(rows) + 1)):
+            station_hold("3 rejects in a row — check the machine")  # checked after each new verdict: a later pass cannot hide it
 
     def need_batch():  # inspecting without an open batch would leave verdicts no batch owns: refuse, log nothing
         b = batches.open
@@ -221,18 +236,10 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
 
     @app.get("/status")
     def status(request: Request):
-        counts, rows = {}, []
-        try:
-            for line in (product_dir / "log.jsonl").read_text(encoding="utf-8", errors="replace").splitlines():
-                try:
-                    row = json.loads(line)
-                    k = row["status"]
-                    counts[k] = counts.get(k, 0) + 1
-                    rows.append(row)
-                except Exception:
-                    pass  # unreadable line: skip
-        except OSError:
-            pass
+        rows = log_rows()
+        counts = {}
+        for row in rows:
+            counts[row["status"]] = counts.get(row["status"], 0) + 1
         try:
             spent = budget.spent
         except Exception:  # unreadable spend file: shown as unknown; paid calls are refused

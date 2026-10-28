@@ -889,6 +889,55 @@ def test_pass_saves_no_photo(tmp_path):
     assert "photo" not in _lines(p / "log.jsonl")[-1] and not (p / "rejects").exists()
 
 
+def test_held_line_pass_saves_no_photo(tmp_path):
+    c, p = bench(tmp_path)
+    c.app.state.station._judge = lambda image, sid, name: Verdict("PASS", strip_id=sid, image_name=name)
+    c.post("/hold", json={})
+    assert c.post("/inspect", files=up(make_strip(seed=15))).json()["status"] == "HOLD"
+    row = _lines(p / "log.jsonl")[-1]
+    assert row["reasons"][0]["check"] == "line_held" and "photo" not in row and not (p / "rejects").exists()
+
+
+def _tray_bench(tmp_path, monkeypatch, kinds):
+    """/tray returns one logged verdict per kind (None = PASS); no SAM video call, no recording."""
+    clip = tmp_path / "src.mp4"
+    vw = cv2.VideoWriter(str(clip), cv2.VideoWriter_fourcc(*"mp4v"), 15, (640, 360))
+    vw.write(make_strip(seed=12))
+    vw.release()
+    c, p = bench(tmp_path, source=str(clip))
+    _fake_judge(c, "empty_pocket")
+
+    def clip_verdicts(path, station, client, held=False, batch=None):
+        return [station.log(Verdict("REJECT", [station._reason(k, 0)], strip_id=i) if k else Verdict("PASS", strip_id=i),
+                            held, batch) for i, k in enumerate(kinds, 1)]
+    monkeypatch.setattr(app_mod, "record_clip", lambda *a: clip)
+    monkeypatch.setattr(app_mod, "inspect_clip", clip_verdicts)
+    return c, p
+
+
+@pytest.mark.parametrize("kinds, reason", [
+    (["empty_pocket"] * 3 + [None], "3 rejects in a row — check the machine"),  # a pass after the run must not hide it
+    ([None, "wrong_tablet", None], "Critical: Rule 5 failed: pocket 1 has a different tablet")])
+def test_tray_clip_holds_on_drift_or_critical(tmp_path, monkeypatch, kinds, reason):
+    c, p = _tray_bench(tmp_path, monkeypatch, kinds)
+    try:
+        assert [v["status"] for v in c.post("/tray").json()["verdicts"]] == ["REJECT" if k else "PASS" for k in kinds]
+        assert c.get("/status").json()["held"] is True
+        assert [(e["user"], e["reason"]) for e in _holds(p)] == [("station", reason)]
+    finally:
+        c.app.state.source.stop.set()
+
+
+def test_corrupt_log_line_never_errors_inspect(tmp_path):
+    c, p = bench(tmp_path)
+    _fake_judge(c, "empty_pocket")
+    with (p / "log.jsonl").open("a", encoding="utf-8") as f:
+        f.write("not json\n")
+    for _ in range(3):
+        assert c.post("/inspect", files=up(make_strip(seed=15))).json()["status"] == "REJECT"
+    assert c.get("/status").json()["held"] is True
+
+
 def test_rejects_route_refuses_bad_names(tmp_path):
     c, p = bench(tmp_path)
     _fake_judge(c, "empty_pocket")

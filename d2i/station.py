@@ -223,11 +223,12 @@ class Station:
 
     def log(self, v: Verdict, held: bool = False, batch=None, image=None) -> Verdict:
         """Append one verdict to log.jsonl. held: the line is held, so a PASS is logged (and returned) as HOLD."""
-        if held and v.status == "PASS":
+        line_held = held and v.status == "PASS"  # a good strip: no photo, so it never pushes real reject photos out
+        if line_held:
             v.status, v.reasons = "HOLD", [{"rule": None, "check": "line_held", "pocket": None, "text": LINE_HELD}]
         v.at = v.at or self._now()
         row = dict(asdict(v), checklist_version=self.checklist["version"], batch=batch)
-        if image is not None and self.snap and v.status in ("REJECT", "HOLD"):
+        if image is not None and self.snap and v.status in ("REJECT", "HOLD") and not line_held:
             try:
                 row["photo"] = self.snap(image, v)
             except Exception:  # the photo is extra evidence: never lose the verdict row over it

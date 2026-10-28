@@ -49,7 +49,7 @@ async function leak(x){const r=await form("/leak",{result:x,note:$("bnote").valu
   show(r.error?r:"Leak test "+x+" recorded ("+r.samples+" samples).")}
 async function specimen(){const r=await j("/specimen/sign",{password:$("spw").value});$("spw").value="";show(r.error?r:"Start-up specimen signed.")}
 async function foil(){const r=await form("/foil-change");show(r.error?r:"Foil roll change recorded.")}
-async function batchEnd(){const r=await form("/batch/end");show(r.error?r:"Batch "+r.batch+" ended.")}
+async function batchEnd(){if(!confirm("End this batch? Its batch number cannot be used again."))return;const r=await form("/batch/end");show(r.error?r:"Batch "+r.batch+" ended.")}
 async function describe(){show("Working...");shown(await j("/describe",{text:$("text").value}))}
 function shown(r){if(r.error)return show(r);if(r.transcript)$("text").value=r.transcript;show("Check the rules, then Approve.")}
 let recId="";

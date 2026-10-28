@@ -72,3 +72,8 @@ def test_record_frame_loads_photos_but_runs_no_scripts():
     html = open("static/index.html", encoding="utf-8").read()
     box = re.search(r'<iframe id="recframe"[^>]*sandbox="([^"]*)"', html).group(1).split()
     assert "allow-same-origin" in box and "allow-popups" in box and "allow-scripts" not in box
+
+
+def test_end_batch_asks_first():  # a batch number cannot be used again
+    js = (STATIC / "station.js").read_text(encoding="utf-8")
+    assert re.search(r"async function batchEnd\(\)\{if\(!confirm\(", js)
