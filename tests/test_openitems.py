@@ -65,9 +65,18 @@ def test_recheck_open(tmp_path):
     rc = {"open": True, "window_id": "w1", "since": NOW - 120, "from_strip": 41, "to_strip": 58, "total": 18, "done": 5,
           "opened_by": "station", "cause": "wrong print", "waived_by": None, "waiver_reason": None}
     (tmp_path / "recheck.json").write_text(json.dumps(rc), encoding="utf-8")
+    assert open_items(tmp_path, NOW) == []  # no batch open: the window belongs to no batch
+    start(tmp_path, NOW - 600)
     [i] = open_items(tmp_path, NOW)
     assert (i["kind"], i["since"]) == ("recheck", NOW - 120) and "5 of 18" in i["text"] and "41" in i["text"]
     (tmp_path / "recheck.json").write_text(json.dumps(dict(rc, open=False)), encoding="utf-8")
+    assert open_items(tmp_path, NOW) == []
+
+
+def test_recheck_from_another_batch_is_not_waiting(tmp_path):
+    start(tmp_path, NOW - 600, "B2")
+    rc = {"open": True, "since": NOW - 900, "from_strip": 1, "to_strip": 9, "total": 9, "done": 2}  # opened in batch B1
+    (tmp_path / "recheck.json").write_text(json.dumps(rc), encoding="utf-8")
     assert open_items(tmp_path, NOW) == []
 
 

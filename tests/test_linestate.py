@@ -72,12 +72,14 @@ def test_ended_batch_with_unsigned_record_is_complete():
 
 
 # --- the start-up self-test is part of STARTING, not a stop ---
-def test_self_test_due_before_release_is_starting_not_stopped():
-    s = line_state(facts(locked=True, lock_reason="No self-test this shift",
-                         blockers=[BLOCK_SELFTEST, BLOCK_PRINT, BLOCK_SPECIMEN]))
-    assert s["state"] == "STARTING" and s["reason"].startswith("Release 0 of 3")
-    idle = line_state(facts(batch_open=False, locked=True, lock_reason="No self-test this shift"))
-    assert idle["state"] == "IDLE" and idle["also"] == ["No self-test this shift"]
+@pytest.mark.parametrize("why", ["No self-test this shift", "Last self-test was more than 8 hours ago",
+                                 "Checklist changed — teach the station again"])
+def test_any_lock_is_stopped_with_or_without_a_batch(why):
+    """The board shows the stack light's colour: a locked station is red (lamp LOCKED, PLC coil 1) in every case."""
+    s = line_state(facts(locked=True, lock_reason=why, blockers=[BLOCK_SELFTEST, BLOCK_PRINT, BLOCK_SPECIMEN]))
+    assert (s["state"], s["reason"]) == ("STOPPED", why) and s["also"][0].startswith("Release 0 of 3")
+    idle = line_state(facts(batch_open=False, locked=True, lock_reason=why))
+    assert (idle["state"], idle["reason"], idle["also"]) == ("STOPPED", why, ["No batch open"])
 
 
 # --- precedence: Stopped > Held > Suspended > Starting > Execute; the lesser ones show as "also" ---
@@ -115,6 +117,13 @@ def test_finder_down_until_a_later_answer():
 
 
 # --- states.jsonl: one row per change ---
+def test_state_log_never_goes_back_in_time(tmp_path):
+    path = tmp_path / "states.jsonl"
+    record_change(path, 200.0, "HELD", lambda prev: (CRIT, "station", 5, 3))
+    assert record_change(path, 199.5, "RUNNING", lambda prev: ("Line running", None, None, 3)) is None  # a stale snapshot
+    assert [json.loads(x)["to"] for x in path.read_text(encoding="utf-8").splitlines()] == ["HELD"]
+
+
 def test_state_log_written_once_per_change(tmp_path):
     path = tmp_path / "states.jsonl"
     why = lambda prev: ("No batch open", None, None, None)

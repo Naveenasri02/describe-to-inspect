@@ -33,9 +33,10 @@ body{min-width:0;height:100vh;overflow:hidden;background:var(--foil);display:gri
 .lb-timer{grid-column:2;grid-row:1;text-align:right;align-self:center}
 .lb-timer small{display:block;font-size:14px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;opacity:.85}
 .lb-timer b{display:block;font-size:clamp(40px,5vw,68px);font-weight:600;line-height:1}
-.lb-stale{display:none;position:absolute;inset:0;background:repeating-linear-gradient(135deg,rgba(23,32,42,.88) 0 18px,rgba(23,32,42,.8) 18px 36px);
-  color:#fff;font-size:28px;font-weight:700;align-items:center;justify-content:center;text-align:center;padding:0 24px}
+.lb-stale{display:none;position:absolute;inset:0;background:repeating-linear-gradient(135deg,#7B858F 0 18px,#717b85 18px 36px);
+  color:#fff;font-size:30px;font-weight:700;align-items:center;justify-content:center;text-align:center;padding:0 24px}
 body.stale .lb-stale{display:flex}
+body.stale .lb-id,body.stale .lb-main,body.stale .lb-time{opacity:.35;filter:grayscale(1)}  /* old data, not live */
 
 .lb-id{display:grid;grid-template-columns:minmax(0,1.7fr) minmax(0,1fr) minmax(0,.8fr) minmax(0,2.4fr) minmax(0,.55fr) minmax(0,.7fr);background:var(--panel);border-bottom:1px solid var(--rule)}
 .lb-id>div{padding:8px 20px;border-right:1px solid var(--rule);min-width:0}
@@ -169,7 +170,7 @@ const shift=()=>{const h=new Date().getHours();return h>=6&&h<14?"A":h>=14&&h<22
 const WHO={station:"the station",supervisor:"the Shift Supervisor"};
 const CHIP={PASS:["PASS","pass"],REJECT:["REJECT","reject"],HOLD:["HOLD","hold"],NO_STRIP:["NO STRIP","grey"],LOCKED:["LOCKED","reject"]};
 const SHORT={"Self-test for this batch":"Self-test","Start-up print check":"Print check","QA signature on the start-up specimen":"QA specimen"};
-let good=0;  // when the station last answered
+const LOST=3000;let good=Date.now(),busy=false;  // when the station last answered (load = a 3 s grace)
 
 function band(j){
   $("state").className="lb-state s-"+j.state.toLowerCase();$("word").textContent=j.state;
@@ -209,6 +210,7 @@ function due(j){
   const row=(k,v,cls)=>{dl.append(mk("dt",k),mk("dd",v,cls||""))};
   if(!j.batch||!j.batch.open)row("Leak test / print check","no batch open","off");
   j.due.forEach(d=>{const st=d.name==="Self-test expires";
+    if(d.text)return row(d.name,d.text,"late");
     if(d.in==null)return row(d.name,st?"no valid self-test":"due now",st?"late":"soon");
     if(d.in<0)return row(d.name,(st?"expired ":"overdue ")+dur(-d.in),"late");
     row(d.name,"in "+(st?Math.floor(d.in/3600)+" h "+pad(Math.floor(d.in%3600/60))+" min":dur(d.in)),d.in<600?"soon":"")});
@@ -264,12 +266,15 @@ function foot(j){
   r.append(mk("b",f.record==="signed"?"signed"+(f.signed_by?" by "+f.signed_by+" at "+hm(f.signed_at):""):f.record==="draft"?"draft":"none yet"));
 }
 function stale(err){
-  const s=$("stale");s.textContent=err?"Line board cannot read the station records: "+err:good?
-    "Not updated for "+dur((Date.now()-good)/1000)+" — the station is not answering":"Waiting for the station to answer";
-  document.body.classList.toggle("stale",!!err||Date.now()-good>3000);
+  $("stale").textContent=err?"Line board cannot read the station records: "+err:"Line board lost contact with the station — check the station screen";
+  document.body.classList.toggle("stale",!!err||Date.now()-good>LOST);
 }
 async function tick(){
-  let j=null;try{j=await (await fetch("/line",{cache:"no-store"})).json()}catch(e){}
+  if(Date.now()-good>LOST)stale();  // every second: a station that stops answering never leaves the board green
+  if(busy)return;  // one request at a time; a hung one is cut at 2.5 s
+  busy=true;const ac=new AbortController(),cut=setTimeout(()=>ac.abort(),2500);
+  let j=null;try{j=await (await fetch("/line",{cache:"no-store",signal:ac.signal})).json()}catch(e){}
+  clearTimeout(cut);busy=false;
   if(!j||j.error)return stale(j&&j.error);
   good=Date.now();document.body.classList.remove("stale");
   band(j);ident(j);waiting(j);due(j);counts(j);pareto(j);timeline(j);foot(j);

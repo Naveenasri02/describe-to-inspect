@@ -85,7 +85,8 @@ def open_items(product_dir: Path, now: float, requests=()) -> list[dict]:
 
     def recheck():
         rc = json.loads((p / "recheck.json").read_text(encoding="utf-8")) if (p / "recheck.json").exists() else None
-        if rc and rc.get("open"):
+        b = Batches(p).open if rc and rc.get("open") else None
+        if b and rc["since"] >= b["time"]:  # a window left open by another batch is not this batch's re-check
             add("recheck", f"Re-check {rc['done']} of {rc['total']}: strips no. {rc['from_strip']}–{rc['to_strip']}",
                 rc["since"], who="Operator")
 

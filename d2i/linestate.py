@@ -10,7 +10,7 @@ from d2i.ipqc import BLOCK_PRINT, BLOCK_SELFTEST, BLOCK_SPECIMEN
 IDLE, STARTING, RUNNING, HELD, SUSPENDED, STOPPED, COMPLETE = WORDS = (
     "IDLE", "STARTING", "RUNNING", "HELD", "SUSPENDED", "STOPPED", "COMPLETE")
 RELEASE = (BLOCK_SELFTEST, BLOCK_PRINT, BLOCK_SPECIMEN)
-SELFTEST_DUE = ("No self-test this shift", "Last self-test was more than")  # the station's own lock texts
+NO_SELFTEST = "No self-test this shift"  # the station's own lock text; on an untaught station it means teach first
 TEACH = "Teach the station first"
 FINDER = "Pocket finder (SAM 3.1) not answering — each strip held for a hand check"
 _WRITE = threading.Lock()  # read the last row and append as one step: one row per change
@@ -24,18 +24,16 @@ def holder(by: str) -> str:
 def line_state(f: dict) -> dict:
     """f: checklist, taught, locked, lock_reason, batch_open, blockers, held, held_by, hold_reason, quarantine (strips
     waiting for QA), suspended, record_unsigned. The most serious condition wins (STOPPED > HELD > SUSPENDED >
-    STARTING > RUNNING; IDLE or COMPLETE when no batch is open); the lesser ones come back in `also`."""
-    found, notes = [], []  # (state, reason, by, waiting_for), most serious first
+    STARTING > RUNNING; IDLE or COMPLETE when no batch is open); the lesser ones come back in `also`. Any lock is
+    STOPPED, batch or not: the board shows the stack light's colour (the lamp and PLC coil 1 say LOCKED)."""
+    found = []  # (state, reason, by, waiting_for), most serious first
     lr = f["lock_reason"] or ""
     if f["locked"]:
-        if f["checklist"] and not f["taught"] and lr.startswith(SELFTEST_DUE[0]):
+        if f["checklist"] and not f["taught"] and lr.startswith(NO_SELFTEST):
             lr = TEACH
         if lr.startswith("Self-test missed"):
-            found.append((STOPPED, "Self-test failed" + (" — quarantine open" if f["quarantine"] else ""), None, "QA"))
-        elif lr.startswith(SELFTEST_DUE) and not f["batch_open"]:
-            notes.append(lr)  # no batch running: the next batch start-up asks for this self-test anyway
-        elif not (lr.startswith(SELFTEST_DUE) and BLOCK_SELFTEST in f["blockers"]):  # else STARTING lists it
-            found.append((STOPPED, lr, None, "QA"))
+            lr = "Self-test failed" + (" — quarantine open" if f["quarantine"] else "")
+        found.append((STOPPED, lr, None, "QA"))
     if f["held"]:
         found.append((HELD, f["hold_reason"] or "Line held", f["held_by"] or None, "QA"))
     if f["suspended"]:
@@ -52,7 +50,7 @@ def line_state(f: dict) -> dict:
     else:
         found.append((IDLE, "No batch open", None, None))
     state, reason, by, waiting = found[0]
-    also = [r for s, r, _, _ in found[1:] if r and s != IDLE] + notes
+    also = [r for _, r, _, _ in found[1:] if r]
     return {"state": state, "reason": reason, "by": by, "waiting_for": waiting, "also": also}
 
 
@@ -92,12 +90,13 @@ def read_rows(path) -> list[dict]:
 
 def record_change(path, now: float, to: str, why) -> dict | None:
     """Append one row when `to` differs from the last row's state; why(previous row or None) -> (cause, by, rule,
-    strip) is asked only then. The first row ever has from = null (the state before the log began is not known)."""
+    strip) is asked only then. The first row ever has from = null (the state before the log began is not known).
+    A snapshot older than the last row is never appended: the log only moves forward."""
     path = Path(path)
     with _WRITE:
         rows = read_rows(path)
         prev = rows[-1] if rows else None
-        if prev and prev["to"] == to:
+        if prev and (prev["to"] == to or now < prev["time"]):
             return None
         cause, by, rule, strip = why(prev)
         row = {"time": now, "at": datetime.fromtimestamp(now).isoformat(timespec="seconds"),
