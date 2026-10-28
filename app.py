@@ -403,7 +403,7 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
                 return refused
             with lock:  # inspect and publish together so verdicts land in order
                 try:
-                    v = st.inspect(im, held=held_now(), batch=no)
+                    v = st.inspect(im, held=held_now(), batch=no, camera=image is None)  # not an upload
                 except Exception:  # logged and held, never a 500 that leaves the PLC on the previous verdict
                     v = Verdict("HOLD", [{"rule": None, "check": "inspection_error", "pocket": None,
                                           "text": INSPECT_ERROR}], at=st._now())

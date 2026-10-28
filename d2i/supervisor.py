@@ -206,9 +206,9 @@ class Supervisor:
             return args, {"error": f"{type(e).__name__}: {e}"}
 
     def _layout(self, frame):
-        """The strip the station's most recent inspection found (no extra paid call); the offline finder, which
-        missed a strip in view on close-ups, only when there is none."""
-        lay = self.station.last_layout
+        """The strip the station's last camera inspection found while the camera still shows it (no extra paid
+        call); otherwise the offline finder, which missed a strip in view on close-ups, on the frame now."""
+        lay = self.station.layout_for(frame)
         return lay if lay is not None and lay.pockets else find_layout(frame, self.station.checklist, None,
                                                                          self.station.template)
 

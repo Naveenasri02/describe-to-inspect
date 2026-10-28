@@ -7,6 +7,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
 
+import cv2
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -34,6 +35,9 @@ NEED_TEACH = "Teach the station first"
 FINDER_DOWN = {"rule": 1, "check": "finder", "pocket": None,
                "text": "Pocket finder (SAM 3.1) did not answer — check this strip by hand", "severity": "major"}
 NOT_RUN = "Self-test could not run: the pocket finder (SAM 3.1) did not answer — try again"
+# mean grey difference of 32 x 32 thumbnails up to which the camera still shows the inspected view: camera noise or blur
+# 0.1-0.2, an identical strip 0.9; a strip moved 6 px 3.2, a lamp change 18-25, the strip taken away 66
+SAME_VIEW = 3.0
 SELF_TEST_WORKERS = 4  # painted strips judged at once (their SAM 3.1 calls are bounded by pockets.SAM_POOL)
 
 
@@ -53,6 +57,10 @@ class Verdict:
     layout = None  # not a field (kept out of the log row): the Layout this strip was judged on
 
 
+def _thumb(image):
+    return cv2.resize(cv2.cvtColor(image, cv2.COLOR_BGR2GRAY), (32, 32), interpolation=cv2.INTER_AREA).astype(np.float32)
+
+
 def _append(path: Path, row: dict):
     with path.open("a", encoding="utf-8") as f:
         f.write(json.dumps(row, ensure_ascii=False) + "\n")
@@ -62,7 +70,7 @@ class Station:
     def __init__(self, product_dir, client=None, judge=None, shift_hours: float = 8.0, clock=time.time):
         self.dir, self.client, self.shift_hours, self.clock = Path(product_dir), client, shift_hours, clock
         self.snap = None  # set by the app: (image, verdict) -> file name of the saved reject photo
-        self.last_layout = None  # what the most recent inspection found: the supervisor's tools look there, unpaid
+        self._last_view = None  # (layout, frame size, thumbnail) of the last whole camera frame inspected
         self.step = ""  # what a long action is doing now, for the screen
         self.checklist = current(self.dir / "checklists.jsonl")
         model = self.dir / "model.pt"
@@ -256,14 +264,27 @@ class Station:
         v.status = "REJECT" if listed else "HOLD" if unlisted else "PASS"
         return v
 
-    def inspect(self, image, strip_id=None, image_name=None, held: bool = False, batch=None) -> Verdict:
+    def layout_for(self, frame):
+        """The layout of the last camera inspection while the camera still shows that view (same size, nearly the
+        same picture): the supervisor's tools look there, unpaid. None when there is none, or the strip moved, was
+        swapped or taken away."""
+        if self._last_view is None or frame is None:
+            return None
+        lay, size, thumb = self._last_view
+        return lay if frame.shape[:2] == size and np.abs(_thumb(frame) - thumb).mean() <= SAME_VIEW else None
+
+    def inspect(self, image, strip_id=None, image_name=None, held: bool = False, batch=None,
+                camera: bool = False) -> Verdict:
+        """camera: the image is a whole camera frame (not an upload or a tray crop), so its layout is kept for the
+        supervisor."""
         if self.locked:
             v = Verdict("LOCKED", [{"rule": None, "check": "locked", "pocket": None, "text": self.lock_reason}],
                         strip_id=strip_id, image_name=image_name, at=self._now())
         else:
             with self._doing(self._finding):
                 v = self._judge(image, strip_id, image_name)
-            self.last_layout = v.layout
+            if camera:
+                self._last_view = (v.layout, image.shape[:2], _thumb(image))
         return self.log(v, held, batch, image)
 
     def log(self, v: Verdict, held: bool = False, batch=None, image=None) -> Verdict:

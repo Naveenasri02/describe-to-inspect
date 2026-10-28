@@ -311,14 +311,36 @@ def test_supervisor_sees_the_strip_the_last_inspection_found(bench, monkeypatch)
     st = bench.st
     st.self_test(make_strip(seed=12), rng_seed=5)
     frame = make_strip(seed=23, missing=(6,), shift=(20, 0))
-    v = st.inspect(frame)
-    assert v.status == "REJECT" and st.last_layout is v.layout and len(v.layout.pockets) == 10
+    v = st.inspect(frame, camera=True)
+    assert v.status == "REJECT" and st.layout_for(frame) is v.layout and len(v.layout.pockets) == 10
     blind = lambda *a, **k: Layout((0, 0, 0, 0), [], "grid", False, "no strip")
     monkeypatch.setattr("d2i.supervisor.find_layout", blind)  # what the offline finder said on the close-up
     chat = ScriptedChat(calls(("camera_shift", {}), ("compare_to_last_good", {"pocket": 7})), say("Pocket 7 empty."))
     shift, cmp = (s["result"] for s in supervisor(bench, chat, frame).investigate("x")["steps"])
     assert shift == {"dx": 20.0, "dy": 0.0, "drift": False, "note": ""}, shift
     assert cmp["pocket"] == 7 and cmp["score"] > cmp["threshold"] and Path(cmp["evidence"]).exists(), cmp
+
+
+def test_supervisor_uses_the_last_layout_only_for_the_view_it_was_found_in(bench):
+    """Review: a tray crop (or an uploaded photo) left its layout in crop coordinates, and a moved or swapped strip
+    left a stale one; camera_shift compared it with the full-frame box. Only a whole camera frame's layout is kept, and
+    only while the camera still shows that view; otherwise the contour finder looks at the frame now."""
+    st = bench.st
+    st.self_test(make_strip(seed=12), rng_seed=5)
+    frame = make_strip(seed=23, missing=(6,), shift=(20, 0))
+    crop = frame[50:310, 60:600]
+    st.inspect(crop)  # a tray crop or an upload: not the camera's view
+    assert st.layout_for(frame) is None and st.layout_for(crop) is None
+    shift = supervisor(bench, ScriptedChat(calls(("camera_shift", {})), say("x")), frame).investigate("x")["steps"]
+    assert shift[0]["result"]["dx"] == 20.0, shift  # measured on the frame, not with the crop's layout
+    v = st.inspect(frame, camera=True)
+    assert st.layout_for(frame) is v.layout
+    assert st.layout_for(make_strip(seed=24, missing=(6,), shift=(20, 0))) is v.layout  # only camera noise changed
+    moved = make_strip(seed=23, missing=(6,), shift=(60, 0))
+    for changed in (moved, np.full_like(frame, 40), crop):  # moved, strip taken away, another size
+        assert st.layout_for(changed) is None
+    shift = supervisor(bench, ScriptedChat(calls(("camera_shift", {})), say("x")), moved).investigate("x")["steps"]
+    assert shift[0]["result"]["dx"] == 60.0 and shift[0]["result"]["drift"] is True, shift
 
 
 def test_malformed_tool_call_holds_and_calls_qa(bench):

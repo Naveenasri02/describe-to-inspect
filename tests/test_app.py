@@ -991,6 +991,27 @@ def test_status_says_what_a_running_inspection_is_doing(tmp_path):
     assert c.get("/status").json()["step"] == ""
 
 
+def test_only_a_camera_inspection_leaves_its_layout_for_the_supervisor(tmp_path):
+    """An uploaded photo is not the camera's view: its layout must not be read against camera frames."""
+    folder = tmp_path / "cam"
+    folder.mkdir()
+    frame = make_strip(seed=15)
+    cv2.imwrite(str(folder / "a.png"), frame)
+    c, p = bench(tmp_path, source=str(folder))
+    st, src = c.app.state.station, c.app.state.source
+    try:
+        for _ in range(100):
+            if src.get() is not None:
+                break
+            time.sleep(0.05)
+        c.post("/inspect", files=up(frame))
+        assert st.layout_for(src.get()) is None
+        c.post("/inspect")  # the camera frame
+        assert st.layout_for(src.get()) is not None and st.layout_for(src.get()).ok
+    finally:
+        src.stop.set()
+
+
 def test_pass_saves_no_photo(tmp_path):
     c, p = bench(tmp_path)
     c.app.state.station._judge = lambda image, sid, name: Verdict("PASS", strip_id=sid, image_name=name)
