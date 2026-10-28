@@ -35,6 +35,16 @@ def test_teach_names_bad_photo(taught):
         Judge().teach(images, layouts)
 
 
+def test_teach_refuses_a_photo_unlike_the_others():
+    """One different strip among the teach photos would set the threshold on its own: it is refused by number."""
+    images = [good(0), good(1), make_strip(seed=9, missing=range(10)), good(2), good(3)]
+    with pytest.raises(ValueError, match=r"^photo 3 does not look like the others \(a different strip, a hand or "
+                                         r"glare in view\?\) — retake it$"):
+        Judge().teach(images, [find_layout(im, CL) for im in images])
+    five = [good(i) for i in range(5)]
+    assert Judge().teach(five, [find_layout(im, CL) for im in five])["photos"] == 5
+
+
 def test_good_strip_scores_below_threshold(taught):
     judge, info = taught
     img = make_strip(seed=6, shift=(3, 2))

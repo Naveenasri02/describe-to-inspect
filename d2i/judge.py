@@ -15,6 +15,7 @@ STD = np.array([0.229, 0.224, 0.225], np.float32)
 POCKET_SIZE, BORDER_SIZE = 224, 448
 WORST = 0.02     # score = mean of the worst 2% of patch distances
 MARGIN = 1.3     # threshold = worst leave-one-photo-out score x 1.3
+OUTLIER, OUTLIER_MIN = 2.0, 0.25  # a teach photo whose worst pocket is > 2x the others' median and > 0.25 is refused
 BLANK = 128      # grey used to hide pockets when judging the border
 
 
@@ -93,15 +94,18 @@ class Judge:
         pockets = self._patches([_crop(im, b, POCKET_SIZE) for im, l in zip(images, layouts) for b in l.pockets])
         borders = self._patches([_border_crop(im, l) for im, l in zip(images, layouts)])
         photo_of = torch.arange(len(images), device=self.device).repeat_interleave(n)
-        worst_pocket = worst_border = 0.0
+        worsts, worst_border = [], 0.0  # worsts: each photo's worst pocket score
         for p in range(len(images)):  # leave one photo out
             keep = photo_of != p
-            for q in pockets[~keep]:
-                worst_pocket = max(worst_pocket, _score(_distances(q, pockets[keep])))
+            worsts.append(max(_score(_distances(q, pockets[keep])) for q in pockets[~keep]))
             others = torch.tensor([j for j in range(len(images)) if j != p], device=self.device)
             worst_border = max(worst_border, _score(_distances(borders[p], borders[others])))
+        for p, w in enumerate(worsts):  # one odd photo would set the threshold on its own
+            if w > OUTLIER * float(np.median(worsts[:p] + worsts[p + 1:])) and w > OUTLIER_MIN:
+                raise ValueError(f"photo {p + 1} does not look like the others (a different strip, a hand or glare "
+                                 f"in view?) — retake it")
         self.pocket_bank, self.border_bank = pockets, borders
-        self.pocket_threshold, self.border_threshold = worst_pocket * MARGIN, worst_border * MARGIN
+        self.pocket_threshold, self.border_threshold = max(worsts) * MARGIN, worst_border * MARGIN
         return {"pocket_threshold": self.pocket_threshold, "border_threshold": self.border_threshold,
                 "photos": len(images)}
 
