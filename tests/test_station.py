@@ -1,5 +1,7 @@
 import json
 import shutil
+import threading
+import time
 
 import numpy as np
 import pytest
@@ -375,18 +377,25 @@ def test_strip_cut_skipped_without_profile(station):
 
 
 class FailingSam(ImageSam):
-    """ImageSam whose sam_image calls numbered in `fail` (1-based; "all" = every call) raise MetaError, as when
-    SAM 3.1 does not answer after the retry. Each layout makes two calls: strip, then pills."""
+    """ImageSam that raises MetaError, as when SAM 3.1 does not answer after the retry: on every image ("all") or on
+    the images fail(image) picks (calls run together, so their order is not fixed). Counts every call; a layout
+    asks all five prompts at once."""
 
     def __init__(self, fail=()):
         super().__init__()
-        self.fail, self.calls = fail, 0
+        self.fail, self.calls, self._lock = fail, 0, threading.Lock()
 
     def sam_image(self, image, prompt):
-        self.calls += 1
-        if self.fail == "all" or self.calls in self.fail:
+        with self._lock:
+            self.calls += 1
+        if self.fail == "all" or (callable(self.fail) and self.fail(image)):
             raise MetaError("Meta API 503: busy")
         return super().sam_image(image, prompt)
+
+
+def marked(image):
+    """A painted crack or torn notch: dark marks inside the strip (a broken tablet or foil damage)."""
+    return bool((image[80:280, 90:550].min(axis=2) < 100).any())
 
 
 FINDER = {"rule": 1, "check": "finder", "pocket": None,
@@ -482,10 +491,11 @@ def test_teach_records_the_layout_source(sam_station, taught):
 
 def test_teach_refuses_a_photo_the_pocket_finder_missed(tmp_path):
     approve(CHECKLIST, "Priya", tmp_path / "checklists.jsonl")
-    st = Station(tmp_path, client=FailingSam(fail={5}), clock=lambda: T0)  # call 5 = photo 3's strip
+    photos = [make_strip(seed=i, shift=(i, 0)) for i in range(6)]
+    st = Station(tmp_path, client=FailingSam(fail=lambda im: im is photos[2]), clock=lambda: T0)
     with pytest.raises(ValueError, match=r"^photo 3: the pocket finder \(SAM 3.1\) did not answer — "
                                          r"save that photo again$"):
-        st.teach([make_strip(seed=i, shift=(i, 0)) for i in range(6)])
+        st.teach(photos)
     assert st.taught_at is None and not (tmp_path / "model.pt").exists()
 
 
@@ -499,7 +509,7 @@ def test_teach_refuses_when_sam_answers_no_photo(tmp_path):
     assert st.taught_at is None and not (tmp_path / "model.pt").exists()
     st.client.has_key = False  # no key at all: an offline product, taught on the checklist grid
     st.teach(photos)
-    assert st.layout_source == "grid" and st.client.calls == 12  # one failed strip call per photo, per teach
+    assert st.layout_source == "grid" and st.client.calls == 48  # four failed calls per photo ("pill pack" waits), per teach
 
 
 def test_inspect_holds_when_the_taught_finder_does_not_answer(sam_station):
@@ -524,15 +534,58 @@ def test_grid_taught_product_stays_on_the_grid(station):
 def test_self_test_does_not_run_without_its_finder(sam_station):
     st = sam_station
     before = (st.dir / "selftests.jsonl").read_text(encoding="utf-8")
-    for fail, done in (("all", 0), ({5}, 1)):  # good strip's layout fails; second painted strip's layout fails
+    for fail, done in (("all", 0), (marked, 1)):  # good strip's layout fails; the 2nd and 3rd painted strips' fail
         for record in (True, "failures"):
             st.client = FailingSam(fail=fail)
             r = st.self_test(make_strip(seed=12), rng_seed=5, record=record)
             assert r["passed"] is False and r["not_run"] == NOT_RUN and r["good_passed"] is False, r
             assert r["failed"] == ["pocket finder did not answer"] and len(r["results"]) == done, r
             assert {"strip_found", "skipped"} <= r.keys()
-            assert fail == "all" or st.client.calls == 5  # stopped at the failed layout
     assert (st.dir / "selftests.jsonl").read_text(encoding="utf-8") == before and not st.locked
+
+
+def test_self_test_judges_the_painted_strips_together_with_the_same_results(sam_station, monkeypatch):
+    """Rehearsal: a self-test took about 4 minutes, one painted strip after another. They are judged together now
+    (bounded pool); the results are the same, in the same order."""
+    import d2i.station as station_mod
+    st = sam_station
+    monkeypatch.setattr(station_mod, "SELF_TEST_WORKERS", 1)
+    one_by_one = st.self_test(make_strip(seed=12), rng_seed=5, record=False)
+    monkeypatch.undo()
+    judge, lock, now, most = st._judge, threading.Lock(), [0], [0]
+
+    def watched(image, sid, name):
+        with lock:
+            now[0] += 1
+            most[0] = max(most[0], now[0])
+        try:
+            time.sleep(0.2)
+            return judge(image, sid, name)
+        finally:
+            with lock:
+                now[0] -= 1
+    monkeypatch.setattr(st, "_judge", watched)
+    together = st.self_test(make_strip(seed=12), rng_seed=5, record=False)
+    assert together == one_by_one and one_by_one["passed"] and most[0] >= 2, (most, together)
+
+
+class SlowSam(ImageSam):
+    def sam_image(self, image, prompt):
+        time.sleep(1.5)
+        return super().sam_image(image, prompt)
+
+
+def test_trace_times_dinov2_alone(sam_station):
+    """Rehearsal: the "dinov2-small judge" row said 22-26 s, because it timed the SAM 3.1 calls too."""
+    from d2i import trace
+    st = sam_station
+    st.client = SlowSam()
+    trace.clear()
+    t0 = time.perf_counter()
+    assert st.inspect(make_strip(seed=15)).status == "PASS"
+    assert time.perf_counter() - t0 >= 1.5
+    (row,) = [e for e in trace.recent() if e["model"] == "dinov2-small"]
+    assert row["job"] == "judge" and row["ms"] < 1500, row
 
 
 def test_reason_carries_severity(station):

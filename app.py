@@ -291,7 +291,7 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
                 "rules": cl["rules"] if cl else [], "pending": pending["rules"] if pending else None,
                 "held": held, "quarantine_count": qn, "quarantine_error": qerr,
                 "checklist": cl, "pending_sentence": pending and pending.get("sentence"), "totals": totals, "reconciliation": recon,
-                "selftest": last_test, "taught": st._template is not None,
+                "selftest": last_test, "taught": st._template is not None, "step": st.step,  # what a long action is doing
                 "good_photos": len(list((product_dir / "good").glob("*.jpg"))), "hold_reason": hold_reason,
                 "machine_link": plc.connected if plc else None,
                 "user": dict(zip(("name", "role"), who(request))) if request.cookies.get("d2i_session") in sessions else None}
