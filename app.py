@@ -20,7 +20,7 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from d2i import challenge, record, trace
+from d2i import challenge, recheck, record, trace
 from d2i.commands import KEYWORDS, match
 from d2i.audit import (AuditLog, Users, _require_qa, log_physical_challenge, quarantine_list, release_quarantine,
                        sign_record)
@@ -173,6 +173,8 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
         if held_now():  # already held: the first hold stays open, no second one
             return
         hold_line(product_dir, plc or _NoPlc(), audit, "station", reason)
+        if reason.startswith("Critical"):  # wrong tablet / wrong print: re-check the strips since the last good check
+            recheck.open_window(product_dir, audit, reason, "station")
 
     def last_resume():  # Unix time of the latest QA "Resume line" (audit log, UTC), 0 if none
         return next((datetime.fromisoformat(e["at"]).timestamp() for e in reversed(audit._rows()) if e["action"] == "resume_line"), 0.0)
@@ -402,15 +404,21 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
             if refused:
                 return refused
             with lock:  # inspect and publish together so verdicts land in order
-                try:
-                    v = st.inspect(im, held=held_now(), batch=no)
+                rc = recheck.active(product_dir, batches.open)  # an open re-check: this strip is one of them
+                mark = {"recheck": True, "window_id": rc["window_id"]} if rc else None
+                try:  # a re-checked strip keeps its real verdict while the line is held
+                    v = st.inspect(im, held=held_now() and not rc, batch=no, extra=mark)
                 except Exception:  # logged and held, never a 500 that leaves the PLC on the previous verdict
                     v = Verdict("HOLD", [{"rule": None, "check": "inspection_error", "pocket": None,
                                           "text": INSPECT_ERROR}], at=st._now())
                     out = publish([v])  # the hold reaches the PLC even if the log cannot be written either
-                    st.log(v, batch=no, image=im)
+                    st.log(v, batch=no, image=im, extra=mark)
+                    if rc:
+                        recheck.count(product_dir, rc, v.status)
                     return out
                 out = publish([v])
+                if rc:
+                    recheck.count(product_dir, rc, v.status)
                 after_verdicts([v], no)
                 return out
         return paid(run)
@@ -452,6 +460,8 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
             refused = refused or not_released(batches.open)
             if refused:
                 return refused
+            if recheck.active(product_dir, batches.open):  # each re-checked strip is counted one at a time
+                return {"error": "Re-check open: inspect the strips one at a time with Inspect strip"}
             with lock:  # one slow station operation at a time; verdicts land in order
                 if st.locked:  # no paid SAM video call for a locked station
                     v = st.log(Verdict("LOCKED", [{"rule": None, "check": "locked", "pocket": None, "text": st.lock_reason}]), batch=no)
@@ -741,8 +751,14 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
     def resume(body: dict, request: Request):
         def run():
             with lock:
-                return resume_line(st, plc or _NoPlc(), audit, users, qa(request), str(body.get("password", "")),
-                                   str(body.get("reason", "")))
+                name, w, waiver = qa(request), recheck.pending(product_dir), str(body.get("waiver", "")).strip()
+                if w and not waiver:  # the re-check is finished, or QA gives a reason to waive the rest
+                    return {"error": recheck.not_done(w)}
+                out = resume_line(st, plc or _NoPlc(), audit, users, name, str(body.get("password", "")),
+                                  str(body.get("reason", "")))
+                if w and out["resumed"]:
+                    recheck.waive(product_dir, audit, w, name, waiver)
+                return out
         return paid(run)
 
     def snap(image, v):
@@ -913,6 +929,14 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
         if not re.fullmatch(r"[A-Z0-9-]{1,12}", label) or not f.is_file():
             return JSONResponse({"error": "No such photo"}, status_code=404)
         return FileResponse(f, media_type="image/jpeg")
+
+    # --- Re-check window: opened by a critical hold (or an approved agent request); read by the screen ---
+    @app.get("/recheck")
+    def recheck_state():
+        def run():
+            w = recheck.load(product_dir)
+            return dict(w, text=recheck.text(w), count=recheck.progress(w)) if w else {"open": False}
+        return paid(run)
 
     return app
 

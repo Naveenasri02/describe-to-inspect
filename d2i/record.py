@@ -88,7 +88,8 @@ h2{break-after:avoid}
 PLAIN = {"PASS": "Passed", "REJECT": "Rejected", "HOLD": "Held", "LOCKED": "Locked", "NO_STRIP": "No strip",
          "PRINT_OK": "Print OK", "pass": "Passed", "fail": "Failed"}  # the Run screen's band words
 TONE = {"Passed": "pass", "Print OK": "pass", "Clear": "pass", "Yes": "pass", "Rejected": "reject", "Failed": "reject",
-        "Locked": "reject", "Not clear": "reject", "No": "reject", "Outside": "reject", "Within": "pass", "Held": "hold", "Missed": "hold", "Not done": "hold"}
+        "Locked": "reject", "Not clear": "reject", "No": "reject", "Outside": "reject", "Within": "pass", "Held": "hold", "Missed": "hold", "Not done": "hold",
+        "Complete": "pass", "Waived": "hold", "Open": "hold"}
 NAMES = {"model_sha256": "Model SHA-256", "checklist_version": "Checklist version", "checklist_sha256": "Checklist SHA-256"}
 
 
@@ -238,6 +239,13 @@ def _quarantine_section(product_dir: Path, audit: AuditLog | None = None) -> str
             f"self-test ({e(_when(q['since']))}) need QA review.</p>" + _table(["Time", "Strip", "Verdict"], rows))
 
 
+def _in_range(r: dict, since: float, until: float) -> bool:
+    try:
+        return since <= datetime.fromisoformat(r["at"]).timestamp() <= until
+    except (KeyError, TypeError, ValueError, OSError):
+        return True  # unreadable time: show the row rather than hide it
+
+
 def _audit_sections(audit, since: float, until: float) -> str:
     if audit is None:
         return "<h2>Audit trail</h2><p>No audit log</p>"
@@ -245,13 +253,7 @@ def _audit_sections(audit, since: float, until: float) -> str:
     all_rows = audit.entries()
     chain = f"Audit chain: intact ({len(all_rows)} entries)" if ok else f"Audit chain: BROKEN at entry {bad}"
 
-    def in_range(r):
-        try:
-            return since <= datetime.fromisoformat(r["at"]).timestamp() <= until
-        except (KeyError, TypeError, ValueError, OSError):
-            return True  # unreadable time: show the row rather than hide it
-
-    rows = [r for r in all_rows if in_range(r)]
+    rows = [r for r in all_rows if _in_range(r, since, until)]
     g = lambda r, k: r.get(k, "?")
     agent = any(str(r.get("action", "")).startswith("agent_") for r in rows)  # rows carrying the agent's text
     act = lambda a: str(a).replace("_", " ").replace("selftest", "self-test").capitalize()  # specimen_signed -> Specimen signed
@@ -260,6 +262,24 @@ def _audit_sections(audit, since: float, until: float) -> str:
             + _table(["Time", "User", "Action", "Reason"],
                      [[_when(g(r, "at")), g(r, "user"), act(g(r, "action")), g(r, "reason")] for r in rows])
             + ("<p>Built with Muse Spark Open</p>" if agent else ""))
+
+
+def _recheck_section(product_dir: Path, audit: AuditLog | None, since: float, until: float) -> str:
+    """Each re-check window opened in range (audit), its re-checked strips (log rows with its window id) and its end."""
+    rows, es = [], [r for r in (audit.entries() if audit else []) if isinstance(r.get("details"), dict)]
+    waived = {r["details"].get("window_id"): r for r in es if r.get("action") == "recheck_waived"}
+    log = _lines(Path(product_dir) / "log.jsonl")
+    for r in es:
+        if r.get("action") != "recheck_open" or not _in_range(r, since, until):
+            continue
+        d, w = r["details"], waived.get(r["details"].get("window_id"))
+        mine = [v for v in log if v.get("window_id") == d["window_id"] and v["status"] not in ("LOCKED", "NO_STRIP")]
+        end = (_Html(_chip("Waived") + e(f" by {w['user']}: {w['reason']}")) if w
+               else _chip("Complete") if len(mine) >= d["total"] else _Html(_chip("Open") + e(f" {len(mine)} of {d['total']}")))
+        rows.append([_when(r["at"]), r["user"], r.get("reason", ""),
+                     f"{d['total']} strips: no. {d['from_strip']}-{d['to_strip']} since {_when(d['since'])}",
+                     len(mine), sum(v["status"] == "REJECT" for v in mine), end])
+    return "<h2>Re-check</h2>" + _table(["Opened", "By", "Cause", "Strips", "Re-checked", "Rejects found", "Result"], rows)
 
 
 def _challenge_section(product_dir: Path, since: float, until: float) -> str:
@@ -362,7 +382,7 @@ def shift_record(product_dir: Path, since: float, until: float, batch: str, oper
         _batch_section(product_dir, audit, until),
         _checklist_section(cl), _selftest_section(tests), _challenge_section(product_dir, since, until),
         _totals_section(verdicts),
-        _rejects_section(verdicts), _held_section(verdicts),
+        _rejects_section(verdicts), _held_section(verdicts), _recheck_section(product_dir, audit, since, until),
         _config_section(product_dir), _quarantine_section(product_dir, audit), _audit_sections(audit, since, until),
         "<h2>Shift summary (written by Muse Spark — check before signing)</h2>"
         f"<p class='summary'>{e(_summary(product_dir, verdicts, tests, client))}</p>",

@@ -69,7 +69,7 @@ async function sign(){const r=await j("/sign",{password:$("sp").value,record_id:
 async function investigate(){const r=await j("/investigate",{trigger:$("trig").value});if(r.error)show(r);invRefresh()}
 async function answer(){const r=await j("/ask-operator-answer",{id:qId,answer:$("ans").value});$("ans").value="";show(r.error?r:"Answer sent.")}
 async function approveReq(id,pw){show(await j("/approve-request",{id:id,password:pw.value}));pw.value=""}
-async function resumeLine(){show(await j("/resume",{password:$("rsp").value,reason:$("rsr").value}));$("rsp").value=""}
+async function resumeLine(){show(await j("/resume",{password:$("rsp").value,reason:$("rsr").value,waiver:$("rsw").value}));$("rsp").value=""}
 
 async function refresh(){
   let s;try{s=await (await fetch("/status")).json()}catch(e){return}  // station not answering: keep the last screen
@@ -78,7 +78,7 @@ async function refresh(){
   if(tab==="setup")setupTab(s);
   if(tab==="qa")qaTab(s);
   if(tab==="system"){$("spent").textContent=s.spent_usd==null?"?":s.spent_usd.toFixed(2);traceRows()}
-  quarantine(s.quarantine_count,s.quarantine_error);invRefresh();chalRefresh();
+  quarantine(s.quarantine_count,s.quarantine_error);invRefresh();chalRefresh();recheckRefresh();
 }
 function roles(u){
   const w=$("who");w.replaceChildren();if(u)w.append(u.role==="qa"?"QA ":"Operator ",mk("b",u.name));
@@ -268,4 +268,11 @@ async function chalRegister(){show("Saving the photo...");const f=new FormData()
 async function chalInspect(){show("Working...");const r=await (await fetch("/challenge/inspect",{method:"POST"})).json();show(r.error?r:r.message)}
 async function chalEject(){const r=await j("/challenge/eject",{ejected:$("chej").checked});$("chej").checked=false;
   show(r.error?r:r.next?r.next:"Challenge run "+(r.run.passed?"passed.":"failed: station locked, quarantine open."))}
+// Re-check window after a critical hold: each Inspect re-checks one strip; Resume needs it done or a waiver reason
+const recheckSaid=w=>w.open?w.text+" · "+w.count+": inspect each one with Inspect strip":"";
+async function recheckRefresh(){
+  let w;try{w=await (await fetch("/recheck")).json()}catch(e){return}
+  if(w.error)return;
+  $("rcbanner").textContent=recheckSaid(w);$("rcbanner").hidden=$("rswbox").hidden=!w.open;
+}
 refresh();setInterval(refresh,2000);

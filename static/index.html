@@ -28,6 +28,7 @@
 </div>
 <div class="alert" id="notrel" role="status" hidden></div>
 <div class="alert" id="qbanner" role="status" hidden></div>
+<div class="alert" id="rcbanner" role="status" hidden></div>
 <div class="alert" id="askbox" hidden>Shift Supervisor asks: <b id="askq"></b>
   <input id="ans" aria-label="Your answer"><button onclick="answer()">Answer</button></div>
 <main>
@@ -185,6 +186,7 @@
       <div id="resumebox" hidden>
         <h3>Resume the line</h3>
         <div class="field"><input id="rsp" type="password" placeholder="QA password" aria-label="QA password to resume"><input id="rsr" placeholder="Reason to resume" aria-label="Reason to resume"></div>
+        <div class="field" id="rswbox" hidden><input id="rsw" placeholder="Re-check waiver reason (QA)" aria-label="Re-check waiver reason (QA)"></div>
         <div class="field"><button class="btn go" id="go-resume" onclick="resumeLine()">Resume line (QA)</button></div>
       </div>
       <div class="msg"></div>
@@ -201,7 +203,7 @@
       </div>
       <h3>Physical challenge set</h3>
       <ul class="check" id="chset"></ul>
-      <div class="field"><input id="cl" class="narrow" placeholder="Label, e.g. C1" aria-label="Challenge strip label">
+      <div class="field"><input id="cl" class="narrow" placeholder="Label: C1" aria-label="Challenge strip label">
         <select id="ck" aria-label="Defect kind"></select>
         <input id="cr" type="number" min="1" class="narrow" placeholder="Rule" aria-label="Expected rule number"></div>
       <div class="field"><button class="btn" onclick="chalRegister()">Register challenge strip (photo from the camera)</button></div>

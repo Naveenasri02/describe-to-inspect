@@ -13,14 +13,15 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from d2i import recheck
 from d2i.audit import _require_qa, release_quarantine
 from d2i.judge import POCKET_SIZE, _crop
 from d2i.pockets import find_layout
 from d2i.record import _lines
 
 SYSTEM = ("You supervise a blister-strip inspection bench on a packaging line. Investigate with tools before "
-          "concluding. You never change a verdict or the checklist. To re-teach, resume or release quarantine, call "
-          "the request_ tool; a QA person decides. End with one sentence naming the cause and the evidence.")
+          "concluding. You never change a verdict or the checklist. To re-teach, resume, release quarantine or re-check "
+          "strips, call the request_ tool; a QA person decides. End with one sentence naming the cause and the evidence.")
 MAX_STEPS = 12
 MAX_TOOL_CALLS = 20  # per investigation, on top of MAX_STEPS (one step may ask for several tools)
 STEP_LIMIT = "Step limit reached — line held, call QA"
@@ -47,6 +48,8 @@ TOOLS = [
     _tool("request_reteach", "Ask QA to approve re-teaching from the good photos.", reason="string"),
     _tool("request_resume", "Ask QA to approve resuming the line.", reason="string"),
     _tool("request_release_quarantine", "Ask QA to approve releasing the quarantined strips.", reason="string"),
+    _tool("request_recheck", "Ask QA to approve a re-check of the strips passed since the last good check "
+                             "(e.g. a possible tablet mix-up).", reason="string"),
     _tool("draft_deviation", "Write a draft deviation note for QA review.", summary="string"),
 ]
 
@@ -138,6 +141,7 @@ class Supervisor:
             "request_reteach": lambda reason: self._request("reteach", reason),
             "request_resume": lambda reason: self._request("resume", reason),
             "request_release_quarantine": lambda reason: self._request("release_quarantine", reason),
+            "request_recheck": lambda reason: self._request("recheck", reason),
             "draft_deviation": self._draft,
         }
 
@@ -276,9 +280,10 @@ class Supervisor:
             raise ValueError(f"no pending request {request_id}")
         kind, st = req["kind"], self.station
         try:
-            if kind == "resume" and st.locked:
+            w = recheck.pending(st.dir) if kind == "resume" else None
+            if kind == "resume" and (st.locked or w):  # no waiver here: QA waives with Resume line on the screen
                 self.pending[request_id] = req
-                out = {"approved": False, "message": f"Station locked: {st.lock_reason}"}
+                out = {"approved": False, "message": f"Station locked: {st.lock_reason}" if st.locked else recheck.not_done(w)}
             else:
                 if kind == "reteach":
                     photos = [cv2.imread(str(p)) for p in sorted(self.good_dir.glob("*.jpg"))]
@@ -287,6 +292,9 @@ class Supervisor:
                 elif kind == "resume":
                     self._set_hold(False, name)
                     message = "Line resumed"
+                elif kind == "recheck":
+                    w = recheck.open_window(st.dir, self.audit, req["reason"], name)
+                    message = recheck.text(w) if w else "Nothing to re-check: no passed strips since the last good check"
                 else:
                     release_quarantine(st.dir, self.audit, users, name, password, req["reason"])
                     message = "Quarantine released"

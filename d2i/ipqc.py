@@ -89,7 +89,11 @@ def missed_windows(batch: dict, rows: list[dict], until: float) -> list[tuple[st
 def reconcile(rows: list[dict], batch: str, counts: dict | None = None, limits: dict | None = None) -> dict:
     """Log counts of this batch (LOCKED rows are not inspections). With the counts QA typed at End batch (strips at the
     bench, trays, foil in metres) each line is checked against QA's limits: status within / outside; without them, open."""
-    n = Counter(r["status"] for r in rows if r.get("batch") == batch and r["status"] != "LOCKED")
+    n = Counter(r["status"] for r in rows if r.get("batch") == batch and r["status"] != "LOCKED" and not r.get("recheck"))
+    # a re-checked strip was counted once already as PASS; found bad on re-check, it moved to the reject box
+    moved = Counter(r["status"] for r in rows if r.get("batch") == batch and r.get("recheck") and r["status"] in ("REJECT", "HOLD"))
+    n["PASS"] -= sum(moved.values())
+    n.update(moved)
     out = {"inspected": sum(n.values()), "passed": n["PASS"], "rejected": n["REJECT"], "held": n["HOLD"],
            "no_strip": n["NO_STRIP"]}
     if counts is None:
