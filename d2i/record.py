@@ -10,8 +10,9 @@ from pathlib import Path
 
 from d2i.audit import AuditLog, config_hashes, quarantine_list
 from d2i.batch import Batches
+from d2i.challenge import NO_SET, RUNS, SET, load_set, runs as challenge_runs
 from d2i.checklist import current
-from d2i.ipqc import check_events, missed_windows
+from d2i.ipqc import check_events, missed_windows, strip_counts
 from d2i.meta_api import BudgetExceeded, MetaError
 
 STATUSES = ("PASS", "REJECT", "HOLD", "LOCKED", "NO_STRIP")
@@ -92,7 +93,8 @@ h2{break-after:avoid}
 PLAIN = {"PASS": "Passed", "REJECT": "Rejected", "HOLD": "Held", "LOCKED": "Locked", "NO_STRIP": "No strip",
          "PRINT_OK": "Print OK", "pass": "Passed", "fail": "Failed"}  # the Run screen's band words
 TONE = {"Passed": "pass", "Print OK": "pass", "Clear": "pass", "Yes": "pass", "Rejected": "reject", "Failed": "reject",
-        "Locked": "reject", "Not clear": "reject", "No": "reject", "Outside": "reject", "Within": "pass", "Held": "hold", "Missed": "hold", "Not done": "hold"}
+        "Locked": "reject", "Not clear": "reject", "No": "reject", "Outside": "reject", "Within": "pass", "Held": "hold", "Missed": "hold", "Not done": "hold",
+        "Complete": "pass", "Waived": "hold", "Open": "hold"}
 NAMES = {"model_sha256": "Model SHA-256", "checklist_version": "Checklist version", "checklist_sha256": "Checklist SHA-256"}
 
 
@@ -198,13 +200,15 @@ def _selftest_section(tests: list[dict]) -> str:
                        for r in t["results"]) or "none",
              _chip("Passed" if t["passed"] else "Failed"), "no" if t["passed"] else "yes"] for t in tests]
     for row, t in zip(rows, tests):
+        if t.get("challenge"):  # a missed physical challenge strip locks like a failed self-test
+            row[1] = f"Physical challenge {t['challenge']}: {row[1]}"
         if t.get("skipped"):
             row[3] = _Html(row[3] + e(" (did not cover: " + ", ".join(map(plain, t["skipped"])) + ")"))
     return "<h2>Self-tests</h2>" + _table(["Time", "Kinds", "Caught / named", "Result", "Station locked?"], rows)
 
 
 def _totals_section(verdicts: list[dict]) -> str:
-    n = Counter(v["status"] for v in verdicts)
+    n = strip_counts(verdicts)  # each strip once, as the batch reconciliation counts it
     skipped = Counter(c for v in verdicts for c in v.get("skipped", []))
     return ("<h2>Totals</h2>" + _table([PLAIN[s] for s in STATUSES], [[n[s] for s in STATUSES]], "n")
             + (_table(["Not checked", "Strips"], sorted(skipped.items()), "cnt") if skipped else ""))
@@ -249,7 +253,7 @@ def fingerprint(product_dir: Path, since: float, until: float) -> dict:
     p = Path(product_dir)
     verdicts, tests = _records(p, since, until)
     h = hashlib.sha256(_compact(verdicts).encode() + b"|" + _compact(tests).encode())
-    for n in ("batches.jsonl", "prints.jsonl"):
+    for n in ("batches.jsonl", "prints.jsonl", SET, RUNS):  # the challenge set and runs are shown in the record too
         h.update(b"|" + ((p / n).read_bytes() if (p / n).exists() else b""))
     files = {n: hashlib.sha256((p / n).read_bytes()).hexdigest() if (p / n).exists() else None
              for n in ("log.jsonl", "selftests.jsonl")}
@@ -287,6 +291,13 @@ def _quarantine_section(product_dir: Path, audit: AuditLog | None = None) -> str
             f"self-test ({e(_when(q['since']))}) need QA review.</p>" + _table(["Time", "Strip", "Verdict"], rows))
 
 
+def _in_range(r: dict, since: float, until: float) -> bool:
+    try:
+        return since <= datetime.fromisoformat(r["at"]).timestamp() <= until
+    except (KeyError, TypeError, ValueError, OSError):
+        return True  # unreadable time: show the row rather than hide it
+
+
 def _audit_sections(audit, since: float, until: float) -> str:
     if audit is None:
         return "<h2>Audit trail</h2><p>No audit log</p>"
@@ -294,25 +305,50 @@ def _audit_sections(audit, since: float, until: float) -> str:
     all_rows = audit.entries()
     chain = f"Audit chain: intact ({len(all_rows)} entries)" if ok else f"Audit chain: BROKEN at entry {bad}"
 
-    def in_range(r):
-        try:
-            return since <= datetime.fromisoformat(r["at"]).timestamp() <= until
-        except (KeyError, TypeError, ValueError, OSError):
-            return True  # unreadable time: show the row rather than hide it
-
-    rows = [r for r in all_rows if in_range(r)]
+    rows = [r for r in all_rows if _in_range(r, since, until)]
     g = lambda r, k: r.get(k, "?")
-    d = lambda r: r["details"] if isinstance(r.get("details"), dict) else {}
-    phys = [[_when(g(r, "at")), g(r, "user"), d(r).get("strip_label", "?"), "yes" if d(r).get("ejected") else "no"]
-            for r in rows if r.get("action") == "physical_challenge"]
     agent = any(str(r.get("action", "")).startswith("agent_") for r in rows)  # rows carrying the agent's text
     act = lambda a: str(a).replace("_", " ").replace("selftest", "self-test").capitalize()  # specimen_signed -> Specimen signed
     return (f"<h2>Audit trail</h2><p class=\"chain{'' if ok else ' bad'}\">{e(chain)}</p>"
             "<p>The audit trail is tamper-evident: each entry carries the hash of the one before.</p>"
             + _table(["Time", "User", "Action", "Reason"],
                      [[_when(g(r, "at")), g(r, "user"), act(g(r, "action")), g(r, "reason")] for r in rows])
-            + ("<p>Built with Muse Spark Open</p>" if agent else "")
-            + "<h2>Physical challenge strips</h2>" + _table(["Time", "User", "Strip", "Ejected?"], phys))
+            + ("<p>Built with Muse Spark Open</p>" if agent else ""))
+
+
+def _recheck_section(product_dir: Path, audit: AuditLog | None, since: float, until: float) -> str:
+    """Each re-check window opened in range (audit), its re-checked strips (log rows with its window id) and its end."""
+    rows, es = [], [r for r in (audit.entries() if audit else []) if isinstance(r.get("details"), dict)]
+    waived = {r["details"].get("window_id"): r for r in es if r.get("action") == "recheck_waived"}
+    log = _lines(Path(product_dir) / "log.jsonl")
+    for r in es:
+        if r.get("action") != "recheck_open" or not _in_range(r, since, until):
+            continue
+        d, w = r["details"], waived.get(r["details"].get("window_id"))
+        mine = [v for v in log if v.get("window_id") == d["window_id"] and v["status"] not in ("LOCKED", "NO_STRIP")]
+        end = (_Html(_chip("Waived") + e(f" by {w['user']}: {w['reason']}")) if w
+               else _chip("Complete") if len(mine) >= d["total"] else _Html(_chip("Open") + e(f" {len(mine)} of {d['total']}")))
+        rows.append([_when(r["at"]), r["user"], r.get("reason", ""),
+                     f"{d['total']} strips: no. {d['from_strip']}-{d['to_strip']} since {_when(d['since'])}",
+                     len(mine), sum(v["status"] == "REJECT" for v in mine), end])
+    return "<h2>Re-check</h2>" + _table(["Opened", "By", "Cause", "Strips", "Re-checked", "Rejects found", "Result"], rows)
+
+
+def _challenge_section(product_dir: Path, since: float, until: float) -> str:
+    """The registered set and the runs in this record's time range, each strip with what the station said."""
+    s = load_set(product_dir)
+    if not s:
+        return f"<h2>Physical challenge</h2><p>{e(NO_SET)}</p>"
+    say = lambda x: (f"{x['label']}: {PLAIN.get(x['status'], x['status'])}"
+                     + (f" (Rule {', '.join(map(str, x['rules']))})" if x["rules"] else "")
+                     + f", expected Rule {x['expected_rule']}, {'ejected' if x['ejected'] else 'not ejected'}")
+    rows = [[_when(r["at"]), r["by"], r.get("batch") or "", r.get("source", "–"), "; ".join(map(say, r["results"])),
+             _chip("Passed" if r["passed"] else "Failed")] for r in challenge_runs(product_dir) if since <= r["time"] <= until]
+    return ("<h2>Physical challenge</h2>"
+            f"<p>Set registered by {e(s['registered_by'])} at {e(_when(s['at']))}.</p>"
+            + _table(["Strip", "Defect kind", "Expected rule"],
+                     [[x["label"], x["kind"].replace("_", " "), f"Rule {x['rule']}"] for x in s["strips"]])
+            + _table(["Time", "By", "Batch", "Frame from", "Each strip", "Run"], rows))
 
 
 def _batch_section(product_dir: Path, audit: AuditLog | None = None, until: float = 0.0) -> str:
@@ -342,6 +378,11 @@ def _batch_section(product_dir: Path, audit: AuditLog | None = None, until: floa
     release = [["Self-test for this batch", _when(st["at"]) if st else _chip("Not done"), st_by if st else ""],
                ["Start-up print check", _when(ok["at"]) if ok else _chip("Not done"), ok["by"] if ok else ""],
                ["QA signature on the start-up specimen", _when(sig["at"]) if sig else _chip("Not done"), sig["user"] if sig else ""]]
+    if load_set(product_dir):  # the gate needs a passed challenge run only when a set is registered
+        run = next((r for r in challenge_runs(product_dir)
+                    if r["passed"] and r.get("batch") == start["batch"] and r["time"] >= start["time"]), None)
+        release.insert(1, ["Physical challenge for this batch", _when(run["at"]) if run else _chip("Not done"),
+                           run["by"] if run else ""])
     checks = [(r["time"], [_when(r["at"]), "Leak test" if r["event"] == "leak" else "Print check", r["by"],
                            _chip(r["result"] if r["event"] == "leak" else r["status"])]) for r in ev if r["event"] != "foil_change"]
     checks += [(r["time"], [_when(r["time"]), "Foil roll changed", r["by"], ""]) for r in ev if r["event"] == "foil_change"]
@@ -361,7 +402,7 @@ def _batch_section(product_dir: Path, audit: AuditLog | None = None, until: floa
                  if tot else "<p>Not reconciled (ended before reconciliation)</p>" if end
                  else "<p>Not reconciled: the batch is still open</p>")
     vs = [v for v in _lines(Path(product_dir) / "log.jsonl") if v.get("batch") == start["batch"]]
-    by_status = Counter(v["status"] for v in vs)
+    by_status = strip_counts(vs)
     by_rule = Counter(k for v in vs for k in {_label(r) for r in v["reasons"]})
     shots = [v for v in vs if v.get("photo")][-12:]  # the 12 latest reject photos, each with its reasons
     photos = "".join(f'<figure><a href="/rejects/{e(v["photo"])}" target="_blank" rel="noopener">'
@@ -408,8 +449,9 @@ def shift_record(product_dir: Path, since: float, until: float, batch: str, oper
         "<header><div class='title'><h1>Shift record</h1>" + badge + "</div>"
         "<dl class='meta'>" + "".join(f"<div><dt>{k}</dt><dd{c}>{e(str(v or '–'))}</dd></div>" for k, v, c in meta) + "</dl></header>",
         _batch_section(product_dir, audit, until),
-        _checklist_section(cl), _selftest_section(tests), _totals_section(verdicts),
-        _rejects_section(verdicts), _held_section(verdicts),
+        _checklist_section(cl), _selftest_section(tests), _challenge_section(product_dir, since, until),
+        _totals_section(verdicts),
+        _rejects_section(verdicts), _held_section(verdicts), _recheck_section(product_dir, audit, since, until),
         _config_section(product_dir, config), _quarantine_section(product_dir, audit), _audit_sections(audit, since, until),
         "<h2>Shift summary (written by Muse Spark — check before signing)</h2>"
         f"<p class='summary'>{e(_summary(product_dir, verdicts, tests, client))}</p>",

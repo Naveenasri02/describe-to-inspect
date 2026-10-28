@@ -132,7 +132,8 @@ def quarantine_list(product_dir: Path, audit: AuditLog | None = None) -> dict:
         return {"since": None, "failed_at": None, "strips": []}
     passed = [t for t in tests if t["passed"] and t["time"] < failed[0]["time"]]
     since = passed[-1] if passed else None
-    strips = [v for v in _lines(p / "log.jsonl") if since is None or _ts(v) >= _ts(since)]
+    strips = [v for v in _lines(p / "log.jsonl")  # a re-checked strip is listed once, by its first verdict
+              if not v.get("recheck") and (since is None or _ts(v) >= _ts(since))]
     return {"since": since["at"] if since else None, "failed_at": failed[-1]["at"], "strips": strips}
 
 
@@ -149,8 +150,9 @@ def release_quarantine(product_dir, audit: AuditLog, users: Users, name: str, pa
     return audit.append("release_quarantine", name, {"strips": len(q["strips"]), "failed_at": q["failed_at"]}, reason)
 
 
-def log_physical_challenge(audit: AuditLog, user: str, strip_label: str, ejected: bool) -> dict:
-    return audit.append("physical_challenge", user, {"strip_label": strip_label, "ejected": ejected})
+def log_physical_challenge(audit: AuditLog, user: str, strip_label: str, ejected: bool, **result) -> dict:
+    """result: what the station said for this challenge strip (expected_rule, status, rules, passed, batch)."""
+    return audit.append("physical_challenge", user, {"strip_label": strip_label, "ejected": ejected, **result})
 
 
 SIGN_MEANINGS = ("Reviewed", "Approved")

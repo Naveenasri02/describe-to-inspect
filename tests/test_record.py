@@ -383,6 +383,15 @@ def test_changed_after_signing_is_not_green(product):
     assert "changed since signing, re-sign needed" in late
 
 
+def test_challenge_run_after_signing_is_not_green(product):
+    audit = _signed_setup(product, "Approved")
+    with (product / "challenge_runs.jsonl").open("a", encoding="utf-8") as f:  # a challenge run lands after signing
+        f.write(json.dumps({"time": T0 + 50, "at": "x", "by": "op", "batch": "LOT9", "source": "camera",
+                            "results": [], "passed": True}) + chr(10))
+    late = shift_record(product, T0 - 10, T0 + 100, "LOT9", "A", audit=audit)
+    assert "badge signed" not in late and "changed since signing, re-sign needed" in late
+
+
 def test_other_window_of_same_batch_is_draft(product):
     audit = _signed_setup(product, "Approved")
     other = shift_record(product, T0 + 30, T0 + 100, "LOT9", "A", audit=audit)

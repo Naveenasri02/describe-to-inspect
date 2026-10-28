@@ -64,15 +64,13 @@ async function rec(){const q=new URLSearchParams({batch:$("batch").value,operato
 async function ask(){const r=await j("/ask",{question:$("q").value});show(r.error?r:r.answer+"\n(written by the model — check before acting)")}
 async function login(){const r=await j("/login",{name:$("ln").value,password:$("lp").value});$("lp").value="";show(r.error?r:"Logged in as "+r.name)}
 async function logout(){await j("/logout");refresh()}
-async function challenge(){const r=await j("/challenge",{strip_label:$("cl").value,ejected:$("ce").checked});
-  show(r.error?r:"Challenge strip "+r.details.strip_label+" logged"+(r.details.ejected?", ejected.":", not ejected."))}
 async function release(){const r=await j("/release",{password:$("rp").value,reason:$("rr").value});$("rp").value="";show(r.error?r:"Quarantine released.")}
 async function sign(){const r=await j("/sign",{password:$("sp").value,record_id:recId,meaning:$("smean").value});$("sp").value="";
   show(r.error?r:"Record signed by "+r.signed_by+" — "+r.meaning+".");if(!r.error)rec()}  // re-open: the record now shows the signed state
 async function investigate(){const r=await j("/investigate",{trigger:$("trig").value});if(r.error)show(r);invRefresh()}
 async function answer(){const r=await j("/ask-operator-answer",{id:qId,answer:$("ans").value});$("ans").value="";show(r.error?r:"Answer sent.")}
 async function approveReq(id,pw){show(await j("/approve-request",{id:id,password:pw.value}));pw.value=""}
-async function resumeLine(){show(await j("/resume",{password:$("rsp").value,reason:$("rsr").value}));$("rsp").value=""}
+async function resumeLine(){show(await j("/resume",{password:$("rsp").value,reason:$("rsr").value,waiver:$("rsw").value}));$("rsp").value=""}
 
 async function refresh(){
   let s;try{s=await (await fetch("/status")).json()}catch(e){return}  // station not answering: keep the last screen
@@ -81,7 +79,7 @@ async function refresh(){
   if(tab==="setup")setupTab(s);
   if(tab==="qa")qaTab(s);
   if(tab==="system"){$("spent").textContent=s.spent_usd==null?"?":s.spent_usd.toFixed(2);traceRows()}
-  quarantine(s.quarantine_count,s.quarantine_error);invRefresh();
+  quarantine(s.quarantine_count,s.quarantine_error);invRefresh();chalRefresh();recheckRefresh();
 }
 function roles(u){
   const w=$("who");w.replaceChildren();if(u)w.append(u.role==="qa"?"QA ":"Operator ",mk("b",u.name));
@@ -152,19 +150,20 @@ function setupTab(s){
       else{d.className="slot empty"+(k===n?" next":"");d.textContent="Photo "+(k+1)}
       sl.append(d)}}
   const t=s.selftest,ul=$("stresults");ul.replaceChildren();$("sth").hidden=!t;
-  if(t){$("sth").textContent=(t.passed?"Last self-test passed":"Last self-test missed")+" at "+hhmm(t.at);
+  if(t){$("sth").textContent=(t.challenge?"Physical challenge "+t.challenge+" missed":t.passed?"Last self-test passed":"Last self-test missed")+" at "+hhmm(t.at);
     const row=(ok,text)=>{const li=mk("li","",ok?"":"bad");li.append(mk("span",ok?"✓":"✗"),mk("div",text));ul.append(li)};
     t.results.forEach(x=>row(x.caught&&x.named_right,cap(x.kind.replace(/_/g," "))+(x.pocket?", pocket "+x.pocket:"")+
       (x.caught?(x.named_right?": caught and named":": caught, named wrong"):": missed")));
-    row(t.good_passed,t.good_passed?"Good strip passed":"Good strip not passed")}
+    if(!t.challenge)row(t.good_passed,t.good_passed?"Good strip passed":"Good strip not passed")}
   $("uncovered").textContent=uncovered(s);
 }
 function qaTab(s){
-  const b=s.batch,unreadable=s.blockers.some(x=>!REL.includes(x)),ul=$("rel");ul.replaceChildren();
+  const b=s.batch,unreadable=s.blockers.some(x=>!REL.includes(x)&&x!==CHAL),ul=$("rel");ul.replaceChildren();
   const item=(ok,text,small)=>{const li=mk("li","",ok?"":b?"todo":"off");li.append(mk("span",ok?"✓":"!"));
     const d=mk("div",text);d.append(mk("small",small));li.append(d);ul.append(li)};
   item(!!b,"Line clearance",b?"Clear at "+hhmm(b.clearance_at)+", before batch "+b.batch:$("clr").textContent||"Run it before the batch starts");
-  REL.forEach((x,k)=>{const ok=b&&!unreadable&&!s.blockers.includes(x);item(ok,x,ok?"Done":b?WAIT[k]:"After the batch starts")});
+  REL.forEach((x,k)=>{const ok=b&&!unreadable&&!s.blockers.includes(x);item(ok,x,ok?"Done":b?WAIT[k]:"After the batch starts");
+    if(k===0&&C.set){const c=b&&!unreadable&&!s.blockers.includes(CHAL);item(c,CHAL,c?"Done":b?"Waiting: Challenge run, on the Run screen":"After the batch starts")}});
   $("spw").parentNode.hidden=!(b&&s.blockers.includes(REL[2]));
   $("nobatch").hidden=!!b;$("inbatch").hidden=!b;
   $("due").hidden=!s.due.length;$("due").textContent=s.due.join(". ")+".";
@@ -241,5 +240,41 @@ async function send(blob,mode){
     if(!ACTIONS[r.command]){$("heard").textContent="Heard: "+r.transcript;return show("Command not understood — use the buttons")}
     $("heard").textContent="Heard: "+r.transcript+" — Command: "+r.command;return ACTIONS[r.command]()}
   shown(await (await fetch("/describe",{method:"POST",body:f})).json());
+}
+// Physical challenge: QA registers known-bad strips (QA screen); any logged-in user runs them (Run screen)
+const CHAL="Physical challenge for this batch";
+let C={};
+async function chalRefresh(){
+  if(!S.user){$("chal").hidden=true;return}
+  let c;try{c=await (await fetch("/challenge")).json()}catch(e){return}
+  if(c.error)return;C=c;
+  const set=c.set?c.set.strips:[],ul=$("chset");ul.replaceChildren();
+  set.forEach(x=>{const li=mk("li","");li.append(mk("span","✓"),mk("div",x.label+": "+x.kind.replace(/_/g," ")+", expect Rule "+x.rule));ul.append(li)});
+  if(!set.length){const li=mk("li","","off");li.append(mk("span","!"),mk("div","No physical challenge set registered"));ul.append(li)}
+  const k=$("ck"),cl=S.checklist;
+  if(cl&&k.dataset.v!==String(cl.version)){k.dataset.v=cl.version;  // the checklist's kinds; Rule = position + 2
+    k.replaceChildren(...cl.reject_if.map((x,i)=>{const o=mk("option",x.replace(/_/g," "));o.value=x;o.dataset.rule=i+2;return o}));
+    k.onchange=()=>$("cr").value=k.selectedOptions[0]?k.selectedOptions[0].dataset.rule:"";k.onchange()}
+  $("chal").hidden=!c.set;if(!c.set)return;
+  const p=c.pending,lab=p?p.label:c.strip&&c.strip.label;
+  $("chnext").textContent=p?(p.caught?p.label+" rejected for Rule "+p.expected_rule+": tick Ejected once it is out"
+    :p.label+" missed ("+p.why+"): station locked. Take "+p.label+" out — it is a known-bad strip"):c.next;
+  const im=$("chphoto"),src="/challenge/photo/"+lab+"?at="+encodeURIComponent(c.set.at);im.hidden=!lab;if(lab&&im.getAttribute("src")!==src)im.src=src;
+  $("chgo").hidden=!!p;$("chrec").hidden=$("chejl").hidden=!p;
+  const r=$("chres"),last=!c.results.length&&!p&&c.last;r.replaceChildren();
+  if(last)r.append(mk("li","Last run "+(last.passed?"passed ":"failed ")+hhmm(last.at),last.passed?"ok":"bad"));
+  (last?last.results:c.results).forEach(x=>r.append(mk("li",x.label+(x.passed?" ✓":" ✗"),x.passed?"ok":"bad")));
+}
+async function chalRegister(){show("Saving the photo...");const f=new FormData();f.append("label",$("cl").value);f.append("kind",$("ck").value);f.append("rule",$("cr").value);
+  const r=await (await fetch("/challenge/register",{method:"POST",body:f})).json();show(r.error?r:"Challenge set: "+r.strips.map(x=>x.label).join(", ")+"."+(r.message?"\n"+r.message:""))}
+async function chalInspect(){show("Working...");const r=await (await fetch("/challenge/inspect",{method:"POST"})).json();show(r.error?r:r.message)}
+async function chalEject(){const r=await j("/challenge/eject",{ejected:$("chej").checked});$("chej").checked=false;
+  show(r.error?r:r.next?r.next:"Challenge run "+(r.run.passed?"passed.":"failed: station locked, quarantine open."))}
+// Re-check window after a critical hold: each Inspect re-checks one strip; Resume needs it done or a waiver reason
+const recheckSaid=w=>w.open?w.text+" · "+w.count+": inspect each one with Inspect strip":"";
+async function recheckRefresh(){
+  let w;try{w=await (await fetch("/recheck")).json()}catch(e){return}
+  if(w.error)return;
+  $("rcbanner").textContent=recheckSaid(w);$("rcbanner").hidden=$("rswbox").hidden=!w.open;
 }
 refresh();setInterval(refresh,2000);

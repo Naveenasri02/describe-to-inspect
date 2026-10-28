@@ -20,7 +20,7 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from d2i import record, trace
+from d2i import challenge, recheck, record, trace
 from d2i.commands import KEYWORDS, match
 from d2i.audit import (AuditLog, Users, _require_qa, log_physical_challenge, quarantine_list, release_quarantine,
                        sign_record)
@@ -31,7 +31,7 @@ from d2i.meta_api import Budget, MetaClient
 from d2i.ipqc import DRIFT_REJECTS, check_events, due, reconcile, reject_run, release_blockers
 from d2i.printcheck import check_print, read_print, wrong_print
 from d2i.pockets import find_layout
-from d2i.station import NEED_TEACH, Station, Verdict
+from d2i.station import FINDER_DOWN, NEED_TEACH, Station, Verdict
 from d2i.supervisor import Supervisor, baseline_from, hold_line, hold_state, resume_line
 from d2i.tray import inspect_clip, record_clip
 
@@ -170,9 +170,10 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
         return state["last"]
 
     def station_hold(reason):  # the existing hold (hold.json + PLC coil + audit), raised by the station itself
-        if held_now():  # already held: the first hold stays open, no second one
-            return
-        hold_line(product_dir, plc or _NoPlc(), audit, "station", reason)
+        if not held_now():  # already held: the first hold stays open, no second one
+            hold_line(product_dir, plc or _NoPlc(), audit, "station", reason)
+        if reason.startswith("Critical"):  # wrong tablet / wrong print, held line or not: re-check since the last good check
+            recheck.open_window(product_dir, audit, reason, "station")
 
     def last_resume():  # Unix time of the latest QA "Resume line" (audit log, UTC), 0 if none
         return next((datetime.fromisoformat(e["at"]).timestamp() for e in reversed(audit._rows()) if e["action"] == "resume_line"), 0.0)
@@ -191,14 +192,14 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
             pass
         return rows
 
-    def after_verdicts(vs, no):  # call inside `lock`, after the verdicts are logged (the last len(vs) log rows)
+    def after_verdicts(vs, no, rechecked=False):  # call inside `lock`, after the verdicts are logged (the last len(vs) log rows)
+        crit = next((r["text"] for v in vs for r in v.reasons if r.get("severity") == "critical"), None)
+        if crit and not rechecked:  # also on a held line: a critical opens a re-check (a re-checked strip is in one already)
+            return station_hold("Critical: " + crit)
         if held_now():  # already held: the first hold stays open, no second one
             return
-        crit = next((r["text"] for v in vs for r in v.reasons if r.get("severity") == "critical"), None)
         rows, since = log_rows(), last_resume()
-        if crit:
-            station_hold("Critical: " + crit)
-        elif any(reject_run(rows[:n], no, since) >= DRIFT_REJECTS for n in range(len(rows) - len(vs) + 1, len(rows) + 1)):
+        if any(reject_run(rows[:n], no, since) >= DRIFT_REJECTS for n in range(len(rows) - len(vs) + 1, len(rows) + 1)):
             station_hold("3 rejects in a row — check the machine")  # checked after each new verdict: a later pass cannot hide it
 
     def need_batch():  # inspecting without an open batch would leave verdicts no batch owns: refuse, log nothing
@@ -207,7 +208,8 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
 
     def blockers_for(b):  # what still stops this open batch from being inspected
         signed = any(e["action"] == "specimen_signed" and e["details"].get("batch") == b["batch"] for e in audit.entries())
-        return release_blockers(b, st._selftests(), record._lines(product_dir / "prints.jsonl"), signed)
+        chal = challenge.runs(product_dir) if challenge.load_set(product_dir) else None  # no set: no challenge run needed
+        return release_blockers(b, st._selftests(), record._lines(product_dir / "prints.jsonl"), signed, chal)
 
     def not_released(b):
         left = blockers_for(b)
@@ -402,16 +404,22 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
             if refused:
                 return refused
             with lock:  # inspect and publish together so verdicts land in order
-                try:
-                    v = st.inspect(im, held=held_now(), batch=no, user=user)
+                rc = recheck.current(product_dir) if held_now() else None  # a re-check runs on a held line only
+                mark = {"recheck": True, "window_id": rc["window_id"]} if rc else None
+                try:  # a re-checked strip keeps its real verdict while the line is held
+                    v = st.inspect(im, held=held_now() and not rc, batch=no, user=user, extra=mark)
                 except Exception:  # logged and held, never a 500 that leaves the PLC on the previous verdict
                     v = Verdict("HOLD", [{"rule": None, "check": "inspection_error", "pocket": None,
                                           "text": INSPECT_ERROR}], at=st._now())
                     out = publish([v])  # the hold reaches the PLC even if the log cannot be written either
-                    st.log(v, batch=no, image=im, user=user)
+                    st.log(v, batch=no, image=im, user=user, extra=mark)
+                    if rc:
+                        recheck.count(product_dir, rc, v.status)
                     return out
                 out = publish([v])
-                after_verdicts([v], no)
+                if rc:
+                    recheck.count(product_dir, rc, v.status)
+                after_verdicts([v], no, rechecked=bool(rc))
                 return out
         return paid(run)
 
@@ -453,6 +461,8 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
             refused = refused or not_released(batches.open)
             if refused:
                 return refused
+            if recheck.current(product_dir):  # each re-checked strip is counted one at a time
+                return {"error": "Re-check open: inspect the strips one at a time with Inspect strip"}
             with lock:  # one slow station operation at a time; verdicts land in order
                 if st.locked:  # no paid SAM video call for a locked station
                     v = st.log(Verdict("LOCKED", [{"rule": None, "check": "locked", "pocket": None, "text": st.lock_reason}]), batch=no, user=user)
@@ -593,6 +603,8 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
                 cur = batches.open
                 if not cur:
                     return JSONResponse({"error": NO_BATCH}, status_code=409)
+                if recheck.active(product_dir, cur):  # the re-checked strips belong to this batch's counts
+                    return {"error": "Finish or waive the re-check first."}
                 totals = reconcile(record._lines(product_dir / "log.jsonl"), cur["batch"], counts, limits)
                 totals["cleared"] = True
                 if totals["status"] == "outside":
@@ -631,16 +643,6 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
     @app.get("/quarantine")
     def quarantine():
         return paid(lambda: quarantine_list(product_dir, audit))
-
-    @app.post("/challenge")
-    def challenge(body: dict, request: Request):
-        name, role = who(request)
-        if not role:
-            return {"error": "Log in first"}
-        label = str(body.get("strip_label", "")).strip()
-        if not label:
-            return {"error": "Enter the challenge strip label."}
-        return paid(lambda: log_physical_challenge(audit, name, label, bool(body.get("ejected"))))
 
     @app.post("/release")
     def release(body: dict, request: Request):
@@ -768,8 +770,14 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
     def resume(body: dict, request: Request):
         def run():
             with lock:
-                return resume_line(st, plc or _NoPlc(), audit, users, qa(request), str(body.get("password", "")),
-                                   str(body.get("reason", "")))
+                name, w, waiver = qa(request), recheck.current(product_dir), str(body.get("waiver", "")).strip()
+                if w and not waiver:  # the re-check is finished, or QA gives a reason to waive the rest
+                    return {"error": recheck.not_done(w)}
+                out = resume_line(st, plc or _NoPlc(), audit, users, name, str(body.get("password", "")),
+                                  str(body.get("reason", "")))
+                if w and out["resumed"]:
+                    recheck.waive(product_dir, audit, w, name, waiver)
+                return out
         return paid(run)
 
     def snap(image, v):
@@ -838,6 +846,138 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
     @app.get("/stream")
     def stream():
         return StreamingResponse(frames(), media_type="multipart/x-mixed-replace; boundary=f")
+
+    # --- Physical challenge: QA registers known-bad strips; a logged-in user runs each one through the verdict path ---
+    chal = {"run": None}  # the run in progress, in memory: a run lost to a restart never passed (the gate stays shut)
+
+    def local_now():
+        return datetime.fromtimestamp(clock()).isoformat(timespec="seconds")
+
+    def live_run():  # the run in progress, unless its batch is no longer the open one (then it is dropped)
+        r, b = chal["run"], batches.open
+        return r if r and b and r["batch"] == b["batch"] else None
+
+    @app.get("/challenge")
+    def challenge_state():
+        def run():
+            s, r = challenge.load_set(product_dir), live_run()
+            nxt = None
+            if s and not (r and r["pending"]):
+                nxt = r["strips"][len(r["results"])] if r else s["strips"][0]
+            return {"set": s, "next": nxt and challenge.place(nxt), "strip": nxt, "pending": r["pending"] if r else None,
+                    "results": r["results"] if r else [], "last": (challenge.runs(product_dir) or [None])[-1]}
+        return paid(run)
+
+    @app.post("/challenge/register")
+    def challenge_register(request: Request, label: str = Form(""), kind: str = Form(""), rule: str = Form(""),
+                           image: UploadFile | None = File(None)):
+        def run():
+            name = qa(request)
+            if not st.checklist:
+                return {"error": NO_CHECKLIST}
+            im = image_from(image)
+            with lock:  # the run in progress is checked and changed under the same lock as /challenge/inspect
+                out = challenge.register(product_dir, st.checklist, label, kind, rule, im, name, local_now())
+                audit.append("challenge_register", name, {"strips": out["strips"]})
+                if live_run():  # the set changed: the new set is run in full
+                    chal["run"] = None
+                    out = dict(out, message="The challenge run in progress was stopped: run the new set in full")
+            return out
+        return paid(run)
+
+    @app.post("/challenge/inspect")
+    def challenge_inspect(request: Request, image: UploadFile | None = File(None)):
+        def run():
+            name, role = who(request)
+            if not role:
+                return {"error": "Log in first"}
+            s = challenge.load_set(product_dir)
+            if not s:
+                return {"error": challenge.NO_SET}
+            if src is not None and image is not None:  # a challenge proves a physical strip under the live camera
+                return {"error": "Place the strip under the camera: a challenge uses the live camera, not an uploaded photo"}
+            b = batches.open
+            if not b:
+                return JSONResponse({"error": NO_BATCH}, status_code=409)
+            im = image_from(image)
+            if im is None:
+                return {"error": "No camera frame to check."}
+            with lock:  # one slow station operation at a time
+                r = chal["run"] = live_run()
+                if r and r["pending"]:
+                    return {"error": f"Tick Ejected for {r['pending']['label']} and record it first"}
+                if st.locked:
+                    return {"error": "Station locked: " + st.lock_reason}
+                strip = r["strips"][len(r["results"])] if r else s["strips"][0]
+                # the normal verdict, never logged or published: no batch count, no drift rule, no production banner
+                v = st._judge(im, None, None)
+                if FINDER_DOWN in v.reasons:  # like a self-test that could not run: nothing is recorded
+                    return {"error": "Could not inspect: the pocket finder (SAM 3.1) did not answer — try again"}
+                res = challenge.judged(strip, v)
+                if r is None:
+                    r = chal["run"] = {"by": name, "batch": b["batch"], "strips": s["strips"], "results": [],
+                                       "pending": None, "source": "camera" if src is not None else "upload"}
+                if not res["caught"]:  # fail-safe: locked and audited now, before anyone ticks anything
+                    challenge.lock(st, res, res["why"])
+                    sync_lock()
+                if plc:  # every challenge strip is known-bad: the reject output pulses even on a miss, no counter moves
+                    plc.eject()
+                if not res["caught"]:
+                    log_physical_challenge(audit, name, res["label"], None, batch=r["batch"], source=r["source"],
+                                           missed=res["why"], **{k: res[k] for k in ("expected_rule", "status", "rules")},
+                                           passed=False)
+                r["pending"] = res
+                msg = (f"Rejected for Rule {res['expected_rule']}: tick Ejected once the strip is out" if res["caught"]
+                       else f"Missed: {res['label']} {res['why']} — station locked, quarantine open. "
+                            f"Take {res['label']} out — it is a known-bad strip")
+                return dict(res, message=msg)
+        return paid(run)
+
+    @app.post("/challenge/eject")
+    def challenge_eject(request: Request, body: dict | None = None):
+        def run():
+            name, role = who(request)
+            if not role:
+                return {"error": "Log in first"}
+            with lock:
+                r = chal["run"] = live_run()
+                if not (r and r["pending"]):
+                    return {"error": "Inspect the challenge strip first"}
+                p, ej = r["pending"], bool((body or {}).get("ejected"))
+                res = {"label": p["label"], "expected_rule": p["expected_rule"], "status": p["status"],
+                       "rules": p["rules"], "passed": p["caught"] and ej, "ejected": ej}
+                if p["caught"] and not ej:  # rejected but still on the line: the reject path failed
+                    challenge.lock(st, p, "not ejected")
+                    sync_lock()
+                log_physical_challenge(audit, name, p["label"], ej, batch=r["batch"], source=r["source"],
+                                       **{k: res[k] for k in ("expected_rule", "status", "rules", "passed")})
+                r["results"].append(res)
+                r["pending"] = None
+                if res["passed"] and len(r["results"]) < len(r["strips"]):
+                    return {"result": res, "next": challenge.place(r["strips"][len(r["results"])])}
+                row = batches._write(challenge.RUNS, {"time": clock(), "at": local_now(), "by": r["by"], "batch": r["batch"],
+                                                      "source": r["source"], "results": r["results"],
+                                                      "passed": res["passed"]})  # a run stops at its first miss
+                chal["run"] = None
+                return {"result": res, "run": row}
+        return paid(run)
+
+    @app.get("/challenge/photo/{label}")
+    def challenge_photo(label: str, request: Request):
+        if not who(request)[1]:
+            return JSONResponse({"error": "Log in first"}, status_code=401)
+        f = product_dir / "challenge" / f"{label}.jpg"
+        if not re.fullmatch(r"[A-Z0-9-]{1,12}", label) or not f.is_file():
+            return JSONResponse({"error": "No such photo"}, status_code=404)
+        return FileResponse(f, media_type="image/jpeg")
+
+    # --- Re-check window: opened by a critical hold (or an approved agent request); read by the screen ---
+    @app.get("/recheck")
+    def recheck_state():
+        def run():
+            w = recheck.load(product_dir)
+            return dict(w, text=recheck.text(w), count=recheck.progress(w)) if w else {"open": False}
+        return paid(run)
 
     return app
 

@@ -99,6 +99,17 @@ main{flex:1;min-height:0;display:flex;flex-direction:column}
 .status .due{color:#8a5f00;font-weight:500} .status .bad{color:var(--reject);font-weight:500}
 .status .brand{margin-left:auto;font-size:12px}
 .status .brand::before{display:none}
+/* Run: physical challenge run, one row under the verdict */
+.chal{flex:none;margin:0 20px 14px;padding:12px 18px;display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+.run:has(+ .chal:not([hidden])){min-height:auto}  /* the row below never covers the action buttons: the tab scrolls */
+.chal>b{font-size:16px}
+.chal #chnext{font-size:18px;font-weight:600}
+.chal img{height:56px;border-radius:4px;border:1px solid var(--rule)}
+.chal label{font-size:15px;display:flex;gap:6px;align-items:center}
+.chres{list-style:none;margin:0 0 0 auto;padding:0;display:flex;gap:6px;flex-wrap:wrap}
+.chres li{font-size:13px;font-weight:600;padding:2px 8px;border-radius:4px;border:1px solid}
+.chres .ok{color:var(--pass);background:#e7f3ec} .chres .bad{color:var(--reject);background:#fbe9e9}
+.chal .msg{flex-basis:100%;margin:0}
 
 /* Setup */
 .steps{display:grid;grid-template-columns:repeat(5,1fr);padding:18px 20px 0;gap:8px;margin:0;list-style:none}
