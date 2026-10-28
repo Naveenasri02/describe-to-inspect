@@ -980,6 +980,198 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
             return dict(w, text=recheck.text(w), count=recheck.progress(w)) if w else {"open": False}
         return paid(run)
 
+    # --- Line board (read-only): the stack light with reasons. After every POST and on every /line poll the facts are
+    # read and any states.jsonl row written under the station `lock` - the lock every hold and resume holds across its
+    # hold.json write and its audit row - so a row never shows half an action, and never an older snapshot ---
+    from collections import Counter
+    from d2i.ipqc import due_at
+    from d2i.linestate import finder_down, investigating, line_state, read_rows, record_change, release_items, segments
+    from d2i.openitems import _t, open_items
+
+    states_path = product_dir / "states.jsonl"
+    app.state.station_lock = lock
+    line_cache = {}  # the last /line answer, served while a slow station operation holds the lock
+
+    def batch_rows(b):
+        return [r for r in log_rows() if b and r.get("batch") == b["batch"]]
+
+    def hold_since():  # whole second of the last hold.json write, 0 when unknown
+        try:
+            return int(_t(json.loads((product_dir / "hold.json").read_text(encoding="utf-8"))["at"]))
+        except Exception:
+            return 0
+
+    def line_facts(request):
+        """(status, line state, open items, now, cause, agent): read-only. cause(previous row) -> (cause, by, rule,
+        strip) for a states.jsonl row; a hold or a resume takes them from its own audit row (at or after hold.json)."""
+        s, now = status(request), clock()
+        held, held_by = s["held"], hold_state(product_dir)[1]
+        since, rows = hold_since(), audit.entries()
+
+        def mine(e, *actions):  # written by the action that last wrote hold.json
+            try:
+                return e.get("action") in actions and e.get("user") == held_by and _t(e["at"]) >= since
+            except (KeyError, TypeError, ValueError):
+                return False
+
+        hold = next((e for e in reversed(rows) if mine(e, "hold_line")), None)
+        reason = ("Shift Supervisor investigating" if held_by == "supervisor" else (hold or {}).get("reason") or "Line held") \
+            if held else ""
+        with sup_lock:  # a copy: the agent's thread adds steps and requests
+            sup = inv["sup"]
+            agent = {"running": inv["running"], "tools": [x["tool"] for x in sup.steps] if sup else [],
+                     "pending": list(sup.pending.values()) if sup else []}
+        items = open_items(product_dir, now, requests=agent["pending"])
+        try:
+            suspended = finder_down(batch_rows(s["batch"]), st._selftests())
+        except Exception:  # an unreadable self-test log already locks the station: STOPPED says so
+            suspended = False
+        ls = line_state({"checklist": bool(s["checklist"]), "taught": s["taught"], "locked": s["locked"],
+                         "lock_reason": s["lock_reason"], "batch_open": bool(s["batch"]), "blockers": s["blockers"],
+                         "held": held, "held_by": held_by, "hold_reason": reason,
+                         "quarantine": s["quarantine_count"] or s["quarantine_error"], "suspended": suspended,
+                         "challenge_set": (product_dir / challenge.SET).exists(),
+                         "record_unsigned": any(i["kind"] == "record_unsigned" for i in items)})
+        strip = s["totals"]["inspected"] if s["totals"] else None
+
+        def cause(prev):
+            if prev and prev["to"] == "HELD" and not held:  # the hold was lifted: by whom and why
+                r = next((e for e in reversed(rows) if mine(e, "resume_line") or (
+                    mine(e, "agent_approve") and isinstance(e.get("details"), dict)
+                    and e["details"].get("kind") == "resume" and e["details"].get("approved"))), None)
+                if r is None:
+                    return "Hold lifted", held_by or None, None, strip
+                if r["action"] == "resume_line":
+                    return "Resumed: " + r["reason"], r["user"], None, strip
+                return (f'Resumed by {r["user"]} (approved agent request): the agent wrote '
+                        f'"{str(r["reason"]).removeprefix("Agent request: ")}"', r["user"], None, strip)
+            text = ls["reason"] or {"STARTING": "Batch released", "SUSPENDED": "Pocket finder answered",
+                                    "STOPPED": "Station unlocked"}.get(prev and prev["to"], "Line running")
+            # a rule number only from the station's own words (a verdict reason it held on), never from typed text
+            m = re.search(r"\bRule (\d+)\b", text) if ls["state"] == "HELD" and held_by == "station" else None
+            return text, ls["by"], int(m.group(1)) if m else None, strip
+
+        return s, ls, items, now, cause, agent
+
+    def line_now(request, wait):
+        """line_facts plus at most one states.jsonl row, all under the station lock; None (nothing recorded) when the
+        lock stays busy for `wait` s (0 = do not wait)."""
+        if not (lock.acquire(timeout=wait) if wait else lock.acquire(blocking=False)):
+            return None
+        try:
+            got = line_facts(request)
+            record_change(states_path, got[3], got[1]["state"], got[4])
+            return got
+        finally:
+            lock.release()
+
+    @app.middleware("http")
+    async def line_state_log(request: Request, call_next):
+        response = await call_next(request)
+        if request.method == "POST":
+            try:
+                await run_in_threadpool(line_now, request, 2.0)
+            except Exception:
+                pass  # the state log never fails a request; the next poll writes the change
+        return response
+
+    @app.get("/board", response_class=HTMLResponse)
+    def board():
+        return (STATIC / "line.html").read_text(encoding="utf-8")
+
+    def line_json(s, ls, items, now, cause, agent):
+        try:
+            cur = s["batch"] or next((r for r in reversed(batches.rows) if r["event"] == "start"), None)  # else the last
+        except Exception:  # unreadable batch file: the open batch only (none, as /status reads it)
+            cur = s["batch"]
+        mine, rows = batch_rows(cur), log_rows()
+        last = mine[-1] if mine else None
+        first = next((r for r in (last or {}).get("reasons", []) if r.get("rule") is not None), None)
+        names = {int(m[1]): m[2] for m in (re.match(r"Rule (\d+)(?: \(\w+\))?: (.*)", t) for t in s["rules"]) if m}
+
+        def per_rule(rs):  # a strip counts once per rule
+            return Counter(k for r in rs if r["status"] == "REJECT" for k in {x.get("rule") for x in r["reasons"]}
+                           if k is not None)
+
+        def recent(r):
+            try:
+                return _t(r["at"]) >= now - 3600
+            except (KeyError, TypeError, ValueError):
+                return False
+
+        nb, nh = per_rule(mine), per_rule([r for r in rows if recent(r)])
+        due = []
+        if s["batch"]:
+            try:
+                at = due_at(s["batch"], check_events(product_dir, s["batch"]["batch"]))
+                due = [{"name": n, "in": None if at[k] is None else at[k] - now}
+                       for k, n in (("leak", "Leak test"), ("print", "Print check"))]
+            except Exception:  # shown, never a blank board
+                due = [{"name": "Hourly checks", "in": None, "text": "cannot read the records"}]
+        try:
+            until = None if s["locked"] else st.selftest_until  # a locked station has no valid self-test
+        except Exception:
+            until = None
+        due.append({"name": "Self-test expires", "in": None if until is None else until - now})
+        try:
+            runs = record._lines(product_dir / "challenge_runs.jsonl")
+        except Exception:  # the waiting list already says the challenge records cannot be read
+            runs = []
+        run_ = runs[-1] if runs else None
+        need = release_items((product_dir / challenge.SET).exists())
+        known = bool(s["batch"]) and all(b in need for b in s["blockers"])  # an unreadable record ticks nothing
+        phys = next((e for e in reversed(audit.entries()) if e.get("action") == "physical_challenge"), None)
+        states_ = read_rows(states_path)
+        day = datetime.fromtimestamp(now).replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+        segs, lost = segments(states_, day, now), {}
+        for g in segs:
+            if g["state"] in ("HELD", "STOPPED"):
+                lost[(g["state"], g["cause"])] = lost.get((g["state"], g["cause"]), 0) + g["seconds"]
+        ok, bad = audit.verify()
+        unsigned = any(i["kind"] == "record_unsigned" for i in items)
+        sign = next((e for e in reversed(audit.entries()) if e.get("action") == "sign"), None) \
+            if cur and not s["batch"] and not unsigned else None
+        cl = s["checklist"] or {}
+        return {
+            "now": now, "state": ls["state"], "reason": ls["reason"], "by": ls["by"],
+            "since": states_[-1]["time"] if states_ and states_[-1]["to"] == ls["state"] else now,
+            "waiting_for": ls["waiting_for"], "also": ls["also"],
+            "investigating": investigating(agent["running"], agent["tools"], len(agent["pending"])),
+            "product": cl.get("product"), "count": cl.get("count"), "checklist_version": s["checklist_version"],
+            "batch": cur and {k: cur[k] for k in ("batch", "mfg", "exp", "mrp")} | {"open": bool(s["batch"])},
+            "release": [{"item": x, "done": known and x not in s["blockers"]} for x in need],
+            "chip": last and {"status": last["status"], "rule": first and first["rule"], "at": last.get("at"),
+                              "text": first["text"] if first else "; ".join(r.get("text", "") for r in last["reasons"]),
+                              "strip": sum(r["status"] != "LOCKED" for r in mine)},
+            "waiting": [dict(i, age=now - i["since"]) for i in items], "due": due,
+            "challenge": {"time": run_["time"], "passed": run_["passed"]} if run_ else
+            {"time": _t(phys["at"]), "label": phys["details"].get("strip_label"), "ejected": phys["details"].get("ejected")}
+            if phys else None,
+            "challenge_set": (product_dir / challenge.SET).exists(),
+            "counts": reconcile(mine, cur["batch"]) if cur else None,
+            "reconciliation": s["reconciliation"],
+            "reject_run": {"n": reject_run(rows, s["batch"]["batch"], last_resume()) if s["batch"] else 0,
+                           "of": DRIFT_REJECTS},
+            "rejects_by_rule": [{"rule": k, "text": names.get(k, ""), "batch": nb[k], "hour": nh[k]}
+                                for k in sorted(set(nb) | set(nh), key=lambda k: (-nb[k], -nh[k], k))],
+            "day_start": day, "segments": segs,
+            "lost": [{"state": k[0], "cause": k[1], "seconds": round(v, 1)} for k, v in lost.items()],
+            "footer": {"audit_ok": ok, "audit_entries": len(audit.entries()), "audit_broken_at": bad,
+                       "record": None if not cur else "draft" if s["batch"] or unsigned else "signed",
+                       "signed_by": sign and sign["user"], "signed_at": sign and _t(sign["at"])}}
+
+    @app.get("/line")
+    def line(request: Request):
+        def run():
+            got = line_now(request, 0)
+            if got is None and line_cache:  # a slow station operation holds the lock: the last answer, clocks moved on
+                now, old = clock(), line_cache["line"]
+                return dict(old, now=now, waiting=[dict(i, age=now - i["since"]) for i in old["waiting"]])
+            out = line_json(*(got or line_facts(request)))  # first poll ever while busy: shown, not recorded
+            line_cache["line"] = out
+            return out
+        return paid(run)
+
     return app
 
 

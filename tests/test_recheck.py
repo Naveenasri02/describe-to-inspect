@@ -262,3 +262,17 @@ def test_record_totals_and_quarantine_count_each_strip_once(tmp_path):
         b._write("log.jsonl", dict(r, at=datetime.fromtimestamp(t + 10).isoformat()))
     b._write("selftests.jsonl", {"passed": False, "failed": ["x"], "time": t + 20, "at": "y"})
     assert [v.get("recheck") for v in quarantine_list(tmp_path / "q")["strips"]] == [None]  # listed once, first verdict
+
+
+def test_line_board_lists_the_recheck_and_the_agent_request(tmp_path):
+    """The board's waiting list reads the window the station opened (open batch) and the supervisor's live requests."""
+    chat = ScriptChat(call("request_recheck", {"reason": "two wrong tablets this hour"}), {"content": "Mix-up risk."})
+    c, p = bench(tmp_path, chat)
+    _judge(c, PASS, PASS, CRIT)
+    _inspect(c, 3)  # the wrong tablet holds the line and opens a re-check of strips 1-2
+    c.post("/investigate", json={"trigger": "wrong tablet"})
+    wait_done(c)
+    w = {i["kind"]: i for i in c.get("/line").json()["waiting"]}
+    assert (w["recheck"]["who"], w["recheck"]["text"]) == ("Operator", "Re-check 0 of 2: strips no. 1–2")
+    assert "line_held" in w and w["request"]["text"] == ("Shift Supervisor asks QA to approve: recheck — "
+                                                         "two wrong tablets this hour")

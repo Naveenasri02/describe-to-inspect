@@ -248,3 +248,21 @@ def test_challenge_inspect_shows_the_station_step(tmp_path):
     st._judge = judge
     assert c.post("/challenge/inspect", files=up(make_strip(seed=15))).json()["caught"]
     assert seen and seen[0].startswith("Finding the strip") and st.step == ""
+
+
+def test_line_board_shows_the_challenge_gate_and_a_miss(tmp_path):
+    """The board's release list has the challenge run when a set is registered; a miss is STOPPED with its own reason
+    and waits for QA as a failed challenge."""
+    c, p = _set_bench(tmp_path, ("C1", "empty_pocket"), verdicts=[("PASS", [])])
+    j = c.get("/line").json()
+    assert [(r["item"], r["done"]) for r in j["release"]] == [
+        ("Self-test for this batch", True), (CHAL, False), ("Start-up print check", True),
+        ("QA signature on the start-up specimen", True)]
+    assert (j["state"], j["reason"]) == ("STARTING", "Release 3 of 4 — still needed: " + CHAL)
+    c.post("/challenge/inspect", files=up(make_strip(seed=15)))  # missed: locked at once, before any tick
+    j = c.get("/line").json()
+    assert (j["state"], j["reason"]) == ("STOPPED", "Physical challenge missed: C1 not rejected")
+    [w] = [i for i in j["waiting"] if i["kind"] == "challenge_failed"]
+    assert w["text"] == "Physical challenge failed: C1 not rejected" and w["who"] == "QA"
+    row = json.loads((p / "states.jsonl").read_text(encoding="utf-8").splitlines()[-1])
+    assert (row["to"], row["cause"]) == ("STOPPED", "Physical challenge missed: C1 not rejected")
