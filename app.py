@@ -156,11 +156,16 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
     def station_hold(reason):  # the existing hold (hold.json + PLC coil + audit), raised by the station itself
         hold_line(product_dir, plc or _NoPlc(), audit, "station", reason)
 
+    def last_resume():  # Unix time of the latest QA "Resume line" (audit log, UTC), 0 if none
+        return next((datetime.fromisoformat(e["at"]).timestamp() for e in reversed(audit._rows()) if e["action"] == "resume_line"), 0.0)
+
     def after_verdicts(vs, no):  # call inside `lock`, after the verdicts are logged
+        if held_now():  # already held: the first hold stays open, no second one
+            return
         crit = next((r["text"] for v in vs for r in v.reasons if r.get("severity") == "critical"), None)
         if crit:
             station_hold("Critical: " + crit)
-        elif reject_run(record._lines(product_dir / "log.jsonl"), no) >= DRIFT_REJECTS:
+        elif reject_run(record._lines(product_dir / "log.jsonl"), no, last_resume()) >= DRIFT_REJECTS:
             station_hold("3 rejects in a row — check the machine")
 
     def need_batch():  # inspecting without an open batch would leave verdicts no batch owns: refuse, log nothing
@@ -359,14 +364,14 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
                 return JSONResponse({"error": NO_BATCH}, status_code=409)
             read = read_print(im, get_client())  # MetaError / BudgetExceeded reach paid(): plain text, nothing logged
             out = check_print(read, b, date.fromtimestamp(clock()))
-            bad = wrong_print(out["reasons"])
-            if bad:
-                with lock:
-                    station_hold("Critical: wrong print — " + bad)
             with meta:
                 batches._write("prints.jsonl", {"at": datetime.fromtimestamp(clock()).isoformat(timespec="seconds"),
                                                 "batch": b["batch"], "read": read, "status": out["status"],
                                                 "reasons": out["reasons"], "by": name})
+            bad = wrong_print(out["reasons"])
+            if bad:  # after the row is written: a failing hold must not lose the read
+                with lock:
+                    station_hold("Critical: wrong print — " + bad)
             return out
         return paid(run)
 

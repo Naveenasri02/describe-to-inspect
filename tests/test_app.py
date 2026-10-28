@@ -675,3 +675,41 @@ def test_tray_locked_makes_no_paid_call(tmp_path):
         assert not (tmp_path / "p" / "tray.mp4").exists()
     finally:
         c.app.state.source.stop.set()
+
+
+def _holds(p):
+    return [e for e in _audit(p) if e["action"] == "hold_line"]
+
+
+def test_no_second_hold_while_held(tmp_path):
+    c, p = bench(tmp_path)
+    _fake_judge(c, "wrong_tablet")
+    c.post("/inspect", files=up(make_strip(seed=15)))
+    first = json.loads((p / "hold.json").read_text(encoding="utf-8"))
+    for _ in range(4):  # more criticals and a drift run, all while held
+        c.post("/inspect", files=up(make_strip(seed=15)))
+    assert len(_holds(p)) == 1 and json.loads((p / "hold.json").read_text(encoding="utf-8")) == first
+
+
+def test_drift_restarts_after_qa_resume(tmp_path):
+    c, p = bench(tmp_path)
+    _fake_judge(c, "empty_pocket")
+    for _ in range(3):
+        c.post("/inspect", files=up(make_strip(seed=15)))
+    assert len(_holds(p)) == 1
+    login(c, "qa1", "pw-qa")
+    assert c.post("/resume", json={"password": "pw-qa", "reason": "checked"}).json()["resumed"] is True
+    time.sleep(1.1)  # verdict and audit times have one-second resolution
+    c.post("/inspect", files=up(make_strip(seed=15)))
+    assert c.get("/status").json()["held"] is False and len(_holds(p)) == 1
+    for _ in range(2):
+        c.post("/inspect", files=up(make_strip(seed=15)))
+    assert c.get("/status").json()["held"] is True and len(_holds(p)) == 2
+
+
+def test_failing_hold_still_records_the_print(tmp_path, monkeypatch):
+    read = {"batch": "B9", "mfg": "01/2026", "exp": "01/2028", "mrp": "45", "readable": True}
+    c, p = _print_bench(tmp_path, read=read)
+    monkeypatch.setattr(app_mod, "hold_line", lambda *a: 1 / 0)
+    assert "error" in c.post("/print", files=up(make_strip(seed=1))).json()
+    assert _lines(p / "prints.jsonl")[0]["status"] == "HOLD"
