@@ -183,7 +183,21 @@ function qaTab(s){
   // the one main action on this screen: the next thing QA has to do
   const main=s.held?"go-resume":!b?"go-start":s.blockers.includes(REL[1])?"go-print":s.blockers.includes(REL[2])?"go-spec":"";
   document.querySelectorAll("#qa .go").forEach(x=>x.classList.toggle("primary",x.id===main));
+  missedRefresh();
 }
+// missed hourly windows: each needs a QA review note before the record can be signed
+let missedKey="";
+async function missedRefresh(){
+  let r;try{r=await (await fetch("/missed")).json()}catch(e){return}
+  const ms=r.missed||[],key=JSON.stringify(ms.map(m=>m.window));$("missedbox").hidden=!ms.length;
+  if(key===missedKey)return;missedKey=key;  // the same windows: keep the notes being typed
+  const ul=$("missed");ul.replaceChildren();
+  ms.forEach(m=>{const li=mk("li","","todo"),at=t=>new Date(t*1000).toTimeString().slice(0,5);
+    const note=mk("input");note.placeholder="Review note";note.setAttribute("aria-label","Review note: "+m.text+" "+at(m.start));
+    const btn=mk("button","Add review note (QA)","btn");btn.onclick=()=>reviewMissed(m,note);
+    li.append(mk("span","!"),mk("div",m.text+" "+at(m.start)+"–"+at(m.end)),note,btn);ul.append(li)})}
+const reviewMissed=(m,note)=>busy(async()=>{const r=await j("/review-missed",{window:m.start,kind:m.kind,note:note.value,password:$("mpw").value});
+  $("mpw").value="";if(!r.error)missedKey="";show(r.error?r:"Review note saved: "+m.text+".")});
 async function quarantine(n,err){
   $("qbanner").hidden=$("qrel").hidden=!n&&!err;
   if(err){$("qbanner").textContent="Quarantine status unknown — check the record";$("qlist").replaceChildren();return}

@@ -514,7 +514,7 @@ def test_sign_pins_the_verdict_files(tmp_path):
     e = json.loads((p / "audit.jsonl").read_text(encoding="utf-8").splitlines()[-1])
     sha = lambda n: hashlib.sha256((p / n).read_bytes()).hexdigest()  # noqa: E731
     assert e["action"] == "sign"
-    assert e["details"]["files_sha256"] == {"log.jsonl": sha("log.jsonl"), "selftests.jsonl": sha("selftests.jsonl")}
+    assert e["details"]["files_sha256"] == {n: sha(n) for n in ("log.jsonl", "selftests.jsonl", "states.jsonl")}
 
 
 def test_self_test_before_teaching_says_teach_first(tmp_path):
@@ -1127,3 +1127,92 @@ def test_record_config_block_has_app_version_and_camera_source(tmp_path):
     cfg = c.get("/record").text.split("<h2>Configuration</h2>")[1].split("<h2>")[0]
     for s in ("App version", "Camera source", "Pocket threshold", "Border threshold"):
         assert s in cfg
+
+
+# --- Task 35 (b): no signature while anything waits for a person; QA review notes for missed hourly checks ---
+def _sign(c):
+    r = c.get("/record")
+    assert "X-Record-Id" in r.headers, r.text[:300]
+    return c.post("/sign", json={"record_id": r.headers["X-Record-Id"], "password": "pw-qa", "meaning": "Approved"}).json()
+
+
+def _backdate_batch(p, seconds):
+    """The open batch started `seconds` earlier, so its hourly windows went by with no check."""
+    rows = [json.loads(x) for x in (p / "batches.jsonl").read_text(encoding="utf-8").splitlines()]
+    for r in rows:
+        if r["event"] == "start":
+            r["time"] -= seconds
+            r["at"] = datetime.fromtimestamp(r["time"]).isoformat(timespec="seconds")
+    (p / "batches.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+
+
+def test_sign_refused_while_anything_waits_for_a_person(tmp_path):
+    chat = ScriptChat(call("request_resume", {"reason": "lamp moved back"}), {"content": "Lamp moved back."})
+    c, p = bench(tmp_path, chat)
+    login(c, "qa1", "pw-qa")
+
+    def refused(text):
+        out = _sign(c)
+        assert out["error"].startswith("Sign refused — still waiting: ") and text in out["error"], out
+
+    c.post("/investigate", json={"trigger": "glare"})
+    req = wait_done(c)["pending"][0]  # the agent holds the line and asks QA to resume it
+    refused("Shift Supervisor asks QA to approve: resume — lamp moved back")
+    refused("Line held by the Shift Supervisor")
+    assert c.post("/approve-request", json={"id": req["id"], "password": "pw-qa"}).json()["approved"] is True
+    c.post("/hold", json={"reason": "foil jam"})
+    refused("Line held by qa1 — foil jam")
+    assert c.post("/resume", json={"password": "pw-qa", "reason": "jam cleared"}).json()["resumed"] is True
+    rc = {"window_id": "w1", "open": True, "since": time.time(), "from_strip": 1, "to_strip": 2, "total": 2, "done": 0}
+    (p / "recheck.json").write_text(json.dumps(rc), encoding="utf-8")
+    refused("Re-check 0 of 2")
+    (p / "recheck.json").write_text(json.dumps(dict(rc, open=False)), encoding="utf-8")
+    b, now = Batches(p), time.time()
+    b._write("challenge_runs.jsonl", {"time": now, "at": "x", "by": "op", "batch": "B1", "passed": False, "results": []})
+    refused("Physical challenge failed")
+    b._write("challenge_runs.jsonl", {"time": now + 1, "at": "x", "by": "op", "batch": "B1", "passed": True, "results": []})
+    _backdate_batch(p, 7300)
+    refused("Leak test missed")
+    for m in c.get("/missed").json()["missed"]:
+        assert c.post("/review-missed", json={"window": m["start"], "kind": m["kind"], "password": "pw-qa",
+                                              "note": "done on paper"}).json()["window"] == m["window"]
+    time.sleep(1.1)  # verdict times are whole seconds: the strip lands after the last passed self-test
+    t = float(int(time.time()))  # a strip, then a failed self-test: quarantine opens (not after the QA release below)
+    b._write("log.jsonl", {"status": "PASS", "reasons": [], "pocket_scores": [], "skipped": [], "strip_id": None,
+                           "image_name": None, "at": datetime.fromtimestamp(t).isoformat(timespec="seconds"),
+                           "checklist_version": 1, "batch": "B1", "user": "op"})
+    b._write("selftests.jsonl", dict(b._read("selftests.jsonl")[-1], passed=False, failed=["x"], time=t,
+                                     at=datetime.fromtimestamp(t).isoformat(timespec="seconds")))
+    refused("Quarantine: 1 strips")
+    assert c.post("/release", json={"password": "pw-qa", "reason": "strips re-checked"}).json()["action"] == "release_quarantine"
+    assert not any(e["action"] == "sign" for e in _audit(p))  # nothing was signed while anything waited
+    out = _sign(c)
+    assert out.get("signed_by") == "qa1", out  # clear: the open batch's record signs
+
+
+def test_review_note_closes_a_missed_check(tmp_path):
+    from d2i.openitems import window_id
+    c, p = bench(tmp_path)
+    _backdate_batch(p, 3700)  # one whole hour went by: the leak test and the print check were missed
+    login(c, "qa1", "pw-qa")
+    missed = c.get("/missed").json()["missed"]
+    assert [m["kind"] for m in missed] == ["leak", "print"] and missed[0]["window"] == window_id("leak", missed[0]["start"])
+    m, note = missed[0], "tested 10:05, entered late"
+    body = {"window": m["start"], "kind": m["kind"], "note": note}
+    assert c.post("/review-missed", json=dict(body, password="bad")).json()["error"] == "QA login required"
+    assert "note" in c.post("/review-missed", json=dict(body, password="pw-qa", note=" ")).json()["error"]
+    assert "error" in c.post("/review-missed", json=dict(body, password="pw-qa", window=m["start"] + 600)).json()
+    login(c, "op", "pw-op")
+    assert c.post("/review-missed", json=dict(body, password="pw-op")).json() == {"error": "Log in as a QA user first"}
+    assert not (p / "reviews.jsonl").exists()
+    login(c, "qa1", "pw-qa")
+    row = c.post("/review-missed", json=dict(body, password="pw-qa")).json()
+    assert row == {"time": row["time"], "at": row["at"], "kind": "missed_check", "window": m["window"], "by": "qa1",
+                   "note": note}
+    assert [json.loads(x) for x in (p / "reviews.jsonl").read_text(encoding="utf-8").splitlines()] == [row]
+    e = _audit(p)[-1]
+    assert (e["action"], e["user"], e["reason"], e["details"]["window"]) == ("review_missed", "qa1", note, m["window"])
+    assert [x["kind"] for x in c.get("/missed").json()["missed"]] == ["print"]  # the leak window is closed
+    waiting = [i["text"] for i in c.get("/line").json()["waiting"] if i["kind"] == "missed_check"]
+    assert len(waiting) == 1 and waiting[0].startswith("Print check missed")
+    assert "error" in c.post("/review-missed", json=dict(body, password="pw-qa")).json()  # one note per window

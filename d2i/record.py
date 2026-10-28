@@ -256,15 +256,36 @@ def fingerprint(product_dir: Path, since: float, until: float) -> dict:
     for n in ("batches.jsonl", "prints.jsonl", SET, RUNS):  # the challenge set and runs are shown in the record too
         h.update(b"|" + ((p / n).read_bytes() if (p / n).exists() else b""))
     files = {n: hashlib.sha256((p / n).read_bytes()).hexdigest() if (p / n).exists() else None
-             for n in ("log.jsonl", "selftests.jsonl")}
-    return {"since": since, "until": until, "content_sha256": h.hexdigest(), "files_sha256": files}
+             for n in ("log.jsonl", "selftests.jsonl", "states.jsonl")}
+    return {"since": since, "until": until, "content_sha256": h.hexdigest(), "files_sha256": files,
+            "states_sha256": _states_sha256(p)}
+
+
+def _states_sha256(p: Path) -> str:
+    """states.jsonl as a signature compares it. A COMPLETE -> IDLE row is the signature's own effect (the ended batch's
+    record stops waiting for one), not a change to what was signed; every other line counts, unreadable ones too."""
+    f, keep = p / "states.jsonl", []
+    for line in f.read_text(encoding="utf-8", errors="replace").splitlines() if f.exists() else []:
+        try:
+            r = json.loads(line)
+        except ValueError:
+            r = None
+        if not (isinstance(r, dict) and r.get("from") == "COMPLETE" and r.get("to") == "IDLE"):
+            keep.append(line)
+    return hashlib.sha256("\n".join(keep).encode("utf-8")).hexdigest()
 
 
 def _signed_rows(audit: AuditLog | None, batch: str, fp: dict) -> tuple[list[dict], list[dict]]:
-    """(signatures on exactly this content, every signature on this batch)."""
+    """(signatures on exactly this content, every signature on this batch). The raw states.jsonl hash is kept as
+    evidence; the state log is compared through states_sha256, which leaves out the signature's own state change."""
     rows = [r for r in (audit.entries() if audit else []) if r.get("action") == "sign"
             and isinstance(r.get("details"), dict) and r["details"].get("batch", "") == batch]
-    same = lambda r: all(r["details"].get(k) == fp[k] for k in ("content_sha256", "files_sha256"))  # noqa: E731
+
+    def same(r):
+        d = r["details"]
+        return (d.get("content_sha256") == fp["content_sha256"] and d.get("states_sha256") == fp["states_sha256"]
+                and all((d.get("files_sha256") or {}).get(n, "") == fp["files_sha256"][n]
+                        for n in ("log.jsonl", "selftests.jsonl")))
     return [r for r in rows if same(r)], rows
 
 

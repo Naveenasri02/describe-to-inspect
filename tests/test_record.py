@@ -1,3 +1,4 @@
+import hashlib
 import json
 from datetime import datetime
 
@@ -388,6 +389,25 @@ def test_challenge_run_after_signing_is_not_green(product):
     with (product / "challenge_runs.jsonl").open("a", encoding="utf-8") as f:  # a challenge run lands after signing
         f.write(json.dumps({"time": T0 + 50, "at": "x", "by": "op", "batch": "LOT9", "source": "camera",
                             "results": [], "passed": True}) + chr(10))
+    late = shift_record(product, T0 - 10, T0 + 100, "LOT9", "A", audit=audit)
+    assert "badge signed" not in late and "changed since signing, re-sign needed" in late
+
+
+def test_state_change_after_signing_is_not_green(product):
+    """Task 35 (d): the sign entry pins states.jsonl; a later state change shows "changed since signing". The
+    COMPLETE -> IDLE row that signing itself causes (the record no longer waits for a signature) does not."""
+    def state(t, frm, to):
+        with (product / "states.jsonl").open("a", encoding="utf-8") as f:
+            f.write(json.dumps({"time": t, "at": _at(t), "from": frm, "to": to, "cause": "x", "by": None,
+                                "rule": None, "strip": None}) + chr(10))
+    state(T0 + 60, None, "RUNNING")
+    state(T0 + 90, "RUNNING", "COMPLETE")
+    audit = _signed_setup(product, "Approved")
+    d = audit.entries()[-1]["details"]
+    assert d["files_sha256"]["states.jsonl"] == hashlib.sha256((product / "states.jsonl").read_bytes()).hexdigest()
+    state(T0 + 95, "COMPLETE", "IDLE")  # the signature's own effect
+    assert "badge signed" in shift_record(product, T0 - 10, T0 + 100, "LOT9", "A", audit=audit)
+    state(T0 + 99, "IDLE", "STARTING")
     late = shift_record(product, T0 - 10, T0 + 100, "LOT9", "A", audit=audit)
     assert "badge signed" not in late and "changed since signing, re-sign needed" in late
 

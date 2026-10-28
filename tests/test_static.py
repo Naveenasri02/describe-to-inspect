@@ -163,3 +163,30 @@ def test_challenge_buttons_are_long_actions(tmp_path):
     assert json.loads(out[0]) == [True, "Finding the strip (SAM 3.1)… 1 s"]
     assert json.loads(out[1]) == [["/challenge/inspect"], False, "done /challenge/inspect"]
     assert json.loads(out[2]) == ["/challenge/inspect", "/challenge/eject"]
+
+
+def test_missed_check_notes_keep_what_qa_types_and_go_through_busy(tmp_path):
+    """Task 35 (b): the QA tab lists each missed hourly window with a note field and a button. The 2 s refresh must
+    not wipe a note being typed, and the button is a busy() action whose answer is the latest message."""
+    html = (STATIC / "index.html").read_text(encoding="utf-8")
+    js = (STATIC / "station.js").read_text(encoding="utf-8")
+    assert 'id="missedbox"' in html and 'id="missed"' in html and 'id="mpw"' in html
+    src = re.search(r"^let missedKey=.*?show\(r\.error\?r:\"Review note saved: \"\+m\.text\+\"\.\"\)\}\);$", js,
+                    re.M | re.S).group(0)
+    assert "missedRefresh();" in js.split("function qaTab")[1].split("\n}\n")[0]
+    out = _node_run('''const el=()=>({hidden:false,value:"",children:[],append(...k){this.children.push(...k)},
+  replaceChildren(){this.rebuilt=(this.rebuilt||0)+1;this.children=[]},setAttribute(){}});
+const els={missedbox:el(),missed:el(),mpw:el()},$=id=>els[id],mk=()=>el(),posted=[],shown=[];
+let list=[{kind:"leak",text:"Leak test missed",start:0,end:3600,window:"leak 1970-01-01T00:00:00"}];
+const fetch=async()=>({json:async()=>({missed:list})});
+const j=async(u,b)=>{posted.push([u,b]);return {}};const busy=async fn=>fn();const show=t=>shown.push(t);
+''' + src + '''
+(async()=>{await missedRefresh();await missedRefresh();
+  const li=els.missed.children[0],note=li.children[2],btn=li.children[3];note.value="tested 10:05";
+  await missedRefresh();els.mpw.value="pw";await btn.onclick();
+  console.log(JSON.stringify([els.missed.rebuilt,li.children[2].value,posted,els.mpw.value,shown]))})()''',
+                    tmp_path / "missed.js")
+    rebuilt, note, posted, pw, shown = json.loads(out[0])
+    assert rebuilt == 1 and note == "tested 10:05"  # refreshed twice more, never rebuilt: the note stays
+    assert posted == [["/review-missed", {"window": 0, "kind": "leak", "note": "tested 10:05", "password": "pw"}]]
+    assert pw == "" and shown == ["Review note saved: Leak test missed."]

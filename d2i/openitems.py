@@ -38,6 +38,24 @@ def window_id(kind: str, start: float) -> str:
     return f"{kind} {datetime.fromtimestamp(start).isoformat(timespec='seconds')}"
 
 
+def missed_checks(product_dir: Path, now: float) -> list[dict]:
+    """The last started batch's missed hourly windows with no QA review note yet:
+    {kind ("leak" | "print"), text, start, end, window (the reviews.jsonl key)}, oldest first."""
+    p = Path(product_dir)
+    rows = Batches(p).rows
+    start = next((r for r in reversed(rows) if r["event"] == "start"), None)
+    if not start:
+        return []
+    end = next((r for r in rows if r["event"] == "end" and r["batch"] == start["batch"] and r["time"] >= start["time"]), None)
+    reviewed = {r.get("window") for r in _rows(p / "reviews.jsonl")}
+    out = []
+    for text, a, b in missed_windows(start, check_events(p, start["batch"]), end["time"] if end else now):
+        kind = "leak" if text.startswith("Leak") else "print"
+        if window_id(kind, a) not in reviewed:
+            out.append({"kind": kind, "text": text, "start": a, "end": b, "window": window_id(kind, a)})
+    return out
+
+
 def record_unsigned(batch_rows: list[dict], audit_rows: list[dict]) -> dict | None:
     """The end row of the last batch when it ended and no record was signed since; else None."""
     end = batch_rows[-1] if batch_rows and batch_rows[-1]["event"] == "end" else None
@@ -98,16 +116,9 @@ def open_items(product_dir: Path, now: float, requests=()) -> list[dict]:
                 end["time"], evidence="record: Reconciliation")
 
     def missed_check():
-        rows = Batches(p).rows
-        start = next((r for r in reversed(rows) if r["event"] == "start"), None)
-        if not start:
-            return
-        end = next((r for r in rows if r["event"] == "end" and r["batch"] == start["batch"] and r["time"] >= start["time"]), None)
-        reviewed = {r.get("window") for r in _rows(p / "reviews.jsonl")}
-        for text, a, b in missed_windows(start, check_events(p, start["batch"]), end["time"] if end else now):
-            if window_id("leak" if text.startswith("Leak") else "print", a) not in reviewed:
-                add("missed_check", f"{text} {_hm(a)}–{_hm(b)} — QA review note needed", b,
-                    evidence="record: In-process checks")
+        for m in missed_checks(p, now):
+            add("missed_check", f"{m['text']} {_hm(m['start'])}–{_hm(m['end'])} — QA review note needed", m["end"],
+                evidence="record: In-process checks")
 
     def challenge_failed():
         runs = _rows(p / "challenge_runs.jsonl")

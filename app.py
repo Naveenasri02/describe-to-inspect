@@ -29,6 +29,7 @@ from d2i.checklist import approve, make_checklist
 from d2i.llm import ToolChat
 from d2i.meta_api import Budget, MetaClient
 from d2i.ipqc import DRIFT_REJECTS, check_events, due, reconcile, reject_run, release_blockers
+from d2i.openitems import missed_checks, open_items, window_id
 from d2i.printcheck import check_print, read_print, wrong_print
 from d2i.pockets import find_layout
 from d2i.station import FINDER_DOWN, NEED_TEACH, Station, Verdict
@@ -656,8 +657,39 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
             rec = records.get(str(body.get("record_id", "")))
             if rec is None:
                 return {"error": RECORD_EXPIRED}
+            with sup_lock:  # a copy: the agent's thread adds requests
+                pending = list(inv["sup"].pending.values()) if inv["sup"] else []
+            left = [i["text"] for i in open_items(product_dir, clock(), requests=pending) if i["kind"] != "record_unsigned"]
+            if left:  # the board's "waiting for a person" list: each one is closed first
+                return {"error": "Sign refused — still waiting: " + "; ".join(left)}
             return sign_record(rec[0], audit, users, name, str(body.get("password", "")),
                                meaning=str(body.get("meaning", "")), product_dir=product_dir, batch=rec[2], extra=rec[3])
+        return paid(run)
+
+    @app.get("/missed")
+    def missed():  # the missed hourly windows still waiting for a QA review note
+        return paid(lambda: {"missed": missed_checks(product_dir, clock())})
+
+    @app.post("/review-missed")
+    def review_missed(body: dict, request: Request):
+        def run():
+            name = qa(request)
+            _require_qa(users, name, str(body.get("password", "")))  # re-typed password, as Resume line
+            note, kind = str(body.get("note", "")).strip(), str(body.get("kind", ""))
+            if not note:
+                raise ValueError("Write the review note")
+            try:
+                w = window_id(kind, float(body.get("window")))
+            except (TypeError, ValueError, OverflowError, OSError):
+                raise ValueError("No such missed window") from None
+            now = clock()
+            with meta:
+                if not any(m["window"] == w for m in missed_checks(product_dir, now)):  # one note per missed window
+                    return {"error": "No missed check waits for a note in that window"}
+                row = batches._write("reviews.jsonl", {"time": now, "at": datetime.fromtimestamp(now).isoformat(
+                    timespec="seconds"), "kind": "missed_check", "window": w, "by": name, "note": note})
+            audit.append("review_missed", name, {"window": w}, note)
+            return row
         return paid(run)
 
     @app.get("/trace")
@@ -986,7 +1018,7 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
     from collections import Counter
     from d2i.ipqc import due_at
     from d2i.linestate import finder_down, investigating, line_state, read_rows, record_change, release_items, segments
-    from d2i.openitems import _t, open_items
+    from d2i.openitems import _t
 
     states_path = product_dir / "states.jsonl"
     app.state.station_lock = lock
