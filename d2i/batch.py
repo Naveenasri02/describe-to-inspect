@@ -27,6 +27,14 @@ def parse_month(s: str) -> tuple[int, int]:
     return (int(yr) + (2000 if len(yr) == 2 else 0), mon)
 
 
+def parse_strength(s) -> tuple[float, str]:
+    """"500 mg" = "500mg" = "500MG" -> (500.0, "mg"); ValueError when there is no number and unit."""
+    m = re.fullmatch(r"\s*(\d+(?:\.\d+)?|\.\d+)\s*([A-Za-zµ%]+(?:\s*/\s*[A-Za-z]+)?)\s*", str(s))
+    if not m:
+        raise ValueError("Strength: a number and a unit, e.g. 500 mg")
+    return float(m.group(1)), re.sub(r"\s", "", m.group(2)).lower()
+
+
 def line_clearance(image, client) -> dict:
     """Not clear when SAM finds any blister pack, pill or capsule on the table."""
     if client is None:
@@ -81,10 +89,17 @@ class Batches:
         return self._write("clearances.jsonl", {"at": _iso(now), "time": now, "by": by,
                                                 "clear": bool(result["clear"]), "found": result["found"]})
 
-    def start(self, batch, mfg, exp, mrp, by, now) -> dict:
+    def start(self, batch, mfg, exp, mrp, by, now, product=None, strength=None) -> dict:
         no = re.sub(r"\s+", "", str(batch)).upper()
         if not re.fullmatch(r"[A-Z0-9/-]{1,20}", no):
             raise ValueError("Batch number: 1 to 20 letters, digits, / or -")
+        extra = {}
+        if product is not None or strength is not None:  # None = an older caller with no foil text to compare
+            prod = re.sub(r"\s+", " ", str(product or "")).strip()
+            if not 1 <= len(prod) <= 60:
+                raise ValueError("Product name: 1 to 60 characters")
+            parse_strength(strength or "")
+            extra = {"product": prod, "strength": re.sub(r"\s+", " ", str(strength)).strip()}
         m, e = parse_month(mfg), parse_month(exp)
         if e <= m:
             raise ValueError("Expiry must be after the manufacturing month")
@@ -110,7 +125,7 @@ class Batches:
             raise ValueError("Line clearance is older than 30 minutes — run it again")
         return self._write("batches.jsonl", {"event": "start", "batch": no, "mfg": "%02d/%d" % (m[1], m[0]),
                                              "exp": "%02d/%d" % (e[1], e[0]), "mrp": f"{price:.2f}", "by": by,
-                                             "at": _iso(now), "time": now, "clearance_at": last["at"]})
+                                             "at": _iso(now), "time": now, "clearance_at": last["at"], **extra})
 
     def leak(self, result, by, note, now, samples: int = 0) -> dict:
         if result not in ("pass", "fail"):

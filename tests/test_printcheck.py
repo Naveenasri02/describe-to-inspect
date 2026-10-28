@@ -91,3 +91,43 @@ def test_wrong_print_vs_unreadable_print():
     assert wrong_print(run(exp="09/2026")["reasons"]) and wrong_print(run(exp="09/2026", mfg="10/2026")["reasons"])
     assert wrong_print(run(mrp="")["reasons"]) is None
     assert wrong_print(run(readable=False)["reasons"]) is None
+
+
+PB = dict(BATCH, product="Paracetamol Tablets IP", strength="500 mg")
+PG = dict(GOOD, product="PARACETAMOL  tablets ip", strength="500MG")
+
+
+def runp(**over):
+    return check_print(dict(PG, **over), PB, TODAY)
+
+
+def test_product_and_strength_normalised():
+    assert runp() == {"status": "PRINT_OK", "reasons": []}
+    assert runp(strength="500 Mg")["status"] == "PRINT_OK" and runp(strength="500.0mg")["status"] == "PRINT_OK"
+
+
+def test_wrong_product_or_strength_is_wrong_print():
+    r = runp(strength="650 mg")
+    assert r["reasons"] == ["Strength on strip is 650 mg, batch record says 500 mg"] and wrong_print(r["reasons"])
+    r = runp(product="Ibuprofen Tablets")
+    assert r["status"] == "HOLD" and wrong_print(r["reasons"])
+    assert runp(strength="500 g")["status"] == "HOLD"  # unit matters
+
+
+def test_unparsed_strength_or_missing_product_is_check_by_hand():
+    r = runp(strength="mg")
+    assert r["reasons"] == ["Strength not readable — check by hand"] and wrong_print(r["reasons"]) is None
+    r = runp(product="")
+    assert r["status"] == "HOLD" and wrong_print(r["reasons"]) is None
+
+
+def test_prompt_never_contains_product_or_strength():
+    seen = []
+
+    class Fake:
+        def spark_json(self, system, user, schema, name="result", **kw):
+            seen.append(system + user)
+            return PG
+
+    read_print(object(), Fake())
+    assert "500" not in seen[0] and "Paracetamol" not in seen[0]
