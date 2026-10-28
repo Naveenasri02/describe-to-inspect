@@ -261,6 +261,14 @@ def test_agent_self_test_miss_locks_and_opens_quarantine(bench, monkeypatch):
     assert quarantine_list(bench.st.dir, bench.audit)["failed_at"] == rows[-1]["at"]
 
 
+def test_agent_self_test_without_its_finder_says_so_and_records_nothing(bench):
+    bench.st.layout_source = "sam"  # taught with SAM 3.1, and no SAM client to answer now
+    chat = ScriptedChat(calls(("run_self_test", {})), say("Finder down."))
+    out = supervisor(bench, chat, make_strip(seed=12)).investigate("x")
+    assert out["steps"][0]["result"] == "Self-test could not run: the pocket finder (SAM 3.1) did not answer — try again"
+    assert not (bench.st.dir / "selftests.jsonl").exists()
+
+
 def test_agent_self_test_without_strip_records_nothing(bench):
     chat = ScriptedChat(calls(("run_self_test", {})), say("No strip."))
     out = supervisor(bench, chat, np.full((360, 640, 3), 128, np.uint8)).investigate("x")

@@ -28,7 +28,7 @@ async function j(url,body){const r=await fetch(url,{method:"POST",headers:{"Cont
 async function form(url,o){const r=await fetch(url,{method:"POST",body:new URLSearchParams(o||{})});return r.json()}
 async function post(url,b,ok){show("Working...");const r=await j(url,b);show(r.error?r:typeof ok==="function"?ok(r):ok||r)}
 const taught=r=>r.taught?"Taught from "+r.taught+" photos."+(r.skipped.length?" Unreadable, skipped: "+r.skipped.join(", "):""):"Saved "+r.saved+" of "+r.need+" photos.";
-const selftestSaid=r=>r.passed?"Self-test passed.":"Self-test missed: "+r.failed.join(", ");
+const selftestSaid=r=>r.not_run||(r.passed?"Self-test passed.":"Self-test missed: "+r.failed.join(", "));
 const uncovered=s=>(s.selftest_skipped||[]).length?"Self-test did not cover: "+s.selftest_skipped.map(k=>k.replace(/_/g," ")).join(", "):"";
 const reasonText=r=>r.text+(r.severity?" ["+r.severity+"]":"");
 

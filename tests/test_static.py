@@ -74,6 +74,19 @@ def test_record_frame_loads_photos_but_runs_no_scripts():
     assert "allow-same-origin" in box and "allow-popups" in box and "allow-scripts" not in box
 
 
+def test_setup_screen_says_when_the_self_test_could_not_run(tmp_path):
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is not installed")
+    line = re.search(r"^const selftestSaid=.*$", (STATIC / "station.js").read_text(encoding="utf-8"), re.M).group(0)
+    f = tmp_path / "said.js"
+    f.write_text(line + '\nfor(const r of [{passed:true,failed:[]},{passed:false,failed:["empty_pocket"]},'
+                 '{passed:false,failed:["pocket finder did not answer"],not_run:"Self-test could not run: x"}])'
+                 'console.log(selftestSaid(r))', encoding="utf-8")
+    out = subprocess.run([node, str(f)], capture_output=True, text=True, encoding="utf-8").stdout.splitlines()
+    assert out == ["Self-test passed.", "Self-test missed: empty_pocket", "Self-test could not run: x"]
+
+
 def test_end_batch_asks_first():  # a batch number cannot be used again
     js = (STATIC / "station.js").read_text(encoding="utf-8")
     assert re.search(r"async function batchEnd\(\)\{if\(!confirm\(", js)

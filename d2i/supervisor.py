@@ -209,6 +209,8 @@ class Supervisor:
 
     def _self_test(self):
         r = self.station.self_test(self.get_frame(), record="failures")  # the operator has placed a known-good strip
+        if r.get("not_run"):
+            return r["not_run"]
         if not r["strip_found"]:
             return "no good strip under the camera"
         note = ("diagnostic only — does not unlock the station" if r["passed"]

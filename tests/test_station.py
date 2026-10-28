@@ -3,10 +3,11 @@ import shutil
 
 import numpy as np
 import pytest
+import torch
 
 from d2i.checklist import CHECKS, approve
 from d2i.judge import Judge
-from d2i.meta_api import SamObject
+from d2i.meta_api import MetaError, SamObject
 from d2i.defects import paint
 from d2i.pockets import _strip_by_contour
 from d2i.station import Station, Verdict
@@ -104,7 +105,7 @@ class ElevenPills:
 def test_count_mismatch_holds(station):
     st, _ = station
     st.self_test(make_strip(seed=12), rng_seed=5)
-    st.client = ElevenPills()
+    st.client, st.layout_source = ElevenPills(), "sam"  # SAM 3.1 pockets are counted on a product taught with SAM
     v = st.inspect(make_strip(seed=16))
     assert v.status == "HOLD" and v.reasons[0]["rule"] == 1 and "outside the pocket pattern" in v.reasons[0]["text"]
 
@@ -371,6 +372,95 @@ def test_strip_cut_skipped_without_profile(station):
     st.checklist = dict(st.checklist, reject_if=list(CHECKS))
     r = st.self_test(make_strip(seed=12), rng_seed=5)
     assert "strip_cut" in r["skipped"] and st.inspect(make_strip(seed=13)).skipped.count("strip size") == 1
+
+
+class FailingSam(ImageSam):
+    """ImageSam whose sam_image calls numbered in `fail` (1-based; "all" = every call) raise MetaError, as when
+    SAM 3.1 does not answer after the retry. Each layout makes two calls: strip, then pills."""
+
+    def __init__(self, fail=()):
+        super().__init__()
+        self.fail, self.calls = fail, 0
+
+    def sam_image(self, image, prompt):
+        self.calls += 1
+        if self.fail == "all" or self.calls in self.fail:
+            raise MetaError("Meta API 503: busy")
+        return super().sam_image(image, prompt)
+
+
+FINDER = {"rule": 1, "check": "finder", "pocket": None,
+          "text": "Pocket finder (SAM 3.1) did not answer — check this strip by hand", "severity": "major"}
+NOT_RUN = "Self-test could not run: the pocket finder (SAM 3.1) did not answer — try again"
+
+
+@pytest.fixture(scope="module")
+def sam_taught(tmp_path_factory):
+    base = tmp_path_factory.mktemp("sam_product")
+    approve(CHECKLIST, "Priya", base / "checklists.jsonl")
+    st = Station(base, client=ImageSam(), clock=lambda: T0)
+    st.teach([make_strip(seed=i, shift=(i, 0)) for i in range(6)])
+    assert st.self_test(make_strip(seed=12), rng_seed=5)["passed"]
+    return base, st.judge
+
+
+@pytest.fixture
+def sam_station(sam_taught, tmp_path):
+    base, judge = sam_taught
+    shutil.copytree(base, tmp_path / "p")
+    return Station(tmp_path / "p", client=ImageSam(), judge=judge, clock=lambda: T0)
+
+
+def test_teach_records_the_layout_source(sam_station, taught):
+    st = sam_station
+    assert st.layout_source == "sam" and torch.load(st.dir / "model.pt")["layout_source"] == "sam"
+    assert Station(taught[0], judge=taught[1]).layout_source == "grid"  # taught with no client: the checklist grid
+    state = torch.load(st.dir / "model.pt")
+    del state["layout_source"]  # taught before the source was saved: every such product was taught with SAM
+    torch.save(state, st.dir / "model.pt")
+    assert Station(st.dir, judge=st.judge, clock=lambda: T0).layout_source == "sam"
+
+
+def test_teach_refuses_a_photo_the_pocket_finder_missed(tmp_path):
+    approve(CHECKLIST, "Priya", tmp_path / "checklists.jsonl")
+    st = Station(tmp_path, client=FailingSam(fail={5}), clock=lambda: T0)  # call 5 = photo 3's strip
+    with pytest.raises(ValueError, match=r"^photo 3: the pocket finder \(SAM 3.1\) did not answer — "
+                                         r"save that photo again$"):
+        st.teach([make_strip(seed=i, shift=(i, 0)) for i in range(6)])
+    assert st.taught_at is None and not (tmp_path / "model.pt").exists()
+
+
+def test_inspect_holds_when_the_taught_finder_does_not_answer(sam_station):
+    st = sam_station
+    assert not st.locked and st.inspect(make_strip(seed=15)).status == "PASS"
+    for client in (FailingSam(fail="all"), None):
+        st.client = client
+        v = st.inspect(make_strip(seed=13, missing=(6,)))  # a real empty pocket: still never judged on the grid
+        assert v.status == "HOLD" and v.reasons == [FINDER] and v.pocket_scores == [], v
+    assert json.loads((st.dir / "log.jsonl").read_text(encoding="utf-8").splitlines()[-1])["reasons"] == [FINDER]
+
+
+def test_grid_taught_product_stays_on_the_grid(station):
+    st, _ = station
+    st.self_test(make_strip(seed=12), rng_seed=5)
+    st.client = FailingSam(fail="all")
+    assert st.inspect(make_strip(seed=15)).status == "PASS"
+    assert st.inspect(make_strip(seed=13, missing=(6,))).status == "REJECT"
+    assert st.client.calls == 0  # never judged with a different pocket finder than the one taught
+
+
+def test_self_test_does_not_run_without_its_finder(sam_station):
+    st = sam_station
+    before = (st.dir / "selftests.jsonl").read_text(encoding="utf-8")
+    for fail, done in (("all", 0), ({5}, 1)):  # good strip's layout fails; second painted strip's layout fails
+        for record in (True, "failures"):
+            st.client = FailingSam(fail=fail)
+            r = st.self_test(make_strip(seed=12), rng_seed=5, record=record)
+            assert r["passed"] is False and r["not_run"] == NOT_RUN and r["good_passed"] is False, r
+            assert r["failed"] == ["pocket finder did not answer"] and len(r["results"]) == done, r
+            assert {"strip_found", "skipped"} <= r.keys()
+            assert fail == "all" or st.client.calls == 5  # stopped at the failed layout
+    assert (st.dir / "selftests.jsonl").read_text(encoding="utf-8") == before and not st.locked
 
 
 def test_reason_carries_severity(station):

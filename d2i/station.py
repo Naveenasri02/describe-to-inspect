@@ -29,6 +29,13 @@ TEXT = {
 }
 LINE_HELD = "Line held — QA must resume"
 NEED_TEACH = "Teach the station first"
+FINDER_DOWN = {"rule": 1, "check": "finder", "pocket": None,
+               "text": "Pocket finder (SAM 3.1) did not answer — check this strip by hand", "severity": "major"}
+NOT_RUN = "Self-test could not run: the pocket finder (SAM 3.1) did not answer — try again"
+
+
+def _finder(lay) -> str:
+    return "grid" if lay.source == "grid" else "sam"  # "sam-pills" is SAM 3.1 too
 
 
 @dataclass
@@ -61,6 +68,8 @@ class Station:
         self.profile = state.get("profile")
         self.strip_profile = state.get("strip_profile")
         self.strip_box = tuple(state["strip_box"]) if state.get("strip_box") else None  # median taught strip box
+        # a model.pt saved before the source was kept: every product so far was taught with SAM 3.1
+        self.layout_source = state.get("layout_source", "sam")
 
     def _now(self) -> str:
         return datetime.fromtimestamp(self.clock()).isoformat(timespec="seconds")
@@ -95,6 +104,10 @@ class Station:
     def locked(self) -> bool:
         return bool(self.lock_reason)
 
+    def _layout(self, image):
+        """A product taught on the checklist grid stays on it: no paid SAM call whose pockets it was not taught on."""
+        return find_layout(image, self.checklist, None if self.layout_source == "grid" else self.client, self._template)
+
     def crosscheck(self, image) -> dict:
         """Two models count the pockets: SAM 3.1 outlines vs Muse Spark pointing. Paid, so never inside inspect."""
         if self.client is None:
@@ -112,6 +125,10 @@ class Station:
                 if not c["agree"]:
                     raise ValueError(f"photo {n}: SAM 3.1 found {c['sam']} pockets, Muse Spark counted {c['spark']}")
         layouts = [find_layout(im, self.checklist, self.client) for im in images]
+        sources = [_finder(l) for l in layouts]
+        if "sam" in sources and "grid" in sources:  # SAM 3.1 failed on some photos: their pockets came from the grid
+            raise ValueError(f"photo {sources.index('grid') + 1}: the pocket finder (SAM 3.1) did not answer — "
+                             f"save that photo again")
         t0 = time.perf_counter()
         info = self.judge.teach(images, layouts)  # refuses photos whose layout is not ok
         for _ in images:
@@ -134,10 +151,10 @@ class Station:
         self.taught_at = self.clock()
         state = torch.load(self.dir / "model.pt", map_location="cpu")
         state.update(prototypes=protos, taught_at=self.taught_at, template=[list(b) for b in template],
-                     strip_box=list(strip_box), profile=profile, strip_profile=strip_profile)
+                     strip_box=list(strip_box), profile=profile, strip_profile=strip_profile, layout_source=sources[0])
         torch.save(state, self.dir / "model.pt")
         self.prototypes, self.template, self.strip_box, self.profile = protos, template, strip_box, profile
-        self.strip_profile = strip_profile
+        self.strip_profile, self.layout_source = strip_profile, sources[0]
         return info
 
     def _reason(self, check, pocket=None):
@@ -167,9 +184,11 @@ class Station:
             trace.record("dinov2-small", "local", "judge", (time.perf_counter() - t0) * 1000)
 
     def _judge_one(self, image, strip_id, image_name) -> Verdict:
-        cl = self.checklist
         v = Verdict("PASS", strip_id=strip_id, image_name=image_name, at=self._now())
-        lay = find_layout(image, cl, self.client, self._template)
+        lay = self._layout(image)
+        if _finder(lay) != self.layout_source:  # never judged with a different pocket finder than the one taught
+            v.status, v.reasons = "HOLD", [dict(FINDER_DOWN)]
+            return v
         if lay.note == "no strip":
             v.status = "NO_STRIP"
             return v
@@ -244,9 +263,10 @@ class Station:
             raise ValueError(NEED_TEACH)
         cl = self.checklist
         rng = np.random.default_rng(rng_seed)
-        lay = find_layout(good_image, cl, self.client, self._template)
+        lay = self._layout(good_image)
         results, skipped = [], []
-        if lay.ok:
+        down = _finder(lay) != self.layout_source  # the taught pocket finder did not answer: nothing can be tested
+        if lay.ok and not down:
             per = cl["per_row"]
             edge = [i for i in range(len(lay.pockets))
                     if i // per in (0, cl["rows"] - 1) or i % per in (0, per - 1)]
@@ -256,19 +276,23 @@ class Station:
                     if not (lay.pills and self.strip_profile):
                         skipped.append(kind)
                         continue
-                    v = self._judge(paint(good_image, lay.pockets[0], kind, lay.strip_box, rng), None, None)
-                    results.append({"kind": kind, "pocket": None, "caught": v.status == "REJECT",
-                                    "named_right": any(r["check"] == kind for r in v.reasons)})
-                    continue
-                if kind in MEASURED and not measuring:  # no SAM pills or no profile: it cannot be seen, so it is skipped
+                    p = None
+                elif kind in MEASURED and not measuring:  # no SAM pills or no profile: it cannot be seen, so it is skipped
                     skipped.append(kind)
                     continue
-                # shortcut: wrong_tablet self-test changes size only (SAM may miss recoloured pills); the colour path is covered by unit tests
-                p = int(rng.choice(edge if kind == "foil_damage" else len(lay.pockets)))
-                v = self._judge(paint(good_image, lay.pockets[p], kind, lay.strip_box, rng), None, None)
-                results.append({"kind": kind, "pocket": p + 1, "caught": v.status == "REJECT",
+                else:
+                    # shortcut: wrong_tablet self-test changes size only (SAM may miss recoloured pills); the colour path is covered by unit tests
+                    p = int(rng.choice(edge if kind == "foil_damage" else len(lay.pockets)))
+                v = self._judge(paint(good_image, lay.pockets[p or 0], kind, lay.strip_box, rng), None, None)
+                if down := FINDER_DOWN in v.reasons:
+                    break
+                results.append({"kind": kind, "pocket": None if p is None else p + 1, "caught": v.status == "REJECT",
                                 "named_right": any(r["check"] == kind for r in v.reasons)})
-        good_passed = lay.ok and self._judge(good_image, None, None).status == "PASS"
+        good = None if down or not lay.ok else self._judge(good_image, None, None)
+        if down or (good and FINDER_DOWN in good.reasons):  # written nowhere: it neither locks nor unlocks
+            return {"passed": False, "not_run": NOT_RUN, "results": results, "good_passed": False,
+                    "failed": ["pocket finder did not answer"], "strip_found": lay.ok, "skipped": skipped}
+        good_passed = lay.ok and good.status == "PASS"
         failed = [r["kind"] for r in results if not (r["caught"] and r["named_right"])]
         if not good_passed:
             failed.append("good strip not passed")
