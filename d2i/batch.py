@@ -115,6 +115,8 @@ class Batches:
     def leak(self, result, by, note, now, samples: int = 0) -> dict:
         if result not in ("pass", "fail"):
             raise ValueError("Leak test result must be pass or fail")
+        if samples < 0:
+            raise ValueError("Samples must be 0 or more")
         cur = self.open
         if not cur:
             raise ValueError(NO_BATCH)

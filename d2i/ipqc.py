@@ -59,16 +59,17 @@ def due(batch: dict, rows: list[dict], now: float) -> list[str]:
     return out
 
 
-def missed_windows(batch: dict, rows: list[dict], until: float) -> list[tuple[float, float]]:
-    """Whole IPQC_EVERY_S windows (restarted by each foil change) up to `until` with no leak or print check."""
+def missed_windows(batch: dict, rows: list[dict], until: float) -> list[tuple[str, float, float]]:
+    """Whole IPQC_EVERY_S windows (restarted by each foil change) up to `until`, per kind, with no leak test /
+    no print check: (text, window start, window end), matching due()."""
     marks = [batch["time"]] + [r["time"] for r in rows if r["event"] == "foil_change"] + [until]
-    checks = [r["time"] for r in rows if r["event"] in ("leak", "print")]
     out = []
     for s, stop in zip(marks, marks[1:]):
         w = s
         while w + IPQC_EVERY_S <= stop:
-            if not any(w <= t < w + IPQC_EVERY_S for t in checks):
-                out.append((w, w + IPQC_EVERY_S))
+            for ev, text in (("leak", "Leak test missed"), ("print", "Print check missed")):
+                if not any(r["event"] == ev and w <= r["time"] < w + IPQC_EVERY_S for r in rows):
+                    out.append((text, w, w + IPQC_EVERY_S))
             w += IPQC_EVERY_S
     return out
 

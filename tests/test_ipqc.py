@@ -68,8 +68,12 @@ def test_not_due_after_recent_checks():
 
 
 def test_missed_windows():
-    assert missed_windows(BATCH, [ev("leak", 1010.0)], 1000.0 + 2 * 3600 + 5) == [(4600.0, 8200.0)]
-    assert missed_windows(BATCH, [ev("foil_change", 2000.0)], 2000.0 + 3600) == [(2000.0, 5600.0)]  # a foil change restarts the windows
+    assert missed_windows(BATCH, [ev("leak", 1010.0), ev("print", 1010.0)], 1000.0 + 2 * 3600 + 5) == [
+        ("Leak test missed", 4600.0, 8200.0), ("Print check missed", 4600.0, 8200.0)]
+    assert missed_windows(BATCH, [ev("leak", 1010.0), ev("leak", 4700.0)], 8205.0) == [  # per kind, like due()
+        ("Print check missed", 1000.0, 4600.0), ("Print check missed", 4600.0, 8200.0)]
+    assert missed_windows(BATCH, [ev("foil_change", 2000.0)], 2000.0 + 3600) == [
+        ("Leak test missed", 2000.0, 5600.0), ("Print check missed", 2000.0, 5600.0)]  # a foil change restarts the windows
 
 
 def test_reconcile_balanced():

@@ -209,4 +209,24 @@ def test_record_lists_missed_hour(product):
     html = shift_record(product, T0 - 10, T0 + 8000, "", "")
     for t in ("<h2>Release</h2>", "<h2>In-process checks</h2>", "<h2>Reconciliation</h2>", "Balanced", "Start-up print check"):
         assert t in html
-    assert html.count(">missed<") == 1
+    assert html.count(">missed<") == 3 and html.count("Leak test missed") == 1 and html.count("Print check missed") == 2
+
+
+def test_record_missed_is_per_kind(product):
+    b = Batches(product)
+    b.clearance({"clear": True, "found": []}, "qa1", T0)
+    b.start("LOT7", "01/2026", "01/2028", "45", "qa1", T0 + 60)
+    b.leak("pass", "qa1", "", T0 + 70)
+    b.leak("pass", "qa1", "", T0 + 3700)
+    b.end("qa1", T0 + 60 + 7300, {"inspected": 0, "passed": 0, "rejected": 0, "held": 0, "no_strip": 0, "balanced": True})
+    html = shift_record(product, T0 - 10, T0 + 8000, "", "")
+    assert "Leak test missed" not in html and html.count("Print check missed") == 2
+
+
+def test_record_old_ended_batch_without_totals(product):
+    b = Batches(product)
+    b.clearance({"clear": True, "found": []}, "qa1", T0)
+    b.start("LOT7", "01/2026", "01/2028", "45", "qa1", T0 + 60)
+    b.end("qa1", T0 + 100)
+    html = shift_record(product, T0 - 10, T0 + 200, "", "")
+    assert "Not reconciled (ended before reconciliation)" in html and "still open" not in html

@@ -180,12 +180,13 @@ def _batch_section(product_dir: Path, audit: AuditLog | None = None, until: floa
     checks = [[r["at"], "Leak test" if r["event"] == "leak" else "Print check", r["by"],
                (r["result"] if r["event"] == "leak" else r["status"]).upper()] for r in ev if r["event"] != "foil_change"]
     checks += [[stamp(r["time"]), "Foil roll changed", r["by"], ""] for r in ev if r["event"] == "foil_change"]
-    checks += [[f"{stamp(a)} to {stamp(b)}", "No leak test or print check in this hour", "", "missed"]
-               for a, b in missed_windows(start, ev, end["time"] if end else until)]
+    checks += [[f"{stamp(a)} to {stamp(b)}", text, "", "missed"]
+               for text, a, b in missed_windows(start, ev, end["time"] if end else until)]
     tot = end.get("totals") if end else None
     recon = (_table(["Inspected", "Passed", "Rejected", "Held", "No strip", "Balanced"],
                     [[tot[k] for k in ("inspected", "passed", "rejected", "held", "no_strip")] + ["yes" if tot["balanced"] else "NO"]])
-             if tot else "<p>Not reconciled: the batch is still open</p>")
+             if tot else "<p>Not reconciled (ended before reconciliation)</p>" if end
+             else "<p>Not reconciled: the batch is still open</p>")
     vs = [v for v in _lines(Path(product_dir) / "log.jsonl") if v.get("batch") == start["batch"]]
     by_status = Counter(v["status"] for v in vs)
     by_rule = Counter(_label(r) for v in vs for r in v["reasons"])

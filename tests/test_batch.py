@@ -150,4 +150,6 @@ def test_foil_change_leak_samples_and_end_totals(tmp_path):
     b.start("B1", "01/2026", "01/2028", "45", "qa1", 1010.0)
     assert b.foil_change("op", 1100.0)["event"] == "foil_change"
     assert b.leak("pass", "qa1", "", 1200.0, samples=5)["samples"] == 5
+    with pytest.raises(ValueError, match="Samples must be 0 or more"):
+        b.leak("pass", "qa1", "", 1250.0, samples=-1)
     assert b.end("qa1", 1300.0, {"inspected": 3})["totals"] == {"inspected": 3}

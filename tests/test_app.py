@@ -806,3 +806,10 @@ def test_batch_end_stores_reconciliation(tmp_path):
     end = c.post("/batch/end").json()
     assert end["totals"] == {"inspected": 1, "passed": 1, "rejected": 0, "held": 0, "no_strip": 0, "balanced": True}
     assert Batches(p).rows[-1]["totals"] == end["totals"]
+
+
+def test_leak_refuses_negative_samples(tmp_path):
+    c, p = bench(tmp_path)
+    login(c, "qa1", "pw-qa")
+    assert c.post("/leak", data={"result": "pass", "samples": "-2"}).json() == {"error": "Samples must be 0 or more"}
+    assert not any(r["event"] == "leak" for r in Batches(p).rows)
