@@ -35,8 +35,8 @@ def release_blockers(batch: dict, selftests: list, prints: list, specimen_signed
     out = []
     if not any(t.get("passed") and t.get("time", 0) >= batch["time"] for t in selftests):
         out.append(BLOCK_SELFTEST)
-    if challenge_runs is not None and not any(r.get("passed") and r.get("time", 0) >= batch["time"]
-                                              for r in challenge_runs):
+    if challenge_runs is not None and not any(r.get("passed") and r.get("batch") == batch["batch"]
+                                              and r.get("time", 0) >= batch["time"] for r in challenge_runs):
         out.append(BLOCK_CHALLENGE)
     if not any(p.get("batch") == batch["batch"] and p.get("status") == "PRINT_OK" for p in prints):
         out.append(BLOCK_PRINT)
@@ -86,14 +86,20 @@ def missed_windows(batch: dict, rows: list[dict], until: float) -> list[tuple[st
     return sorted(out, key=lambda m: m[1])  # stable: leak before print in the same window
 
 
+def strip_counts(rows: list[dict]) -> Counter:
+    """Verdict counts with each strip once: a re-checked strip was counted already as PASS; found bad on re-check it
+    moved to the reject box, so it counts as that instead."""
+    n = Counter(r["status"] for r in rows if not r.get("recheck"))
+    moved = Counter(r["status"] for r in rows if r.get("recheck") and r["status"] in ("REJECT", "HOLD"))
+    n["PASS"] -= min(n["PASS"], sum(moved.values()))  # a record's time range may start after the first verdicts
+    n.update(moved)
+    return n
+
+
 def reconcile(rows: list[dict], batch: str, counts: dict | None = None, limits: dict | None = None) -> dict:
     """Log counts of this batch (LOCKED rows are not inspections). With the counts QA typed at End batch (strips at the
     bench, trays, foil in metres) each line is checked against QA's limits: status within / outside; without them, open."""
-    n = Counter(r["status"] for r in rows if r.get("batch") == batch and r["status"] != "LOCKED" and not r.get("recheck"))
-    # a re-checked strip was counted once already as PASS; found bad on re-check, it moved to the reject box
-    moved = Counter(r["status"] for r in rows if r.get("batch") == batch and r.get("recheck") and r["status"] in ("REJECT", "HOLD"))
-    n["PASS"] -= sum(moved.values())
-    n.update(moved)
+    n = strip_counts([r for r in rows if r.get("batch") == batch and r["status"] != "LOCKED"])
     out = {"inspected": sum(n.values()), "passed": n["PASS"], "rejected": n["REJECT"], "held": n["HOLD"],
            "no_strip": n["NO_STRIP"]}
     if counts is None:

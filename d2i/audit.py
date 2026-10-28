@@ -132,7 +132,8 @@ def quarantine_list(product_dir: Path, audit: AuditLog | None = None) -> dict:
         return {"since": None, "failed_at": None, "strips": []}
     passed = [t for t in tests if t["passed"] and t["time"] < failed[0]["time"]]
     since = passed[-1] if passed else None
-    strips = [v for v in _lines(p / "log.jsonl") if since is None or _ts(v) >= _ts(since)]
+    strips = [v for v in _lines(p / "log.jsonl")  # a re-checked strip is listed once, by its first verdict
+              if not v.get("recheck") and (since is None or _ts(v) >= _ts(since))]
     return {"since": since["at"] if since else None, "failed_at": failed[-1]["at"], "strips": strips}
 
 

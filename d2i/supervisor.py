@@ -280,7 +280,7 @@ class Supervisor:
             raise ValueError(f"no pending request {request_id}")
         kind, st = req["kind"], self.station
         try:
-            w = recheck.pending(st.dir) if kind == "resume" else None
+            w = recheck.current(st.dir) if kind == "resume" else None
             if kind == "resume" and (st.locked or w):  # no waiver here: QA waives with Resume line on the screen
                 self.pending[request_id] = req
                 out = {"approved": False, "message": f"Station locked: {st.lock_reason}" if st.locked else recheck.not_done(w)}
@@ -292,8 +292,10 @@ class Supervisor:
                 elif kind == "resume":
                     self._set_hold(False, name)
                     message = "Line resumed"
-                elif kind == "recheck":
+                elif kind == "recheck":  # re-checks run on a held line, so production strips are never taken for them
                     w = recheck.open_window(st.dir, self.audit, req["reason"], name)
+                    if w and not hold_state(st.dir)[0]:
+                        hold_line(st.dir, self.plc, self.audit, name, "Re-check approved: " + req["reason"])
                     message = recheck.text(w) if w else "Nothing to re-check: no passed strips since the last good check"
                 else:
                     release_quarantine(st.dir, self.audit, users, name, password, req["reason"])

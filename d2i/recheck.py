@@ -22,10 +22,16 @@ def pending(product_dir) -> dict | None:
     return w if w and w["open"] else None
 
 
-def active(product_dir, batch: dict) -> dict | None:
-    """The open window when it belongs to this batch (it starts at or after the batch start); an older batch's is not."""
+def active(product_dir, batch: dict | None) -> dict | None:
+    """The open window when it belongs to this batch (it starts at or after the batch start). Another batch's window
+    is ignored: it never blocks this batch's resume or end, and it is never waived in this batch's place."""
     w = pending(product_dir)
-    return w if w and w["since"] >= batch["time"] else None
+    return w if w and batch and w["since"] >= batch["time"] else None
+
+
+def current(product_dir) -> dict | None:
+    """The open window of the open batch."""
+    return active(product_dir, Batches(product_dir).open)
 
 
 def _write(product_dir, w: dict) -> dict:
@@ -62,22 +68,43 @@ def resumed_at(audit) -> float:
     return 0.0
 
 
+def released_at(product_dir, batch: dict, audit, first_strip: float | None) -> float:
+    """When the batch was released: the latest of its first passed self-test, first PRINT_OK, QA specimen signature and
+    first passed challenge run; batch start when one is missing (older records). Never after the batch's first strip
+    (a gate item added later, e.g. a challenge set registered mid-batch, must not shrink the re-check)."""
+    b, t0, no = Batches(product_dir), batch["time"], batch["batch"]
+    signed = [datetime.fromisoformat(e["at"]).timestamp() for e in audit.entries() if e.get("action") == "specimen_signed"
+              and isinstance(e.get("details"), dict) and e["details"].get("batch") == no]
+    firsts = [min([t["time"] for t in b._read("selftests.jsonl") if t.get("passed") and t.get("time", 0) >= t0], default=None),
+              min([_ts(p) for p in b._read("prints.jsonl") if p.get("batch") == no and p.get("status") == "PRINT_OK"], default=None),
+              min(signed, default=None)]
+    if None in firsts:
+        return t0
+    runs = [r["time"] for r in b._read("challenge_runs.jsonl") if r.get("passed") and r.get("batch") == no]
+    t = max(firsts + [min(runs, default=t0)])  # no challenge run (no set): t0 never wins
+    return min(t, first_strip) if first_strip is not None else t
+
+
 def open_window(product_dir, audit, cause: str, by: str) -> dict | None:
     """The passed strips of the open batch since the later of batch release, the last passed print check and the last
-    QA resume (rejected and held strips are already out of the good tray). An open window is kept, not replaced; None
-    when there is nothing to re-check. Strip numbers count as the Run screen does (LOCKED and re-check rows are not strips)."""
-    w = pending(product_dir)
-    if w:
-        return w
+    QA resume (rejected and held strips are already out of the good tray), after any finished re-check of this batch.
+    This batch's open window is kept, not replaced; another batch's is replaced. None when there is nothing to
+    re-check. Strip numbers count as the Run screen does (LOCKED and re-check rows are not strips)."""
     b = Batches(product_dir)
     batch = b.open
     if not batch:
         return None
+    w = active(product_dir, batch)
+    if w:
+        return w
     rows = [r for r in _rows(Path(product_dir) / "log.jsonl")
             if r.get("batch") == batch["batch"] and r["status"] != "LOCKED" and not r.get("recheck")]
     prints = [_ts(p) for p in b._read("prints.jsonl") if p.get("batch") == batch["batch"] and p.get("status") == "PRINT_OK"]
-    since = max([batch["time"], resumed_at(audit)] + prints)  # every strip of a batch comes after its release
-    nos = [n for n, r in enumerate(rows, 1) if r["status"] == "PASS" and _ts(r) >= int(since)]  # same second: re-check it
+    since = max([released_at(product_dir, batch, audit, _ts(rows[0]) if rows else None), resumed_at(audit)] + prints)
+    last = load(product_dir)
+    done = last["to_strip"] if last and not last["open"] and last["since"] >= batch["time"] else 0  # already re-checked
+    nos = [n for n, r in enumerate(rows, 1)
+           if n > done and r["status"] == "PASS" and _ts(r) >= int(since)]  # same second: re-check it
     if not nos:
         return None
     w = _write(product_dir, {"open": True, "window_id": uuid.uuid4().hex[:8], "since": since, "from_strip": nos[0],

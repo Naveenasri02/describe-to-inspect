@@ -256,7 +256,8 @@ async function chalRefresh(){
     k.onchange=()=>$("cr").value=k.selectedOptions[0]?k.selectedOptions[0].dataset.rule:"";k.onchange()}
   $("chal").hidden=!c.set;if(!c.set)return;
   const p=c.pending,lab=p?p.label:c.strip&&c.strip.label;
-  $("chnext").textContent=p?(p.caught?p.label+" rejected for Rule "+p.expected_rule+": tick Ejected once it is out":p.label+" missed: station locked"):c.next;
+  $("chnext").textContent=p?(p.caught?p.label+" rejected for Rule "+p.expected_rule+": tick Ejected once it is out"
+    :p.label+" missed ("+p.why+"): station locked. Take "+p.label+" out — it is a known-bad strip"):c.next;
   const im=$("chphoto"),src="/challenge/photo/"+lab+"?at="+encodeURIComponent(c.set.at);im.hidden=!lab;if(lab&&im.getAttribute("src")!==src)im.src=src;
   $("chgo").hidden=!!p;$("chrec").hidden=$("chejl").hidden=!p;
   const r=$("chres"),last=!c.results.length&&!p&&c.last;r.replaceChildren();
@@ -264,7 +265,7 @@ async function chalRefresh(){
   (last?last.results:c.results).forEach(x=>r.append(mk("li",x.label+(x.passed?" ✓":" ✗"),x.passed?"ok":"bad")));
 }
 async function chalRegister(){show("Saving the photo...");const f=new FormData();f.append("label",$("cl").value);f.append("kind",$("ck").value);f.append("rule",$("cr").value);
-  const r=await (await fetch("/challenge/register",{method:"POST",body:f})).json();show(r.error?r:"Challenge set: "+r.strips.map(x=>x.label).join(", ")+".")}
+  const r=await (await fetch("/challenge/register",{method:"POST",body:f})).json();show(r.error?r:"Challenge set: "+r.strips.map(x=>x.label).join(", ")+"."+(r.message?"\n"+r.message:""))}
 async function chalInspect(){show("Working...");const r=await (await fetch("/challenge/inspect",{method:"POST"})).json();show(r.error?r:r.message)}
 async function chalEject(){const r=await j("/challenge/eject",{ejected:$("chej").checked});$("chej").checked=false;
   show(r.error?r:r.next?r.next:"Challenge run "+(r.run.passed?"passed.":"failed: station locked, quarantine open."))}

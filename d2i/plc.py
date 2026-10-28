@@ -99,6 +99,11 @@ class Plc:
                 if rules:
                     self.regs[3] = rules[0] & 0xFFFF
 
+    def eject(self):
+        """Reject pulse only (a known-bad physical challenge strip): the verdict counters and the other coils stay."""
+        with self._lock:
+            self._reject_until = time.monotonic() + PULSE_S
+
     def _answer(self, pdu):
         fc = pdu[0]
         if fc in (1, 3) and len(pdu) == 5:

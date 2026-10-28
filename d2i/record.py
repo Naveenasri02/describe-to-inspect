@@ -9,7 +9,7 @@ from d2i.audit import AuditLog, config_hashes, quarantine_list
 from d2i.batch import Batches
 from d2i.challenge import NO_SET, load_set, runs as challenge_runs
 from d2i.checklist import current
-from d2i.ipqc import check_events, missed_windows
+from d2i.ipqc import check_events, missed_windows, strip_counts
 from d2i.meta_api import BudgetExceeded, MetaError
 
 STATUSES = ("PASS", "REJECT", "HOLD", "LOCKED", "NO_STRIP")
@@ -203,7 +203,7 @@ def _selftest_section(tests: list[dict]) -> str:
 
 
 def _totals_section(verdicts: list[dict]) -> str:
-    n = Counter(v["status"] for v in verdicts)
+    n = strip_counts(verdicts)  # each strip once, as the batch reconciliation counts it
     skipped = Counter(c for v in verdicts for c in v.get("skipped", []))
     return ("<h2>Totals</h2>" + _table([PLAIN[s] for s in STATUSES], [[n[s] for s in STATUSES]], "n")
             + (_table(["Not checked", "Strips"], sorted(skipped.items()), "cnt") if skipped else ""))
@@ -290,13 +290,13 @@ def _challenge_section(product_dir: Path, since: float, until: float) -> str:
     say = lambda x: (f"{x['label']}: {PLAIN.get(x['status'], x['status'])}"
                      + (f" (Rule {', '.join(map(str, x['rules']))})" if x["rules"] else "")
                      + f", expected Rule {x['expected_rule']}, {'ejected' if x['ejected'] else 'not ejected'}")
-    rows = [[_when(r["at"]), r["by"], r.get("batch") or "", "; ".join(map(say, r["results"])),
+    rows = [[_when(r["at"]), r["by"], r.get("batch") or "", r.get("source", "–"), "; ".join(map(say, r["results"])),
              _chip("Passed" if r["passed"] else "Failed")] for r in challenge_runs(product_dir) if since <= r["time"] <= until]
     return ("<h2>Physical challenge</h2>"
             f"<p>Set registered by {e(s['registered_by'])} at {e(_when(s['at']))}.</p>"
             + _table(["Strip", "Defect kind", "Expected rule"],
                      [[x["label"], x["kind"].replace("_", " "), f"Rule {x['rule']}"] for x in s["strips"]])
-            + _table(["Time", "By", "Batch", "Each strip", "Run"], rows))
+            + _table(["Time", "By", "Batch", "Frame from", "Each strip", "Run"], rows))
 
 
 def _batch_section(product_dir: Path, audit: AuditLog | None = None, until: float = 0.0) -> str:
@@ -326,7 +326,8 @@ def _batch_section(product_dir: Path, audit: AuditLog | None = None, until: floa
                ["Start-up print check", _when(ok["at"]) if ok else _chip("Not done"), ok["by"] if ok else ""],
                ["QA signature on the start-up specimen", _when(sig["at"]) if sig else _chip("Not done"), sig["user"] if sig else ""]]
     if load_set(product_dir):  # the gate needs a passed challenge run only when a set is registered
-        run = next((r for r in challenge_runs(product_dir) if r["passed"] and r["time"] >= start["time"]), None)
+        run = next((r for r in challenge_runs(product_dir)
+                    if r["passed"] and r.get("batch") == start["batch"] and r["time"] >= start["time"]), None)
         release.insert(1, ["Physical challenge for this batch", _when(run["at"]) if run else _chip("Not done"),
                            run["by"] if run else ""])
     checks = [(r["time"], [_when(r["at"]), "Leak test" if r["event"] == "leak" else "Print check", r["by"],
@@ -348,7 +349,7 @@ def _batch_section(product_dir: Path, audit: AuditLog | None = None, until: floa
                  if tot else "<p>Not reconciled (ended before reconciliation)</p>" if end
                  else "<p>Not reconciled: the batch is still open</p>")
     vs = [v for v in _lines(Path(product_dir) / "log.jsonl") if v.get("batch") == start["batch"]]
-    by_status = Counter(v["status"] for v in vs)
+    by_status = strip_counts(vs)
     by_rule = Counter(k for v in vs for k in {_label(r) for r in v["reasons"]})
     shots = [v for v in vs if v.get("photo")][-12:]  # the 12 latest reject photos, each with its reasons
     photos = "".join(f'<figure><a href="/rejects/{e(v["photo"])}" target="_blank" rel="noopener">'

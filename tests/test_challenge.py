@@ -2,13 +2,17 @@
 import json
 import time
 
+import cv2
+
 from d2i.audit import AuditLog, quarantine_list
+from d2i.batch import Batches
 from d2i.checklist import CHECKS
+from d2i.plc import Plc
 from d2i.ipqc import release_blockers
 from d2i.record import _lines, shift_record
 from d2i.station import Verdict
 from tests.conftest import make_strip
-from tests.test_app import _audit, bench, login, up
+from tests.test_app import _audit, bench, login, open_batch, release_batch, up
 
 CHAL = "Physical challenge for this batch"
 
@@ -79,6 +83,7 @@ def test_pass_run_clears_the_gate_and_is_recorded(tmp_path):
     assert ej1["next"] == "Place C2 (broken tablet, expect Rule 3)" and insp2["rules"] == [3, 6]
     run = _lines(p / "challenge_runs.jsonl")[-1]
     assert ej2["run"] == run and run["passed"] is True and run["by"] == "op" and run["batch"] == "B1" and run["at"]
+    assert run["source"] == "upload"  # no camera on this bench: the photo came with the request
     assert run["results"] == [
         {"label": "C1", "expected_rule": 2, "status": "REJECT", "rules": [2], "passed": True, "ejected": True},
         {"label": "C2", "expected_rule": 3, "status": "REJECT", "rules": [3, 6], "passed": True, "ejected": True}]
@@ -87,6 +92,7 @@ def test_pass_run_clears_the_gate_and_is_recorded(tmp_path):
         ("op", "C1", True), ("op", "C2", True)]
     s = c.get("/status").json()
     assert s["blockers"] == [] and s["locked"] is False
+    assert s["last_verdict"] is None and s["state"] == "READY"  # the production banner never shows a challenge strip
     assert c.get("/challenge").json()["next"] == "Place C1 (empty pocket, expect Rule 2)"  # a new run can start
     html = shift_record(p, time.time() - 3600, time.time() + 60, "B1", "op", audit=AuditLog(p / "audit.jsonl"))
     sec = html.split("<h2>Physical challenge</h2>")[1].split("<h2>")[0]
@@ -130,11 +136,12 @@ def test_gate_needs_a_run_only_when_a_set_is_registered(tmp_path):
     assert "No physical challenge set registered" in html
     batch = {"batch": "B1", "time": 1000.0}
     assert release_blockers(batch, [{"passed": True, "time": 1001}], [{"batch": "B1", "status": "PRINT_OK"}], True) == []
-    runs = [{"passed": True, "time": 999.0}, {"passed": False, "time": 1002.0}]  # passed before batch start; failed after
+    runs = [{"passed": True, "batch": "B1", "time": 999.0}, {"passed": False, "batch": "B1", "time": 1002.0},
+            {"passed": True, "batch": "B0", "time": 1003.0}]  # passed before batch start; failed; another batch's
     assert release_blockers(batch, [{"passed": True, "time": 1001}], [{"batch": "B1", "status": "PRINT_OK"}], True,
                             runs) == [CHAL]
     assert release_blockers(batch, [{"passed": True, "time": 1001}], [{"batch": "B1", "status": "PRINT_OK"}], True,
-                            runs + [{"passed": True, "time": 1003.0}]) == []
+                            runs + [{"passed": True, "batch": "B1", "time": 1003.0}]) == []
 
 
 def test_challenge_inspections_are_not_batch_counts_or_drift(tmp_path):
@@ -163,3 +170,68 @@ def test_run_needs_login_a_set_and_an_unlocked_station(tmp_path):
     login(c, "op", "pw-op")
     assert c.post("/challenge/inspect", files=up(make_strip(seed=15))).json()["error"].startswith("Station locked")
     assert not (p / "challenge_runs.jsonl").exists()
+
+
+# --- fix round 1 ---
+def test_miss_is_audited_at_once_and_ejected_without_counting(tmp_path):
+    plc = Plc(host="127.0.0.1", port=0)
+    c, p = bench(tmp_path, plc=plc)
+    _judge_queue(c, ("PASS", []))
+    login(c, "qa1", "pw-qa")
+    _register(c, "C1", "empty_pocket")
+    login(c, "op", "pw-op")
+    insp = c.post("/challenge/inspect", files=up(make_strip(seed=15))).json()
+    assert "Take C1 out — it is a known-bad strip" in insp["message"]
+    rows = [e for e in _audit(p) if e["action"] == "physical_challenge"]  # written at the miss, before any tick
+    assert len(rows) == 1 and rows[0]["details"]["strip_label"] == "C1" and rows[0]["details"]["passed"] is False
+    assert plc._reject_until > 0 and plc.regs == [0, 0, 0, 0]  # the reject output pulsed; no verdict counter moved
+    assert c.get("/status").json()["last_verdict"] is None
+
+
+def test_run_needs_an_open_batch_and_ends_with_its_batch(tmp_path):
+    c, p = _set_bench(tmp_path, ("C1", "empty_pocket"), ("C2", "broken_tablet"),
+                      verdicts=[("REJECT", ["empty_pocket"])] * 3)
+    _run(c, True)  # C1 done, C2 next
+    assert c.get("/challenge").json()["results"]
+    Batches(p)._write("batches.jsonl", {"event": "end", "batch": "B1", "by": "qa1", "at": "x", "time": time.time(), "totals": {}})
+    assert c.post("/challenge/inspect", files=up(make_strip(seed=15))).json()["error"] == "Start a batch first (QA)"
+    time.sleep(1.1)
+    open_batch(p, "B2")
+    release_batch(p, "B2")
+    s = c.get("/challenge").json()
+    assert s["results"] == [] and s["next"] == "Place C1 (empty pocket, expect Rule 2)"  # B1's half run is dropped
+    assert c.get("/status").json()["blockers"] == [CHAL]
+
+
+def test_registering_mid_run_restarts_the_run(tmp_path):
+    c, p = _set_bench(tmp_path, ("C1", "empty_pocket"), verdicts=[("REJECT", ["empty_pocket"])])
+    c.post("/challenge/inspect", files=up(make_strip(seed=15)))
+    login(c, "qa1", "pw-qa")
+    assert "run the new set in full" in _register(c, "C2", "broken_tablet")["message"]
+    login(c, "op", "pw-op")
+    assert c.post("/challenge/eject", json={"ejected": True}).json() == {"error": "Inspect the challenge strip first"}
+    assert c.get("/challenge").json()["next"] == "Place C1 (empty pocket, expect Rule 2)"
+    assert not (p / "challenge_runs.jsonl").exists()
+
+
+def test_with_a_camera_the_run_uses_the_live_frame(tmp_path):
+    photos = tmp_path / "photos"
+    photos.mkdir()
+    cv2.imwrite(str(photos / "a.jpg"), make_strip(missing=(0,), seed=3))
+    c, p = bench(tmp_path, source=str(photos))
+    try:
+        _judge_queue(c, ("REJECT", ["empty_pocket"]))
+        login(c, "qa1", "pw-qa")
+        assert "error" not in _register(c, "C1", "empty_pocket")
+        login(c, "op", "pw-op")
+        assert "camera" in c.post("/challenge/inspect", files=up(make_strip(seed=15))).json()["error"]
+        for _ in range(100):
+            if c.app.state.source.get() is not None:
+                break
+            time.sleep(0.05)
+        assert c.post("/challenge/inspect").json()["caught"] is True
+        run = c.post("/challenge/eject", json={"ejected": True}).json()["run"]
+        assert run["passed"] is True and run["source"] == "camera"
+        assert [e["details"]["source"] for e in _audit(p) if e["action"] == "physical_challenge"] == ["camera"]
+    finally:
+        c.app.state.source.stop.set()

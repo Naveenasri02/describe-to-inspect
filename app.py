@@ -170,10 +170,9 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
         return state["last"]
 
     def station_hold(reason):  # the existing hold (hold.json + PLC coil + audit), raised by the station itself
-        if held_now():  # already held: the first hold stays open, no second one
-            return
-        hold_line(product_dir, plc or _NoPlc(), audit, "station", reason)
-        if reason.startswith("Critical"):  # wrong tablet / wrong print: re-check the strips since the last good check
+        if not held_now():  # already held: the first hold stays open, no second one
+            hold_line(product_dir, plc or _NoPlc(), audit, "station", reason)
+        if reason.startswith("Critical"):  # wrong tablet / wrong print, held line or not: re-check since the last good check
             recheck.open_window(product_dir, audit, reason, "station")
 
     def last_resume():  # Unix time of the latest QA "Resume line" (audit log, UTC), 0 if none
@@ -193,14 +192,14 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
             pass
         return rows
 
-    def after_verdicts(vs, no):  # call inside `lock`, after the verdicts are logged (the last len(vs) log rows)
+    def after_verdicts(vs, no, rechecked=False):  # call inside `lock`, after the verdicts are logged (the last len(vs) log rows)
+        crit = next((r["text"] for v in vs for r in v.reasons if r.get("severity") == "critical"), None)
+        if crit and not rechecked:  # also on a held line: a critical opens a re-check (a re-checked strip is in one already)
+            return station_hold("Critical: " + crit)
         if held_now():  # already held: the first hold stays open, no second one
             return
-        crit = next((r["text"] for v in vs for r in v.reasons if r.get("severity") == "critical"), None)
         rows, since = log_rows(), last_resume()
-        if crit:
-            station_hold("Critical: " + crit)
-        elif any(reject_run(rows[:n], no, since) >= DRIFT_REJECTS for n in range(len(rows) - len(vs) + 1, len(rows) + 1)):
+        if any(reject_run(rows[:n], no, since) >= DRIFT_REJECTS for n in range(len(rows) - len(vs) + 1, len(rows) + 1)):
             station_hold("3 rejects in a row — check the machine")  # checked after each new verdict: a later pass cannot hide it
 
     def need_batch():  # inspecting without an open batch would leave verdicts no batch owns: refuse, log nothing
@@ -404,7 +403,7 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
             if refused:
                 return refused
             with lock:  # inspect and publish together so verdicts land in order
-                rc = recheck.active(product_dir, batches.open)  # an open re-check: this strip is one of them
+                rc = recheck.current(product_dir) if held_now() else None  # a re-check runs on a held line only
                 mark = {"recheck": True, "window_id": rc["window_id"]} if rc else None
                 try:  # a re-checked strip keeps its real verdict while the line is held
                     v = st.inspect(im, held=held_now() and not rc, batch=no, extra=mark)
@@ -419,7 +418,7 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
                 out = publish([v])
                 if rc:
                     recheck.count(product_dir, rc, v.status)
-                after_verdicts([v], no)
+                after_verdicts([v], no, rechecked=bool(rc))
                 return out
         return paid(run)
 
@@ -460,7 +459,7 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
             refused = refused or not_released(batches.open)
             if refused:
                 return refused
-            if recheck.active(product_dir, batches.open):  # each re-checked strip is counted one at a time
+            if recheck.current(product_dir):  # each re-checked strip is counted one at a time
                 return {"error": "Re-check open: inspect the strips one at a time with Inspect strip"}
             with lock:  # one slow station operation at a time; verdicts land in order
                 if st.locked:  # no paid SAM video call for a locked station
@@ -590,6 +589,8 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
                 cur = batches.open
                 if not cur:
                     return JSONResponse({"error": NO_BATCH}, status_code=409)
+                if recheck.active(product_dir, cur):  # the re-checked strips belong to this batch's counts
+                    return {"error": "Finish or waive the re-check first."}
                 totals = reconcile(record._lines(product_dir / "log.jsonl"), cur["batch"], counts, limits)
                 totals["cleared"] = True
                 if totals["status"] == "outside":
@@ -751,7 +752,7 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
     def resume(body: dict, request: Request):
         def run():
             with lock:
-                name, w, waiver = qa(request), recheck.pending(product_dir), str(body.get("waiver", "")).strip()
+                name, w, waiver = qa(request), recheck.current(product_dir), str(body.get("waiver", "")).strip()
                 if w and not waiver:  # the re-check is finished, or QA gives a reason to waive the rest
                     return {"error": recheck.not_done(w)}
                 out = resume_line(st, plc or _NoPlc(), audit, users, name, str(body.get("password", "")),
@@ -831,10 +832,14 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
     def local_now():
         return datetime.fromtimestamp(clock()).isoformat(timespec="seconds")
 
+    def live_run():  # the run in progress, unless its batch is no longer the open one (then it is dropped)
+        r, b = chal["run"], batches.open
+        return r if r and b and r["batch"] == b["batch"] else None
+
     @app.get("/challenge")
     def challenge_state():
         def run():
-            s, r = challenge.load_set(product_dir), chal["run"]
+            s, r = challenge.load_set(product_dir), live_run()
             nxt = None
             if s and not (r and r["pending"]):
                 nxt = r["strips"][len(r["results"])] if r else s["strips"][0]
@@ -850,9 +855,12 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
             if not st.checklist:
                 return {"error": NO_CHECKLIST}
             im = image_from(image)
-            with meta:
+            with lock:  # the run in progress is checked and changed under the same lock as /challenge/inspect
                 out = challenge.register(product_dir, st.checklist, label, kind, rule, im, name, local_now())
                 audit.append("challenge_register", name, {"strips": out["strips"]})
+                if live_run():  # the set changed: the new set is run in full
+                    chal["run"] = None
+                    out = dict(out, message="The challenge run in progress was stopped: run the new set in full")
             return out
         return paid(run)
 
@@ -865,31 +873,42 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
             s = challenge.load_set(product_dir)
             if not s:
                 return {"error": challenge.NO_SET}
+            if src is not None and image is not None:  # a challenge proves a physical strip under the live camera
+                return {"error": "Place the strip under the camera: a challenge uses the live camera, not an uploaded photo"}
+            b = batches.open
+            if not b:
+                return JSONResponse({"error": NO_BATCH}, status_code=409)
             im = image_from(image)
             if im is None:
                 return {"error": "No camera frame to check."}
             with lock:  # one slow station operation at a time
-                r = chal["run"]
+                r = chal["run"] = live_run()
                 if r and r["pending"]:
                     return {"error": f"Tick Ejected for {r['pending']['label']} and record it first"}
                 if st.locked:
                     return {"error": "Station locked: " + st.lock_reason}
                 strip = r["strips"][len(r["results"])] if r else s["strips"][0]
-                v = st._judge(im, None, None)  # the normal verdict, never logged: no batch count, no drift rule
+                # the normal verdict, never logged or published: no batch count, no drift rule, no production banner
+                v = st._judge(im, None, None)
                 if FINDER_DOWN in v.reasons:  # like a self-test that could not run: nothing is recorded
                     return {"error": "Could not inspect: the pocket finder (SAM 3.1) did not answer — try again"}
                 res = challenge.judged(strip, v)
-                publish([v])  # a REJECT pulses the machine's reject output: that is what ejects the strip
-                if not res["caught"]:  # fail-safe: locked now, before anyone ticks anything
+                if r is None:
+                    r = chal["run"] = {"by": name, "batch": b["batch"], "strips": s["strips"], "results": [],
+                                       "pending": None, "source": "camera" if src is not None else "upload"}
+                if not res["caught"]:  # fail-safe: locked and audited now, before anyone ticks anything
                     challenge.lock(st, res, res["why"])
                     sync_lock()
-                if r is None:
-                    b = batches.open
-                    r = chal["run"] = {"by": name, "batch": b["batch"] if b else None, "strips": s["strips"],
-                                       "results": [], "pending": None}
+                if plc:  # every challenge strip is known-bad: the reject output pulses even on a miss, no counter moves
+                    plc.eject()
+                if not res["caught"]:
+                    log_physical_challenge(audit, name, res["label"], None, batch=r["batch"], source=r["source"],
+                                           missed=res["why"], **{k: res[k] for k in ("expected_rule", "status", "rules")},
+                                           passed=False)
                 r["pending"] = res
                 msg = (f"Rejected for Rule {res['expected_rule']}: tick Ejected once the strip is out" if res["caught"]
-                       else f"Missed: {res['label']} {res['why']} — station locked, quarantine open")
+                       else f"Missed: {res['label']} {res['why']} — station locked, quarantine open. "
+                            f"Take {res['label']} out — it is a known-bad strip")
                 return dict(res, message=msg)
         return paid(run)
 
@@ -900,7 +919,7 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
             if not role:
                 return {"error": "Log in first"}
             with lock:
-                r = chal["run"]
+                r = chal["run"] = live_run()
                 if not (r and r["pending"]):
                     return {"error": "Inspect the challenge strip first"}
                 p, ej = r["pending"], bool((body or {}).get("ejected"))
@@ -909,14 +928,15 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
                 if p["caught"] and not ej:  # rejected but still on the line: the reject path failed
                     challenge.lock(st, p, "not ejected")
                     sync_lock()
-                log_physical_challenge(audit, name, p["label"], ej, batch=r["batch"],
+                log_physical_challenge(audit, name, p["label"], ej, batch=r["batch"], source=r["source"],
                                        **{k: res[k] for k in ("expected_rule", "status", "rules", "passed")})
                 r["results"].append(res)
                 r["pending"] = None
                 if res["passed"] and len(r["results"]) < len(r["strips"]):
                     return {"result": res, "next": challenge.place(r["strips"][len(r["results"])])}
                 row = batches._write(challenge.RUNS, {"time": clock(), "at": local_now(), "by": r["by"], "batch": r["batch"],
-                                                      "results": r["results"], "passed": res["passed"]})  # a run stops at its first miss
+                                                      "source": r["source"], "results": r["results"],
+                                                      "passed": res["passed"]})  # a run stops at its first miss
                 chal["run"] = None
                 return {"result": res, "run": row}
         return paid(run)

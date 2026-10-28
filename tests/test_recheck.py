@@ -11,7 +11,8 @@ from d2i.record import _lines, shift_record
 from d2i.station import Verdict
 from d2i.supervisor import TOOLS
 from tests.conftest import make_strip
-from tests.test_app import PrintClient, ScriptChat, _audit, bench, call, login, up, wait_done
+from tests.test_app import (END_OK, PrintClient, ScriptChat, _audit, _holds, bench, call, login, open_batch, release_batch,
+                            up, wait_done)
 
 
 class FakeAudit:
@@ -163,3 +164,98 @@ def test_agent_requests_a_recheck_and_qa_approves_it(tmp_path):
     out = c.post("/approve-request", json={"id": res["id"], "password": "pw-qa"}).json()
     assert out["approved"] is False and out["message"].startswith("Re-check not complete")
     assert c.get("/status").json()["held"] is True
+
+
+# --- fix round 1 ---
+def test_since_is_the_batch_release(tmp_path):
+    t0 = float(int(time.time()) - 1000)
+    p = _product(tmp_path, t0, "PPPP", prints=[t0 + 5])
+    Batches(p)._write("selftests.jsonl", {"passed": True, "time": t0 + 3})
+    signed = FakeAudit()
+    signed.rows.append({"action": "specimen_signed", "user": "qa1", "details": {"batch": "B1"},
+                        "at": datetime.fromtimestamp(t0 + 7, timezone.utc).isoformat(timespec="seconds")})
+    assert recheck.open_window(p, signed, "x", "station")["since"] == t0 + 7  # released at the specimen signature
+    (p / "recheck.json").unlink()
+    Batches(p)._write("challenge_runs.jsonl", {"passed": True, "batch": "B1", "time": t0 + 15})  # set registered late
+    w = recheck.open_window(p, signed, "x", "station")
+    assert (w["since"], w["from_strip"], w["total"]) == (t0 + 10, 1, 4)  # never later than the batch's first strip
+
+
+def test_batch_end_refused_while_a_recheck_is_open(tmp_path):
+    c, p = _critical_bench(tmp_path)
+    login(c, "qa1", "pw-qa")
+    assert c.post("/batch/end", data=END_OK).json() == {"error": "Finish or waive the re-check first."}
+    assert Batches(p).open
+
+
+def test_a_window_belongs_to_its_batch(tmp_path):
+    c, p = _critical_bench(tmp_path, PASS, CRIT)
+    old = c.get("/recheck").json()
+    Batches(p)._write("batches.jsonl", {"event": "end", "batch": "B1", "by": "qa1", "at": "x", "time": time.time(), "totals": {}})
+    time.sleep(1.1)
+    open_batch(p, "B2")
+    release_batch(p, "B2")
+    login(c, "qa1", "pw-qa")
+    assert c.post("/resume", json={"password": "pw-qa", "reason": "new batch"}).json()["resumed"] is True  # not blocked
+    assert c.get("/recheck").json()["waived_by"] is None  # B1's window is not waived in B2's place
+    _inspect(c, 2)  # B2: a pass, then a wrong tablet opens B2's own window
+    rows = _lines(p / "log.jsonl")[-2:]
+    assert [r.get("recheck") for r in rows] == [None, None] and [r["batch"] for r in rows] == ["B2", "B2"]
+    w = c.get("/recheck").json()
+    assert w["open"] and w["window_id"] != old["window_id"] and (w["from_strip"], w["total"]) == (1, 1)
+
+
+def test_a_critical_on_a_held_line_still_opens_a_window(tmp_path):
+    c, p = bench(tmp_path)
+    _judge(c, PASS, PASS, CRIT)
+    _inspect(c, 2)
+    c.post("/hold", json={"reason": "operator"})
+    assert _inspect(c)[0]["status"] == "REJECT"
+    w = c.get("/recheck").json()
+    assert w["open"] and (w["from_strip"], w["to_strip"]) == (1, 2) and w["cause"].startswith("Critical: Rule 5")
+    assert len(_holds(p)) == 1  # the operator's hold stays the only one
+
+
+def test_approved_agent_recheck_holds_a_running_line_first(tmp_path):
+    chat = ScriptChat(call("request_recheck", {"reason": "mix-up seen"}), {"content": "done"})
+    c, p = bench(tmp_path, chat)
+    _judge(c, *[PASS] * 8)
+    _inspect(c, 2)
+    c.post("/investigate", json={"trigger": "t"})
+    rc, = wait_done(c)["pending"]
+    login(c, "qa1", "pw-qa")
+    time.sleep(1.1)  # verdict and audit times have one-second resolution
+    assert c.post("/resume", json={"password": "pw-qa", "reason": "ok"}).json()["resumed"] is True
+    time.sleep(1.1)
+    _inspect(c, 2)  # production on a running line
+    out = c.post("/approve-request", json={"id": rc["id"], "password": "pw-qa"}).json()
+    assert out["approved"] is True and c.get("/status").json()["held"] is True
+    assert _holds(p)[-1]["user"] == "qa1" and "Re-check" in _holds(p)[-1]["reason"]
+    assert c.get("/recheck").json()["total"] == 2
+    _inspect(c, 3)  # two re-checked strips, then the held line holds the next one
+    t = c.get("/status").json()["totals"]
+    assert (t["inspected"], t["passed"], t["held"]) == (5, 4, 1)
+
+
+def test_rows_are_marked_only_on_a_held_line(tmp_path):
+    c, p = bench(tmp_path)
+    _judge(c, PASS, PASS, PASS)
+    _inspect(c, 2)
+    assert recheck.open_window(p, AuditLog(p / "audit.jsonl"), "odd", "qa1")["open"]  # an open window, line running
+    _inspect(c)
+    assert "recheck" not in _lines(p / "log.jsonl")[-1] and c.get("/status").json()["totals"]["inspected"] == 3
+
+
+def test_record_totals_and_quarantine_count_each_strip_once(tmp_path):
+    from d2i.audit import quarantine_list
+    c, p = _critical_bench(tmp_path, PASS, ("REJECT", ["empty_pocket"]), PASS, PASS)
+    _inspect(c, 4)
+    html = shift_record(p, time.time() - 3600, time.time() + 60, "B1", "op", audit=AuditLog(p / "audit.jsonl"))
+    tot = html.split("<h2>Totals</h2>")[1].split("<h2>")[0]
+    assert "<td>2</td><td>2</td><td>1</td><td>0</td><td>0</td>" in tot  # passed, rejected, held, locked, no strip
+    bv = html.split("<h2>Batch verdicts</h2>")[1].split("<h2>")[0]
+    assert "<td>2</td><td>2</td><td>1</td><td>0</td><td>0</td>" in bv
+    Batches(p)._write("selftests.jsonl", dict(c.app.state.station._selftests()[-1], passed=False, failed=["x"],
+                                              time=time.time() + 1))
+    q = quarantine_list(p, AuditLog(p / "audit.jsonl"))["strips"]
+    assert q and not any(v.get("recheck") for v in q)  # a re-checked strip is listed once, by its first verdict
