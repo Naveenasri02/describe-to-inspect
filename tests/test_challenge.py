@@ -235,3 +235,16 @@ def test_with_a_camera_the_run_uses_the_live_frame(tmp_path):
         assert [e["details"]["source"] for e in _audit(p) if e["action"] == "physical_challenge"] == ["camera"]
     finally:
         c.app.state.source.stop.set()
+
+
+def test_challenge_inspect_shows_the_station_step(tmp_path):
+    """The Challenge Inspect button is a long action like Inspect: /status names the step while the strip is judged."""
+    c, p = _set_bench(tmp_path, ("C1", "empty_pocket"))
+    st, seen = c.app.state.station, []
+
+    def judge(image, sid, name):
+        seen.append(st.step)
+        return Verdict("REJECT", [st._reason("empty_pocket", 0)], strip_id=sid, image_name=name)
+    st._judge = judge
+    assert c.post("/challenge/inspect", files=up(make_strip(seed=15))).json()["caught"]
+    assert seen and seen[0].startswith("Finding the strip") and st.step == ""

@@ -1,4 +1,5 @@
 """Find the strip and its pockets: SAM 3.1 when online, the checklist grid when offline."""
+from concurrent.futures import ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
 
 import cv2
@@ -12,6 +13,8 @@ PAD = 0.08  # pill-outline strip: padding as a fraction of the pill bounds
 # shortcut: only white tablets measured (27 Oct); add colour words when a coloured product is taught
 POCKET_PROMPTS = ("pill", "white pill")  # "blister pocket" and "tablet" find nothing
 GROW = 0.5  # a pill follows a taught pocket when its centre is inside that pocket grown by half a pocket each way
+# every SAM 3.1 image call goes through here: one image's prompts together, at most 10 calls in flight station-wide
+SAM_POOL = ThreadPoolExecutor(10, thread_name_prefix="sam")
 
 
 @dataclass
@@ -153,16 +156,19 @@ def _from_template(strip, template):
 def find_layout(image: np.ndarray, cl: dict, client=None, template=None) -> Layout:
     if client is not None:
         try:
-            strip = None
-            for prompt in STRIP_PROMPTS:
-                found = [o.box for o in client.sam_image(image, prompt) if o.score is None or o.score >= MIN_SCORE]
-                if found:
-                    strip = tuple(max(found, key=lambda b: (b[2] - b[0]) * (b[3] - b[1])))
-                    break
-            for prompt in pill_prompts(cl["item"]):
-                pills = [o.box for o in client.sam_image(image, prompt) if o.score is None or o.score >= MIN_SCORE]
-                if pills:
-                    break
+            # asked together (one wait, not one per prompt), except the last strip prompt: it is asked only when the
+            # others found no strip (two whole-strip outlines in flight took 15 s each instead of 9)
+            first, last = STRIP_PROMPTS[:-1], STRIP_PROMPTS[-1]
+            asked = {p: SAM_POOL.submit(client.sam_image, image, p) for p in first + pill_prompts(cl["item"])}
+            wait(asked.values())  # no call outlives its layout
+            # answers are read in the order they used to be asked; one that is not needed is not opened, nor its error
+            found = lambda p: [o.box for o in asked[p].result() if o.score is None or o.score >= MIN_SCORE]
+            boxes = next((f for f in map(found, first) if f), None)
+            if boxes is None:
+                asked[last] = SAM_POOL.submit(client.sam_image, image, last)
+                boxes = found(last) or None
+            strip = tuple(max(boxes, key=lambda b: (b[2] - b[0]) * (b[3] - b[1]))) if boxes else None
+            pills = next((f for f in map(found, pill_prompts(cl["item"])) if f), [])
             source = "sam"
             if strip is None:
                 if not pills:

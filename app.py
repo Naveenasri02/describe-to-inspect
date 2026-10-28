@@ -293,7 +293,7 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
                 "rules": cl["rules"] if cl else [], "pending": pending["rules"] if pending else None,
                 "held": held, "quarantine_count": qn, "quarantine_error": qerr,
                 "checklist": cl, "pending_sentence": pending and pending.get("sentence"), "totals": totals, "reconciliation": recon,
-                "selftest": last_test, "taught": st._template is not None,
+                "selftest": last_test, "taught": st._template is not None, "step": st.step,  # what a long action is doing
                 "good_photos": len(list((product_dir / "good").glob("*.jpg"))), "hold_reason": hold_reason,
                 "machine_link": plc.connected if plc else None,
                 "user": dict(zip(("name", "role"), who(request))) if request.cookies.get("d2i_session") in sessions else None}
@@ -910,7 +910,8 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
                     return {"error": "Station locked: " + st.lock_reason}
                 strip = r["strips"][len(r["results"])] if r else s["strips"][0]
                 # the normal verdict, never logged or published: no batch count, no drift rule, no production banner
-                v = st._judge(im, None, None)
+                with st._doing(st._finding):  # /status shows the step, as for Inspect
+                    v = st._judge(im, None, None)
                 if FINDER_DOWN in v.reasons:  # like a self-test that could not run: nothing is recorded
                     return {"error": "Could not inspect: the pocket finder (SAM 3.1) did not answer — try again"}
                 res = challenge.judged(strip, v)

@@ -296,3 +296,18 @@ def test_chat_tools_sends_tools_and_returns_message(tmp_path):
     assert ev["platform"] == "Meta API" and ev["model"] == "muse-spark-1.3" and ev["job"] == "chat_tools"
     with pytest.raises(MetaError, match="no answer"):
         client.chat_tools([{"role": "user", "content": "go"}], tools)
+
+
+def test_sam_image_sends_a_smaller_copy_and_maps_the_boxes_back(tmp_path):
+    """Rehearsal photos are 1280 x 3487 (a 1.45 MB JPEG): one pill call took 13.3 s sent whole, 4.4 s at 1024 px, and
+    five sent together took 27-29 s each (the upload is shared). SAM 3.1 gets a copy at most SAM_SIDE pixels long;
+    its boxes are mapped back onto the full image."""
+    import base64
+    from d2i.meta_api import SAM_SIDE
+    http = FakeHTTP([responses_body(sam_text([(0, (10, 20, 110, 120), 0.9)], size=(470, 1280)))])
+    (o,) = MetaClient(budget(tmp_path), key="k", http=http).sam_image(np.zeros((3487, 1280, 3), np.uint8), "pill")
+    url = http.calls[0]["json"]["input"][0]["content"][1]["image_url"]
+    sent = cv2.imdecode(np.frombuffer(base64.b64decode(url.split(",", 1)[1]), np.uint8), cv2.IMREAD_COLOR)
+    assert SAM_SIDE == 1280 and sent.shape[:2] == (1280, 470)
+    assert all(abs(g - w) <= 1 for g, w in zip(o.box, (27, 54, 300, 327))), o.box  # x 1280/470, y 3487/1280
+    assert o.mask.shape == (3487, 1280) and o.mask[200, 150] and not o.mask[10, 10]

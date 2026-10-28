@@ -1,6 +1,8 @@
 """The bench: inspect a strip, name the failed rule, self-test with fake defects, lock when the test is missed."""
 import json
 import time
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -32,6 +34,7 @@ NEED_TEACH = "Teach the station first"
 FINDER_DOWN = {"rule": 1, "check": "finder", "pocket": None,
                "text": "Pocket finder (SAM 3.1) did not answer — check this strip by hand", "severity": "major"}
 NOT_RUN = "Self-test could not run: the pocket finder (SAM 3.1) did not answer — try again"
+SELF_TEST_WORKERS = 4  # painted strips judged at once (their SAM 3.1 calls are bounded by pockets.SAM_POOL)
 
 
 def _finder(lay) -> str:
@@ -60,6 +63,7 @@ class Station:
         self.dir, self.client, self.shift_hours, self.clock = Path(product_dir), client, shift_hours, clock
         self.snap = None  # set by the app: (image, verdict) -> file name of the saved reject photo
         self.last_layout = None  # what the most recent inspection found: the supervisor's tools look there, unpaid
+        self.step = ""  # what a long action is doing now, for the screen
         self.checklist = current(self.dir / "checklists.jsonl")
         model = self.dir / "model.pt"
         state = torch.load(model, map_location="cpu") if model.exists() else {}
@@ -107,6 +111,18 @@ class Station:
     def locked(self) -> bool:
         return bool(self.lock_reason)
 
+    @contextmanager
+    def _doing(self, step):
+        self.step = step
+        try:
+            yield
+        finally:
+            self.step = ""
+
+    @property
+    def _finding(self) -> str:
+        return "Finding the strip" + ("" if self.layout_source == "grid" else " (SAM 3.1)")
+
     def _layout(self, image):
         """A product taught on the checklist grid stays on it: no paid SAM call whose pockets it was not taught on."""
         return find_layout(image, self.checklist, None if self.layout_source == "grid" else self.client, self._template)
@@ -127,7 +143,8 @@ class Station:
                 c = self.crosscheck(im)
                 if not c["agree"]:
                     raise ValueError(f"photo {n}: SAM 3.1 found {c['sam']} pockets, Muse Spark counted {c['spark']}")
-        layouts = [find_layout(im, self.checklist, self.client) for im in images]
+        with self._doing(f"Teaching: finding the pockets in {len(images)} photos" + (" (SAM 3.1)" if self.client else "")):
+            layouts = [find_layout(im, self.checklist, self.client) for im in images]
         sources = [_finder(l) for l in layouts]
         if "sam" in sources and "grid" in sources:  # SAM 3.1 failed on some photos: their pockets came from the grid
             raise ValueError(f"photo {sources.index('grid') + 1}: the pocket finder (SAM 3.1) did not answer — "
@@ -136,7 +153,8 @@ class Station:
         if sources and "sam" not in sources and self.client is not None and getattr(self.client, "has_key", True):
             raise ValueError("the pocket finder (SAM 3.1) did not answer — check the network and save the photos again")
         t0 = time.perf_counter()
-        info = self.judge.teach(images, layouts)  # refuses photos whose layout is not ok
+        with self._doing("Teaching: learning the good pockets (DINOv2)"):
+            info = self.judge.teach(images, layouts)  # refuses photos whose layout is not ok
         for _ in images:
             trace.record("dinov2-small", "local", "teach", (time.perf_counter() - t0) * 1000 / len(images))
         template = template_from(layouts)
@@ -183,15 +201,16 @@ class Station:
             unlisted.append(self._unlisted(pocket))
 
     def _judge(self, image, strip_id, image_name) -> Verdict:
+        v = Verdict("PASS", strip_id=strip_id, image_name=image_name, at=self._now())
+        v.layout = lay = self._layout(image)  # its SAM 3.1 calls are traced by the Meta client, one row each
         t0 = time.perf_counter()
         try:
-            return self._judge_one(image, strip_id, image_name)
+            return self._judge_one(image, lay, v)
         finally:
-            trace.record("dinov2-small", "local", "judge", (time.perf_counter() - t0) * 1000)
+            if v.pocket_scores:  # DINOv2 ran: its own time only
+                trace.record("dinov2-small", "local", "judge", (time.perf_counter() - t0) * 1000)
 
-    def _judge_one(self, image, strip_id, image_name) -> Verdict:
-        v = Verdict("PASS", strip_id=strip_id, image_name=image_name, at=self._now())
-        v.layout = lay = self._layout(image)
+    def _judge_one(self, image, lay, v) -> Verdict:
         if _finder(lay) != self.layout_source:  # never judged with a different pocket finder than the one taught
             v.status, v.reasons = "HOLD", [dict(FINDER_DOWN)]
             return v
@@ -244,7 +263,8 @@ class Station:
             v = Verdict("LOCKED", [{"rule": None, "check": "locked", "pocket": None, "text": self.lock_reason}],
                         strip_id=strip_id, image_name=image_name, at=self._now())
         else:
-            v = self._judge(image, strip_id, image_name)
+            with self._doing(self._finding):
+                v = self._judge(image, strip_id, image_name)
             self.last_layout = v.layout
         return self.log(v, held, batch, image, user, extra)
 
@@ -270,10 +290,15 @@ class Station:
         in view nothing is written."""
         if self.taught_at is None:
             raise ValueError(NEED_TEACH)
+        with self._doing("Self-test: painting fake defects and checking each one" +
+                         ("" if self.layout_source == "grid" else " (SAM 3.1)")):
+            return self._self_test(good_image, rng_seed, record)
+
+    def _self_test(self, good_image, rng_seed, record) -> dict:
         cl = self.checklist
         rng = np.random.default_rng(rng_seed)
         lay = self._layout(good_image)
-        results, skipped = [], []
+        results, skipped, painted, good = [], [], [], None
         down = _finder(lay) != self.layout_source  # the taught pocket finder did not answer: nothing can be tested
         if lay.ok and not down:
             per = cl["per_row"]
@@ -292,12 +317,19 @@ class Station:
                 else:
                     # shortcut: wrong_tablet self-test changes size only (SAM may miss recoloured pills); the colour path is covered by unit tests
                     p = int(rng.choice(edge if kind == "foil_damage" else len(lay.pockets)))
-                v = self._judge(paint(good_image, lay.pockets[p or 0], kind, lay.strip_box, rng), None, None)
-                if down := FINDER_DOWN in v.reasons:
-                    break
-                results.append({"kind": kind, "pocket": None if p is None else p + 1, "caught": v.status == "REJECT",
-                                "named_right": any(r["check"] == kind for r in v.reasons)})
-        good = None if down or not lay.ok else self._judge(good_image, None, None)
+                painted.append((kind, p, paint(good_image, lay.pockets[p or 0], kind, lay.strip_box, rng)))
+            with ThreadPoolExecutor(SELF_TEST_WORKERS) as pool:  # judged together, read back in order
+                judged = [pool.submit(self._judge, im, None, None) for _, _, im in painted]
+                good_one = pool.submit(self._judge, good_image, None, None)
+                for (kind, p, _), f in zip(painted, judged):
+                    v = f.result()
+                    if down := FINDER_DOWN in v.reasons:
+                        for f in judged + [good_one]:
+                            f.cancel()
+                        break
+                    results.append({"kind": kind, "pocket": None if p is None else p + 1,
+                                    "caught": v.status == "REJECT", "named_right": any(r["check"] == kind for r in v.reasons)})
+                good = None if down else good_one.result()
         if down or (good and FINDER_DOWN in good.reasons):  # written nowhere: it neither locks nor unlocks
             return {"passed": False, "not_run": NOT_RUN, "results": results, "good_passed": False,
                     "failed": ["pocket finder did not answer"], "strip_found": lay.ok, "skipped": skipped}

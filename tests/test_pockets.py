@@ -1,8 +1,12 @@
 import numpy as np
+import pytest
 
 from d2i.meta_api import MetaError, SamObject
-from d2i.pockets import Layout, find_layout, grid, pill_prompts, template_from
+from d2i.pockets import POCKET_PROMPTS, STRIP_PROMPTS, Layout, find_layout, grid, pill_prompts, template_from
 from tests.conftest import STRIP_BOX, make_strip, pocket_box
+
+ASKED = sorted(STRIP_PROMPTS + POCKET_PROMPTS)  # every prompt; all but "pill pack" go out at once
+FIRST = sorted(STRIP_PROMPTS[:-1] + POCKET_PROMPTS)  # "pill pack" is asked only when no other strip prompt found one
 
 CL = {"rows": 2, "per_row": 5, "count": 10, "item": "tablet"}
 
@@ -77,7 +81,7 @@ def test_network_error_falls_back_to_grid(tmp_path):
     from d2i.meta_api import Budget, MetaClient
     from tests.conftest import FakeHTTP
     client = MetaClient(Budget(tmp_path / "s.json"), key="k",
-                        http=FakeHTTP([requests.ConnectionError("no route to api.meta.ai")] * 2))  # one retry
+                        http=FakeHTTP([requests.ConnectionError("no route to api.meta.ai")] * 8))  # 4 calls at once, 1 retry
     lay = find_layout(make_strip(), CL, client)
     assert lay.source == "grid" and lay.ok
 
@@ -122,9 +126,10 @@ def test_extra_object_outside_pattern_holds():
 def test_second_strip_prompt_used_when_first_empty():
     sam = FakeSam([], _pills(range(10)))
     sam.more["blister pack"] = [(STRIP_BOX, 0.9)]
+    sam.more["pill pack"] = [((0, 0, 640, 360), 0.9)]  # a later prompt: not asked
     lay = find_layout(make_strip(), CL, sam)
     assert lay.ok and lay.strip_box == STRIP_BOX and lay.source == "sam"
-    assert sam.prompts == ["blister strip", "blister pack", "pill"]
+    assert sorted(sam.prompts) == FIRST
 
 
 def test_pills_bound_the_strip_when_no_strip_prompt_works():
@@ -135,7 +140,7 @@ def test_pills_bound_the_strip_when_no_strip_prompt_works():
     px, py = int((x1 - x0) * 0.08), int((y1 - y0) * 0.08)
     assert lay.strip_box == (x0 - px, y0 - py, x1 + px, y1 + py)
     assert lay.source == "sam-pills" and lay.ok and len(lay.pockets) == 10
-    assert sam.prompts == ["blister strip", "blister pack", "pill pack", "pill"]
+    assert sorted(sam.prompts) == ASKED
 
 
 def test_no_strip_and_no_pills_is_no_strip():
@@ -143,11 +148,12 @@ def test_no_strip_and_no_pills_is_no_strip():
     assert lay.ok is False and lay.note == "no strip" and lay.source == "sam"
 
 
-def test_pill_prompts_stop_at_first_that_finds_pills():
+def test_first_pill_prompt_that_finds_pills_is_used():
     for strips in ([(STRIP_BOX, 0.95)], []):
         sam = FakeSam(strips, _pills(range(10)))
-        find_layout(make_strip(), CL, sam)
-        assert sam.prompts.count("pill") == 1 and "white pill" not in sam.prompts
+        sam.more["white pill"] = _pills(range(9))
+        lay = find_layout(make_strip(), CL, sam)
+        assert lay.ok and len(lay.pills) == 10 and sorted(sam.prompts) == (FIRST if strips else ASKED)
 
 
 def test_white_pill_used_when_pill_finds_nothing():
@@ -155,13 +161,47 @@ def test_white_pill_used_when_pill_finds_nothing():
     sam.more["white pill"] = _pills(range(10))
     lay = find_layout(make_strip(), CL, sam)
     assert lay.ok and len(lay.pockets) == 10
-    assert sam.prompts == ["blister strip", "pill", "white pill"]
 
 
-def test_white_pill_not_called_when_pill_works():
-    sam = FakeSam([(STRIP_BOX, 0.95)], _pills(range(10)))
-    find_layout(make_strip(), CL, sam)
-    assert "white pill" not in sam.prompts
+def test_layout_asks_every_prompt_at_once_and_each_call_is_paid_and_traced(tmp_path):
+    """Rehearsal: strip prompts then pill prompts one after another, 7.3 s each, about 30 s per inspect. They go out
+    together now (none gets past the barrier until all four are in flight; "pill pack" is not needed here); the answers
+    are taken in the same order as before; every call reserves and settles its price; each trace row shows its own."""
+    import threading
+    from d2i import trace
+    from d2i.meta_api import SAM_IMAGE, Budget, MetaClient
+    from tests.conftest import FakeResponse, responses_body, sam_text
+
+    answers = {"blister strip": [], "blister pack": [(0, STRIP_BOX, 0.95)], "pill pack": [(0, (0, 0, 640, 360), 0.9)],
+               "pill": [(i, pocket_box(i), 0.9) for i in range(10)], "white pill": [(0, pocket_box(0), 0.9)]}
+
+    class PromptHTTP:
+        def __init__(self):
+            self.barrier, self.prompts = threading.Barrier(4, timeout=3), []
+
+        def post(self, url, headers=None, json=None, timeout=None, **kw):
+            prompt = json["input"][0]["content"][0]["text"]
+            self.prompts.append(prompt)
+            self.barrier.wait()  # breaks unless all four calls are in flight together
+            return FakeResponse(200, responses_body(sam_text(answers[prompt])))
+
+    trace.clear()
+    http, budget = PromptHTTP(), Budget(tmp_path / "spend.json")
+    lay = find_layout(make_strip(), CL, MetaClient(budget, key="k", http=http))
+    assert lay.ok and lay.strip_box == STRIP_BOX and lay.pockets == [pocket_box(i) for i in range(10)]
+    assert sorted(http.prompts) == FIRST and budget.spent == pytest.approx(4 * SAM_IMAGE)
+    rows = [e for e in trace.recent() if e["model"] == "sam-3.1"]
+    assert len(rows) == 4 and all(e["usd"] == pytest.approx(SAM_IMAGE) for e in rows), rows
+
+
+def test_a_failed_prompt_whose_answer_is_not_needed_does_not_matter():
+    class OneDown(FakeSam):
+        def sam_image(self, image, prompt):
+            if prompt == "white pill":
+                raise MetaError("Meta API 503: busy")
+            return super().sam_image(image, prompt)
+    lay = find_layout(make_strip(), CL, OneDown([(STRIP_BOX, 0.95)], _pills(range(10))))
+    assert lay.source == "sam" and lay.ok  # "pill" answered first: "white pill" was not needed
 
 
 def test_capsule_prompts():

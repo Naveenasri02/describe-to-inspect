@@ -33,6 +33,9 @@ SAM_IMAGE = 2.50 / 1000                        # USD per image
 SAM_FRAME, SAM_MIN_FRAMES = 0.20 / 1000, 50    # USD per video frame, billed minimum
 VOICE_HOUR = 0.18                              # USD per audio hour
 IMAGE_TIMEOUT = 30  # seconds; image calls run inside inspection, which holds the station lock
+# longest side sent to SAM 3.1 (it works at about 1000 px): a 1280 x 3487 photo took 13.3 s per call sent whole, 4.4 s
+# at 1024 px; the upload, not the model, set the time. Boxes come back on the full image.
+SAM_SIDE = 1280
 RETRY_WAIT = 1.0  # seconds before the one retry of a busy (429, 5xx) or unreachable API
 
 
@@ -40,13 +43,13 @@ def _traced(model):
     """Record one trace event per public call: real cost on success, zero when it raises."""
     def deco(fn):
         def wrapper(self, *a, **kw):
-            t0, spent = time.perf_counter(), self.budget.spent
+            t0, spent = time.perf_counter(), self.budget.mine  # this thread's: calls run side by side
             try:
                 out = fn(self, *a, **kw)
             except BaseException:
                 trace.record(model, "Meta API", fn.__name__, (time.perf_counter() - t0) * 1000, 0.0, False)
                 raise
-            trace.record(model, "Meta API", fn.__name__, (time.perf_counter() - t0) * 1000, self.budget.spent - spent)
+            trace.record(model, "Meta API", fn.__name__, (time.perf_counter() - t0) * 1000, self.budget.mine - spent)
             return out
         wrapper.__name__ = fn.__name__
         return wrapper
@@ -66,6 +69,12 @@ class Budget:
 
     def __init__(self, path: Path | None = None, limit: float = LIMIT_USD):
         self.path, self.limit = Path(path or DEFAULT_SPEND), limit
+        self._mine = threading.local()
+
+    @property
+    def mine(self) -> float:
+        """What this thread has reserved and settled here: one call's own price, whatever runs beside it."""
+        return getattr(self._mine, "usd", 0.0)
 
     def _read(self) -> float:
         if not self.path.exists():
@@ -94,10 +103,12 @@ class Budget:
             if spent + worst > self.limit:
                 raise BudgetExceeded(f"spend stop: ${spent:.2f} used of ${self.limit:.2f}")
             self._save(spent + worst)
+        self._mine.usd = self.mine + worst
 
     def settle(self, worst: float, actual: float) -> None:
         with _SPEND_LOCK:
             self._save(self._read() + actual - worst)
+        self._mine.usd = self.mine + actual - worst
 
 
 @dataclass
@@ -223,12 +234,16 @@ class MetaClient:
 
     @_traced("sam-3.1")
     def sam_image(self, image: np.ndarray, prompt: str) -> list[SamObject]:
-        ok, jpg = cv2.imencode(".jpg", image, [cv2.IMWRITE_JPEG_QUALITY, 92])
+        h, w = image.shape[:2]
+        k = SAM_SIDE / max(h, w)
+        sent = cv2.resize(image, (round(w * k), round(h * k)), interpolation=cv2.INTER_AREA) if k < 1 else image
+        ok, jpg = cv2.imencode(".jpg", sent, [cv2.IMWRITE_JPEG_QUALITY, 92])
         url = "data:image/jpeg;base64," + base64.b64encode(jpg.tobytes()).decode()
         text = self._sam(SAM_IMAGE, SAM_IMAGE, [{"type": "input_text", "text": prompt},
                                                 {"type": "input_image", "image_url": url}], IMAGE_TIMEOUT)
-        h, w = image.shape[:2]
-        sx, sy = _scale(text, w, h)
+        sh, sw = sent.shape[:2]
+        sx, sy = _scale(text, sw, sh)  # onto the copy sent, then onto the full image
+        sx, sy = sx * w / sw, sy * h / sh
         records = _parse(sam.image_segmentation_format(), text)
         boxes = {r.object_id: r for r in records if r.kind == "box"}
         out = []

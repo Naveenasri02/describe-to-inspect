@@ -961,6 +961,27 @@ def test_reject_photo_draws_the_layout_the_strip_was_judged_on(tmp_path):
     assert near(photo[80:280, 80], app_mod.BLUE) > 0.9  # the strip outline
 
 
+def test_status_says_what_a_running_inspection_is_doing(tmp_path):
+    """The screen polls /status during a long action and shows the station's step with the seconds."""
+    c, p = bench(tmp_path)
+    st = c.app.state.station
+    started, go, judge = threading.Event(), threading.Event(), st._judge
+
+    def slow(image, sid, name):
+        started.set()
+        go.wait(10)
+        return judge(image, sid, name)
+    st._judge = slow
+    t = threading.Thread(target=lambda: c.post("/inspect", files=up(make_strip(seed=15))))
+    t.start()
+    try:
+        assert started.wait(10) and c.get("/status").json()["step"] == "Finding the strip"  # taught offline: no SAM
+    finally:
+        go.set()
+        t.join(30)
+    assert c.get("/status").json()["step"] == ""
+
+
 def test_pass_saves_no_photo(tmp_path):
     c, p = bench(tmp_path)
     c.app.state.station._judge = lambda image, sid, name: Verdict("PASS", strip_id=sid, image_name=name)

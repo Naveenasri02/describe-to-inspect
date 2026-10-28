@@ -1,3 +1,4 @@
+import json
 import re
 import shutil
 import subprocess
@@ -100,3 +101,65 @@ def test_end_batch_form_takes_counts_limits_and_reason():
         assert f'id="{i}"' in html and f'$("{i}")' in js, i
     assert "site policy" in html and "line cleared, leftover printed foil returned or destroyed" in html
     assert "confirm(" in js.split("async function batchEnd")[1].split("\n")[0] and "Totals balance" not in js
+
+
+def _node_run(code, f):
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is not installed")
+    f.write_text(code, encoding="utf-8")
+    r = subprocess.run([node, str(f)], capture_output=True, text=True, encoding="utf-8")
+    assert r.returncode == 0, r.stderr
+    return r.stdout.splitlines()
+
+
+def test_long_action_shows_its_step_and_seconds_and_cannot_be_pressed_twice(tmp_path):
+    """Rehearsal: inspect about 30 s, self-test about 4 min, and the card only said "Working..."; operators press
+    twice. The pressed button is off while it runs and the card shows the station's step and the seconds."""
+    js = (STATIC / "station.js").read_text(encoding="utf-8")
+    busy = re.search(r"^async function busy\(fn\).*?\}\}$", js, re.M | re.S).group(0)
+    out = _node_run('let S={step:"Finding the strip (SAM 3.1)"},running=false,shown=[];const clicked={disabled:false};'
+                    'const show=t=>shown.push(t);\n' + busy + '''
+(async()=>{let runs=0;const slow=()=>new Promise(r=>setTimeout(()=>{runs++;r("ok")},2300));
+  const a=busy(slow),b=busy(slow);
+  await new Promise(r=>setTimeout(r,1200));
+  console.log(JSON.stringify([clicked.disabled,shown[shown.length-1]]));
+  await a;await b;console.log(JSON.stringify([runs,clicked.disabled]))})()''', tmp_path / "busy.js")
+    assert json.loads(out[0]) == [True, "Finding the strip (SAM 3.1)… 1 s"]
+    assert json.loads(out[1]) == [1, False]
+
+
+def test_only_the_latest_message_stays_on_screen(tmp_path):
+    """Rehearsal: the QA screen showed "Leak test pass recorded", "Line resumed" and "Quarantine released." at once,
+    one in each card. Only the latest message stays."""
+    js = (STATIC / "station.js").read_text(encoding="utf-8")
+    show = re.search(r"^const show=.*?refresh\(\)\};$", js, re.M | re.S).group(0)
+    out = _node_run('const el=t=>({textContent:t,className:"msg",style:{cssText:""},classList:{add(){}}});'
+                    'const msgs=[el("Leak test pass recorded"),el("Line resumed"),el("")];'
+                    'const document={querySelectorAll:()=>msgs};const box=()=>msgs[2],refresh=()=>{};\n' + show +
+                    '\nshow("Quarantine released.");console.log(JSON.stringify(msgs.map(m=>m.textContent)))',
+                    tmp_path / "show.js")
+    assert json.loads(out[0]) == ["", "", "Quarantine released."]
+
+
+def test_challenge_buttons_are_long_actions(tmp_path):
+    """The challenge Register, Inspect and Record result buttons go through busy(): the card shows the step and the
+    seconds, and a second press while one runs sends nothing (no second challenge verdict or ejected row)."""
+    js = (STATIC / "station.js").read_text(encoding="utf-8")
+    busy = re.search(r"^async function busy\(fn\).*?\}\}$", js, re.M | re.S).group(0)
+    chal = re.findall(r"^const chal(?:Register|Inspect|Eject)=\(\)=>busy\(async\(\)=>\{.*?\}\);$", js, re.M | re.S)
+    assert len(chal) == 3
+    out = _node_run('let S={step:"Finding the strip (SAM 3.1)"},running=false,shown=[],calls=[];'
+                    'const clicked={disabled:false};const show=t=>shown.push(t);const $=()=>({value:"C1",checked:true});'
+                    'class FormData{append(){}};'
+                    'const fetch=u=>{calls.push(u);return new Promise(r=>setTimeout(()=>r({json:()=>({message:"done "+u,'
+                    'strips:[{label:"C1"}],result:{},next:"Place C2"})}),1500))};'
+                    'const j=async u=>(await fetch(u)).json();\n' + "\n".join([busy] + chal) + '''
+(async()=>{const a=chalInspect(),b=chalInspect(),c=chalEject(),d=chalRegister();
+  await new Promise(r=>setTimeout(r,1100));
+  console.log(JSON.stringify([clicked.disabled,shown[shown.length-1]]));
+  await a;await b;await c;await d;console.log(JSON.stringify([calls,clicked.disabled,shown[shown.length-1]]));
+  await chalEject();console.log(JSON.stringify(calls))})()''', tmp_path / "chal.js")
+    assert json.loads(out[0]) == [True, "Finding the strip (SAM 3.1)… 1 s"]
+    assert json.loads(out[1]) == [["/challenge/inspect"], False, "done /challenge/inspect"]
+    assert json.loads(out[2]) == ["/challenge/inspect", "/challenge/eject"]
