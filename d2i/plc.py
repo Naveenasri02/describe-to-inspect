@@ -13,6 +13,13 @@ class _Handler(socketserver.BaseRequestHandler):
         plc = self.server.plc
         with plc._lock:
             plc._conns.add(self.request)
+        try:
+            self._serve(plc)
+        finally:
+            with plc._lock:
+                plc._conns.discard(self.request)
+
+    def _serve(self, plc):
         while True:
             head = self._read(7)
             if head is None:
@@ -62,6 +69,12 @@ class Plc:
     def coils(self):
         with self._lock:
             return [time.monotonic() < self._reject_until, self._locked, self._hold or self._agent_hold]
+
+    @property
+    def connected(self) -> bool:
+        """True while a machine (Modbus client) holds a connection open."""
+        with self._lock:
+            return bool(self._conns)
 
     def set_hold(self, on: bool):
         """Shift Supervisor hold on coil 2; verdicts never clear it, only a QA-approved resume does."""

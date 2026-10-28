@@ -1,217 +1,222 @@
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Describe-to-Inspect</title>
-<style>
-.crit{color:#b00020;font-weight:600}
-body{margin:0;font-family:system-ui,sans-serif;background:#f3f4f6;color:#111}
-header{padding:8px 16px;background:#1f2937;color:#fff}
-header small{opacity:.7;margin-left:12px}
-#banner{padding:24px;text-align:center;font-size:44px;font-weight:700;color:#fff;background:#888}
-#banner div{font-size:22px;font-weight:400;margin-top:6px}
-main{display:flex;flex-wrap:wrap;gap:16px;padding:16px}
-section{background:#fff;border-radius:8px;padding:12px;flex:1 1 360px}
-img#cam{width:100%;background:#000;min-height:200px}
-button,select,input,textarea{font:inherit;padding:8px 12px;margin:3px 0}
-button{cursor:pointer}
-textarea{width:100%;box-sizing:border-box}
-#msg{white-space:pre-wrap;margin-top:8px}
-.small{font-size:13px;color:#555}
-#qbanner{padding:10px 16px;background:#e59a00;color:#111;font-weight:600}
-#qbanner ul{margin:6px 0 0;font-weight:400}
-header input{width:110px;padding:4px 6px;margin:0 2px}
-header span{margin-left:12px}
-.model{font-style:italic;color:#7a4a00;font-size:13px}
-.req{border:1px solid #ccc;border-radius:6px;padding:6px;margin:6px 0}
-footer{padding:12px 16px;color:#555;font-size:13px}
-td,th{font-size:12px;padding:2px 6px;text-align:left}
-</style></head><body>
-<header>Describe-to-Inspect <small>Packaging-line QA bench</small>
-  <span id="who"></span>
-  <span id="loginbox"><input id="ln" placeholder="Name"><input id="lp" type="password" placeholder="Password">
-  <button onclick="login()">Log in</button></span>
-  <button id="logoutbtn" onclick="logout()" hidden>Log out</button></header>
-<div id="banner">...<div id="why"></div><div id="batchline" class="small" style="color:#fff"></div></div>
-<div id="skipped" class="small"></div>
-<div id="uncovered" class="small"></div>
-<div id="qbanner" hidden><span id="qtext"></span><ul id="qlist"></ul>
-  <input id="rp" type="password" placeholder="QA password"><input id="rr" placeholder="Reason">
-  <button onclick="release()">Release quarantine (QA)</button></div>
+<link rel="stylesheet" href="/static/station.css">
+</head><body>
+<header class="top">
+  <div class="name">Describe-to-Inspect<span>Packaging-line QA bench</span></div>
+  <nav aria-label="Screens">
+    <button data-tab="run" class="on">Run</button>
+    <button data-tab="setup" data-role="qa" hidden>Setup</button>
+    <button data-tab="qa" data-role="qa" hidden>QA</button>
+    <button data-tab="record" data-role="user" hidden>Record</button>
+    <button data-tab="system" data-role="qa" hidden>System</button>
+  </nav>
+  <div class="who"><span id="who"></span>
+    <span id="loginbox"><input id="ln" placeholder="Name" aria-label="Name"> <input id="lp" type="password" placeholder="Password" aria-label="Password">
+    <button onclick="login()">Log in</button></span>
+    <button id="logoutbtn" onclick="logout()" hidden>Log out</button></div>
+</header>
+<div class="bmr" id="bmr">
+  <div><small>Product</small><strong id="b-product">–</strong></div>
+  <div><small>Batch no.</small><strong id="b-batch">No batch open</strong></div>
+  <div><small>MFG</small><strong id="b-mfg">–</strong></div>
+  <div><small>EXP</small><strong id="b-exp">–</strong></div>
+  <div><small>MRP</small><strong id="b-mrp">–</strong></div>
+  <div><small>Shift</small><strong id="b-shift">–</strong></div>
+  <div><small>Checklist</small><strong id="b-ver">–</strong></div>
+</div>
+<div class="alert" id="notrel" role="status" hidden></div>
+<div class="alert" id="qbanner" role="status" hidden></div>
+<div class="alert" id="askbox" hidden>Shift Supervisor asks: <b id="askq"></b>
+  <input id="ans" aria-label="Your answer"><button onclick="answer()">Answer</button></div>
 <main>
-<section><img id="cam" src="/stream" alt="camera">
-  <div><button onclick="inspectNow()">Inspect strip</button>
-  <button title="At-line sample check: reads the foil print and compares it with the batch record" onclick="printNow()">Check print (foil side up)</button>
-  <button title="Record a short clip of the tray; one verdict per strip" onclick="trayNow()">Tray clip</button>
-  <button title="Per-shift functional check — runs on top of the physical challenge strip" onclick="post('/selftest')">Self-test</button>
-  <button onclick="post('/teach',{capture:true})">Teach: save this strip</button>
-  <button onclick="post('/teach',{})">Teach from saved photos</button></div>
-  <div><input id="cl" placeholder="Challenge strip label"> <label><input type="checkbox" id="ce"> ejected</label>
-  <button onclick="challenge()">Log physical challenge strip</button></div>
-  <div class="small">Spent: $<span id="spent">0</span> · Checklist v<span id="ver">-</span> · <span id="counts"></span></div>
+
+<section class="tab" id="run">
+  <div class="run">
+    <div class="left">
+      <div class="label ink" id="label" aria-live="polite">
+        <div class="band" id="band">READY</div>
+        <div class="why" id="why"></div>
+        <div class="note" id="skipped"></div>
+        <dl><div><dt>Strip</dt><dd id="stripno">–</dd></div><div><dt>Time</dt><dd id="vtime">–</dd></div>
+          <div><dt>Sent to machine</dt><dd id="sent">–</dd></div></dl>
+      </div>
+      <div class="counts">
+        <div class="p"><b id="c-pass">–</b><span>Passed</span></div>
+        <div class="r"><b id="c-rej">–</b><span>Rejected</span></div>
+        <div class="h"><b id="c-held">–</b><span>Held for QA</span></div>
+        <div><b id="c-all">–</b><span>Inspected</span></div>
+      </div>
+      <div class="msg"></div>
+      <div class="actions">
+        <button class="btn big primary" onclick="inspectNow()">Inspect strip</button>
+        <button class="btn big" title="Record a short clip of the tray; one verdict per strip" onclick="trayNow()">Tray clip</button>
+        <button class="btn big" onclick="post('/hold',{reason:'operator pressed Hold line'},'Line held. QA must resume it.')">Hold line</button>
+        <button class="btn big" id="vcmd" title="Say: self test, teach, inspect, hold, record" onclick="toggleRec('command')">Voice command</button>
+      </div>
+      <div id="heard" class="small heard"></div>
+    </div>
+    <div class="cam"><img id="cam" src="/stream" alt="Live camera with the pocket outlines"><div class="tag"><i></i>Live camera</div></div>
+  </div>
+  <div class="status"><span id="st-self"></span><span id="st-clear"></span><span id="st-due" hidden></span><span id="st-link"></span>
+    <span class="brand">Built with Muse Spark Open</span></div>
 </section>
-<section>
-  <b>Rules for a good strip</b>
-  <ol id="rules"></ol>
-  <textarea id="text" rows="3" placeholder="Describe the good strip, e.g. ten tablets in two rows of five; reject empty or broken"></textarea>
-  <div><button onclick="describe()">Make checklist</button>
-  <select id="lang"><option>Auto</option><option>English</option><option>Tamil</option><option>Hindi</option></select>
-  <button id="rec" onclick="toggleRec('rule')">Speak rule</button>
-  <button id="vcmd" title="Say: self test, teach, inspect, hold, record" onclick="toggleRec('command')">Voice command</button>
-  <div id="heard" class="small"></div></div>
-  <div id="pending"></div>
-  <div><button onclick="approve()">Approve</button> <span id="qahint" class="small">Log in as QA to approve</span></div>
-  <div id="msg"></div>
-  <hr>
-  <input id="batch" placeholder="Batch"><input id="op" placeholder="Operator">
-  <a href="#" onclick="rec();return false">Shift record</a>
-  <input id="sp" type="password" placeholder="QA password"><button onclick="sign()">Sign record (QA)</button>
-  <div><input id="q" placeholder="Ask about the records"><button onclick="ask()">Ask</button></div>
-  <div class="small"><a href="/lamp" target="_blank">Stack-light page</a></div>
+
+<section class="tab" id="setup" hidden>
+  <ol class="steps" id="steps">
+    <li><button data-step="1"><i>1</i>Describe the good strip</button></li>
+    <li><button data-step="2"><i>2</i>Approve the rules</button></li>
+    <li><button data-step="3"><i>3</i>Teach good strips</button></li>
+    <li><button data-step="4"><i>4</i>Self-test</button></li>
+    <li><button data-step="5"><i>5</i>Run</button></li>
+  </ol>
+  <div class="setup">
+    <div>
+      <div class="card" data-panel="1">
+        <h2>Describe the good strip</h2>
+        <p>Type or say what a good strip looks like, in any language. The station turns it into numbered rules for QA to approve.</p>
+        <textarea id="text" rows="3" aria-label="Good strip description" placeholder="e.g. ten tablets in two rows of five; reject empty or broken"></textarea>
+        <div class="actions"><button class="btn big primary" onclick="describe()">Make checklist</button>
+          <button class="btn big" id="rec" onclick="toggleRec('rule')">Speak rule</button>
+          <label class="lang">Language <select id="lang"><option>Auto</option><option>English</option><option>Tamil</option><option>Hindi</option></select></label></div>
+        <div class="msg"></div>
+      </div>
+      <div class="card" data-panel="2" hidden>
+        <h2>Approve the rules</h2>
+        <p>Check each rule on the right against the sentence it came from. Approving makes them the next checklist version.</p>
+        <div class="spoken" id="psentence"></div><small>The sentence the rules were made from.</small>
+        <div class="actions" style="margin-top:18px"><button class="btn big primary" onclick="post('/approve',{},r=>'Checklist version '+r.checklist.version+' approved.')">Approve</button></div>
+        <div class="msg"></div>
+      </div>
+      <div class="card" data-panel="3" hidden>
+        <h2 id="teachh">Teach good strips</h2>
+        <p>Place a good strip under the camera and save it. Move or turn it a little each time, so the station learns what normal looks like.</p>
+        <div class="slots" id="slots"></div>
+        <div class="actions"><button class="btn big primary" onclick="post('/teach',{capture:true},taught)">Save this strip</button>
+          <button class="btn big" onclick="post('/teach',{},taught)">Use saved photos</button></div>
+        <div class="msg"></div>
+      </div>
+      <div class="card" data-panel="4" hidden>
+        <h2>Self-test</h2>
+        <p>The station paints fake defects onto the good strip in view and checks that each one is caught and named, and that the real strip passes. A per-shift functional check — it runs on top of the physical challenge strip.</p>
+        <div class="actions"><button class="btn big primary" onclick="post('/selftest',{},selftestSaid)">Run self-test</button></div>
+        <h3 id="sth" hidden></h3>
+        <ul class="check" id="stresults"></ul>
+        <div class="small" id="uncovered"></div>
+        <div class="msg"></div>
+      </div>
+      <div class="card" data-panel="5" hidden>
+        <h2>Ready to run</h2>
+        <p>The rules are approved, the station is taught and the self-test passed. QA opens and releases the batch on the QA screen; then strips are inspected on the Run screen.</p>
+        <div class="actions"><button class="btn big primary" onclick="go('run')">Go to Run</button></div>
+      </div>
+    </div>
+    <div class="card">
+      <h2>Rules for a good strip</h2>
+      <div id="sentencebox" hidden><div class="spoken" id="sentence"></div><small>The sentence the rules were made from.</small></div>
+      <ul class="rules" id="rules"></ul>
+      <div class="approved" id="approved">No rules yet.</div>
+    </div>
+  </div>
 </section>
-<section>
-  <b>Batch</b> <span class="small">(QA logs in to use these)</span>
-  <div><button onclick="clearance()">Line clearance</button> <span id="clr" class="small"></span></div>
-  <div><input id="bn" placeholder="Batch no."><input id="bm" placeholder="MFG 10/2026"><input id="be" placeholder="EXP 10/2028"><input id="bp" placeholder="MRP Rs.">
-  <button onclick="batchStart()">Start batch</button></div>
-  <ul id="rel" class="small"></ul>
-  <div id="due" class="small" style="color:#b36b00;font-weight:600"></div>
-  <div><input id="spw" type="password" placeholder="QA password"><button onclick="specimen()">Sign start-up specimen (QA)</button>
-  <button onclick="foil()">Foil roll changed</button></div>
-  <div>Leak test: <button onclick="leak('pass')">Pass</button><button onclick="leak('fail')">Fail</button>
-  <input id="bsamp" type="number" min="0" placeholder="Samples" style="width:90px"><input id="bnote" placeholder="Note"></div>
-  <div><button onclick="batchEnd()">End batch</button></div>
+
+<section class="tab" id="qa" hidden>
+  <div class="qa">
+    <div class="card">
+      <h2>Batch release</h2>
+      <ul class="check" id="rel"></ul>
+      <div class="field"><input id="spw" type="password" placeholder="QA password" aria-label="QA password for the specimen">
+        <button class="btn go" id="go-spec" onclick="specimen()">Sign start-up specimen (QA)</button></div>
+      <div class="dueline" id="due" hidden></div>
+      <div id="nobatch">
+        <h3>Start a batch</h3>
+        <div class="field"><button class="btn go" id="go-clear" onclick="clearance()">Line clearance</button> <span id="clr" class="small"></span></div>
+        <div class="grid4"><input id="bn" placeholder="Batch no." aria-label="Batch no."><input id="bm" placeholder="MFG 10/2026" aria-label="MFG">
+          <input id="be" placeholder="EXP 10/2028" aria-label="EXP"><input id="bp" placeholder="MRP Rs." aria-label="MRP"></div>
+        <div class="field"><button class="btn go" id="go-start" onclick="batchStart()">Start batch</button></div>
+      </div>
+      <div id="inbatch" hidden>
+        <h3>In-process checks</h3>
+        <div class="field"><button class="btn go" id="go-print" title="At-line sample check: reads the foil print and compares it with the batch record" onclick="printNow()">Check print (foil side up)</button>
+          <button class="btn" onclick="foil()">Foil roll changed</button></div>
+        <div class="field"><span class="small">Leak test</span><input id="bsamp" type="number" min="0" placeholder="Samples" aria-label="Leak test samples" class="narrow">
+          <input id="bnote" placeholder="Note" aria-label="Leak test note"></div>
+        <div class="field"><button class="btn" onclick="leak('pass')">Leak test pass</button><button class="btn" onclick="leak('fail')">Leak test fail</button>
+          <button class="btn end" onclick="batchEnd()">End batch</button></div>
+      </div>
+      <div class="msg"></div>
+    </div>
+    <div class="card">
+      <h2 id="heldh">Line running</h2>
+      <div class="held" id="heldbox" hidden><b id="heldby"></b><span id="heldwhy"></span></div>
+      <div class="running" id="runningnote">Nothing is holding the line.</div>
+      <div class="agent"><b>Shift Supervisor</b> <span class="small">(<span id="supmodel">Muse Spark Open, open weights</span>)</span>
+        <div id="checked" hidden>What the supervisor checked<ol id="steplist"></ol></div>
+        <div id="concl"></div>
+        <div class="model" id="supnote" hidden>Written by Muse Spark Open. Check before acting.</div>
+        <div class="field"><input id="trig" placeholder="Why? e.g. rejects rose" aria-label="Why investigate"><button class="btn" onclick="investigate()">Investigate</button></div>
+        <div id="invstate" class="small"></div>
+      </div>
+      <div id="reqs"></div>
+      <div id="resumebox" hidden>
+        <h3>Resume the line</h3>
+        <div class="field"><input id="rsp" type="password" placeholder="QA password" aria-label="QA password to resume"><input id="rsr" placeholder="Reason to resume" aria-label="Reason to resume"></div>
+        <div class="field"><button class="btn go" id="go-resume" onclick="resumeLine()">Resume line (QA)</button></div>
+      </div>
+      <div class="msg"></div>
+    </div>
+    <div class="card">
+      <h2>Batch totals</h2>
+      <table class="recon" id="recon"></table>
+      <div class="bal" id="bal"></div>
+      <div id="qrel" hidden>
+        <h3>Quarantine</h3>
+        <ul class="qlist" id="qlist"></ul>
+        <div class="field"><input id="rp" type="password" placeholder="QA password" aria-label="QA password to release"><input id="rr" placeholder="Reason" aria-label="Release reason"></div>
+        <div class="field"><button class="btn" onclick="release()">Release quarantine (QA)</button></div>
+      </div>
+      <h3>Physical challenge strip</h3>
+      <div class="field"><input id="cl" placeholder="Challenge strip label" aria-label="Challenge strip label"><label><input type="checkbox" id="ce"> ejected</label></div>
+      <div class="field"><button class="btn" onclick="challenge()">Log physical challenge strip</button></div>
+      <p class="note">The self-test adds to the physical challenge test; it does not replace it.</p>
+      <div class="msg"></div>
+    </div>
+  </div>
 </section>
-<section>
-  <b>Shift Supervisor (<span id="supmodel">Muse Spark Open, open weights</span>)</b>
-  <div><input id="trig" placeholder="Why? e.g. rejects rose"><button onclick="investigate()">Investigate</button></div>
-  <div id="invstate" class="small"></div>
-  <ol id="steps"></ol><div class="model">Step summaries: written by the model — check before acting</div>
-  <div id="askbox" hidden><b id="askq"></b><div><input id="ans"><button onclick="answer()">Answer</button></div></div>
-  <div id="concl"></div>
-  <div id="reqs"></div>
-  <div><input id="rsp" type="password" placeholder="QA password"><input id="rsr" placeholder="Reason to resume">
-  <button onclick="resumeLine()">Resume line (QA)</button></div>
+
+<section class="tab" id="record" hidden>
+  <div class="wide">
+    <div class="card">
+      <h2>Shift record</h2>
+      <p>The record of this shift's verdicts, self-tests and checks. It is a draft until QA signs it.</p>
+      <div class="field"><input id="batch" placeholder="Batch" aria-label="Batch"><input id="op" placeholder="Operator" aria-label="Operator"></div>
+      <div class="field"><button class="btn primary" onclick="rec()">Open shift record</button></div>
+      <h3>Sign shift record</h3>
+      <div class="field"><input id="sp" type="password" placeholder="QA password" aria-label="QA password to sign"><button class="btn" onclick="sign()">Sign record (QA)</button></div>
+      <h3>Ask about the records</h3>
+      <div class="field"><input id="q" placeholder="e.g. why were strips rejected today?" aria-label="Question about the records"><button class="btn" onclick="ask()">Ask</button></div>
+      <div class="msg"></div>
+    </div>
+    <div class="card recview"><iframe id="recframe" title="Shift record" sandbox hidden></iframe><div class="empty" id="recempty">Open the shift record to see it here.</div></div>
+  </div>
 </section>
-<section>
-  <b>What each model did</b>
-  <table><thead><tr><th>Model</th><th>Job</th><th>ms</th><th>USD</th></tr></thead><tbody id="trace"></tbody></table>
+
+<section class="tab" id="system" hidden>
+  <div class="wide">
+    <div class="card">
+      <h2>Spend</h2>
+      <div class="bignum">$<span id="spent">0.00</span></div>
+      <p>Spent on paid model calls so far.</p>
+      <h3>Stack light</h3>
+      <p><a href="/lamp" target="_blank">Open the stack-light page</a> on a phone or a second screen.</p>
+    </div>
+    <div class="card">
+      <h2>What each model did</h2>
+      <table class="trace"><thead><tr><th>Model</th><th>Job</th><th>ms</th><th>USD</th></tr></thead><tbody id="trace"></tbody></table>
+    </div>
+  </div>
 </section>
 </main>
-<footer>Built with Muse Spark Open</footer>
-<script>
-const $=id=>document.getElementById(id);
-const col={READY:"#118a3a",PASS:"#118a3a",REJECT:"#c4161c",LOCKED:"#c4161c",HOLD:"#e59a00","NO STRIP":"#888","NOT RELEASED":"#e59a00"};
-const red=vs=>{if(vs.some(v=>(v.reasons||[]).some(r=>r.severity==="critical")))$("msg").classList.add("crit")};
-const show=o=>{$("msg").className="";$("msg").style.cssText="";$("msg").textContent=typeof o==="string"?o:(o.error||JSON.stringify(o,null,1));refresh()};
-async function j(url,body){const r=await fetch(url,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body||{})});return r.json()}
-async function post(url,b){show("Working...");show(await j(url,b))}
-async function inspectNow(){show("Working...");const v=await (await fetch("/inspect",{method:"POST"})).json();show(v.error?v:v.status+" "+(v.reasons||[]).map(r=>r.text+(r.severity?" ["+r.severity+"]":"")).join("; "));red([v])}
-async function printNow(){show("Reading the print...");const r=await j("/print");
-  if(r.error)return show(r);const m=$("msg");show((r.status==="PRINT_OK"?"PRINT OK":"HOLD")+(r.reasons.length?"\n"+r.reasons.join("\n"):""));
-  m.style.cssText="font-size:28px;font-weight:700;color:#fff;padding:12px;background:"+(r.status==="PRINT_OK"?"#118a3a":"#e59a00")}
-async function trayNow(){show("Working...");const r=await j("/tray");
-  show(r.verdicts?r.verdicts.map(v=>"Strip "+(v.strip_id??"-")+": "+v.status+" "+v.reasons.map(x=>x.text+(x.severity?" ["+x.severity+"]":"")).join("; ")).join("\n"):r);if(r.verdicts)red(r.verdicts)}
-async function form(url,o){const r=await fetch(url,{method:"POST",body:new URLSearchParams(o||{})});return r.json()}
-async function clearance(){show("Checking the table...");const r=await form("/clearance");
-  $("clr").textContent=r.error?"":(r.clear?"Clear":"Not clear: "+r.found.map(f=>f.count+" "+f.prompt).join(", "));show(r.error?r:"Line clearance: "+(r.clear?"clear":"NOT clear"))}
-async function batchStart(){show(await form("/batch/start",{batch:$("bn").value,mfg:$("bm").value,exp:$("be").value,mrp:$("bp").value}))}
-async function leak(r){show(await form("/leak",{result:r,note:$("bnote").value,samples:$("bsamp").value||0}))}
-async function specimen(){const r=await j("/specimen/sign",{password:$("spw").value});$("spw").value="";show(r)}
-async function foil(){show(await form("/foil-change"))}
-async function batchEnd(){show(await form("/batch/end"))}
-async function describe(){show("Working...");const r=await j("/describe",{text:$("text").value});shown(r)}
-function shown(r){if(r.error)return show(r);if(r.transcript)$("text").value=r.transcript;show("Check the rules, then Approve.")}
-async function approve(){show(await j("/approve"))}
-let recId="";
-async function rec(){const q=new URLSearchParams({batch:$("batch").value,operator:$("op").value});
-  const r=await fetch("/record?"+q);recId=r.headers.get("X-Record-Id")||"";
-  window.open(URL.createObjectURL(new Blob([await r.text()],{type:"text/html"})))}
-async function ask(){const r=await j("/ask",{question:$("q").value});show(r.error?r:r.answer+"\n(written by the model — check before acting)")}
-async function refresh(){
-  const s=await (await fetch("/status")).json();
-  $("banner").style.background=col[s.state]||"#888";
-  $("banner").firstChild.textContent=s.state;$("why").textContent=s.text;$("uncovered").textContent=(s.selftest_skipped||[]).length?"Self-test did not cover: "+s.selftest_skipped.join(", "):"";$("skipped").textContent=((s.last_verdict||{}).skipped||[]).length?"Not checked: "+s.last_verdict.skipped.join(", "):"";$("batchline").textContent=s.batch?"Batch "+s.batch.batch:"No batch open";
-  $("rel").replaceChildren();if(s.batch)["Self-test for this batch","Start-up print check","QA signature on the start-up specimen"]
-    .forEach(t=>$("rel").appendChild(mk("li",(s.blockers.includes(t)?"☐ ":"☑ ")+t)));
-  $("due").textContent=s.due.length?"Due: "+s.due.join(", "):"";
-  $("spent").textContent=s.spent_usd==null?"?":s.spent_usd.toFixed(2);$("ver").textContent=s.checklist_version??"-";
-  $("counts").textContent=Object.entries(s.counts).map(([k,v])=>k+" "+v).join(" · ");
-  $("rules").innerHTML="";(s.pending||s.rules).forEach(t=>{const li=document.createElement("li");li.textContent=t.replace(/^Rule \d+(?: \((\w+)\))?: /,(m,s)=>s?"["+s+"] ":"");if(/^Rule \d+ \(critical\)/.test(t))li.className="crit";$("rules").appendChild(li)});
-  $("pending").textContent=s.pending?"Waiting for approval":"";
-  $("who").textContent=s.user?s.user.name+" ("+s.user.role+")":"";
-  $("loginbox").hidden=!!s.user;$("logoutbtn").hidden=!s.user;$("qahint").hidden=!!s.user&&s.user.role==="qa";
-  quarantine(s.quarantine_count,s.quarantine_error);traceRows();invRefresh();
-}
-const mk=(tag,text,cls)=>{const e=document.createElement(tag);e.textContent=text;if(cls)e.className=cls;return e};
-const MODEL_NOTE="written by the model — check before acting";
-async function login(){show(await j("/login",{name:$("ln").value,password:$("lp").value}));$("lp").value=""}
-async function logout(){await j("/logout");refresh()}
-async function challenge(){show(await j("/challenge",{strip_label:$("cl").value,ejected:$("ce").checked}))}
-async function release(){show(await j("/release",{password:$("rp").value,reason:$("rr").value}));$("rp").value=""}
-async function sign(){const r=await j("/sign",{password:$("sp").value,record_id:recId});$("sp").value="";show(r)}
-async function quarantine(n,err){
-  $("qbanner").hidden=!n&&!err;if(err){$("qtext").textContent="Quarantine status unknown — check the record";$("qlist").replaceChildren();return}
-  if(!n)return;
-  $("qtext").textContent="Quarantine: "+n+" strips since the last passed self-test — QA release needed";
-  const q=await (await fetch("/quarantine")).json(),ul=$("qlist");ul.replaceChildren();
-  (q.strips||[]).slice(-10).forEach(v=>ul.appendChild(mk("li",(v.at||"")+" "+v.status)));
-}
-async function traceRows(){
-  const rows=await (await fetch("/trace")).json(),tb=$("trace");tb.replaceChildren();
-  rows.slice(-12).reverse().forEach(e=>{const tr=document.createElement("tr");
-    [e.model+" — "+e.platform,e.job+(e.ok?"":" (failed)"),e.ms,(e.usd||0).toFixed(4)].forEach(t=>tr.appendChild(mk("td",t)));tb.appendChild(tr)});
-}
-async function investigate(){const r=await j("/investigate",{trigger:$("trig").value});if(r.error)show(r);invRefresh()}
-async function answer(){show(await j("/ask-operator-answer",{id:qId,answer:$("ans").value}));$("ans").value=""}
-async function approveReq(id,pw){show(await j("/approve-request",{id:id,password:pw.value}));pw.value=""}
-async function resumeLine(){show(await j("/resume",{password:$("rsp").value,reason:$("rsr").value}));$("rsp").value=""}
-let reqSig="",qId="";
-async function invRefresh(){
-  const i=await (await fetch("/investigation")).json();
-  $("invstate").textContent=i.running?"Investigating...":(i.result?(i.result.error||"Done"):"");
-  if(i.result&&i.result.platform)$("supmodel").textContent=  // the model that actually answered
-    {"Meta API":"Muse Spark 1.3 on the Meta API, fallback",none:"no model answered"}[i.result.platform]||"Muse Spark Open, open weights";
-  const ol=$("steps");ol.replaceChildren();
-  i.steps.forEach(t=>ol.appendChild(mk("li",t.tool+" "+JSON.stringify(t.args)+" → "+JSON.stringify(t.result).slice(0,160))));
-  $("askbox").hidden=!i.question;if(i.question){qId=i.question.id;$("askq").textContent=i.question.text}
-  const c=$("concl");c.replaceChildren();
-  if(i.result&&i.result.conclusion){c.appendChild(mk("div",i.result.conclusion));c.appendChild(mk("div",MODEL_NOTE,"model"))}
-  const r=$("reqs"),sig=JSON.stringify(i.pending);if(sig===reqSig)return;reqSig=sig;r.replaceChildren();  // keep a typed password while polling
-  i.pending.forEach(q=>{const d=document.createElement("div");d.className="req";
-    d.appendChild(mk("b",q.kind));d.appendChild(mk("div",q.reason));d.appendChild(mk("div",MODEL_NOTE,"model"));
-    const pw=document.createElement("input");pw.type="password";pw.placeholder="QA password";d.appendChild(pw);
-    const b=mk("button","Approve (QA)");b.onclick=()=>approveReq(q.id,pw);d.appendChild(b);r.appendChild(d)});
-}
-// Speak rule: mono audio, downsampled to 16 kHz 16-bit PCM WAV
-let ctx,proc,chunks=[],recording=false,recMode="rule";
-async function toggleRec(mode){
-  if(recording){recording=false;proc.disconnect();ctx.close();$("rec").textContent="Speak rule";$("vcmd").textContent="Voice command";return send(wav(chunks,ctx.sampleRate),recMode)}
-  const stream=await navigator.mediaDevices.getUserMedia({audio:true});
-  ctx=new AudioContext();chunks=[];
-  const srcN=ctx.createMediaStreamSource(stream);proc=ctx.createScriptProcessor(4096,1,1);
-  proc.onaudioprocess=e=>chunks.push(new Float32Array(e.inputBuffer.getChannelData(0)));
-  srcN.connect(proc);proc.connect(ctx.destination);recording=true;recMode=mode;$(mode==="command"?"vcmd":"rec").textContent="Stop";
-}
-function wav(chunks,rate){
-  const n=chunks.reduce((a,c)=>a+c.length,0),all=new Float32Array(n);let o=0;chunks.forEach(c=>{all.set(c,o);o+=c.length});
-  const ratio=rate/16000,len=Math.floor(n/ratio),pcm=new DataView(new ArrayBuffer(44+len*2));
-  const w=(p,s)=>[...s].forEach((c,i)=>pcm.setUint8(p+i,c.charCodeAt(0)));
-  w(0,"RIFF");pcm.setUint32(4,36+len*2,true);w(8,"WAVEfmt ");pcm.setUint32(16,16,true);pcm.setUint16(20,1,true);pcm.setUint16(22,1,true);
-  pcm.setUint32(24,16000,true);pcm.setUint32(28,32000,true);pcm.setUint16(32,2,true);pcm.setUint16(34,16,true);w(36,"data");pcm.setUint32(40,len*2,true);
-  for(let i=0;i<len;i++){const s=Math.max(-1,Math.min(1,all[Math.floor(i*ratio)]));pcm.setInt16(44+i*2,s<0?s*0x8000:s*0x7fff,true)}
-  return new Blob([pcm],{type:"audio/wav"});
-}
-const ACTIONS={self_test:()=>post('/selftest'),teach:()=>post('/teach',{capture:true}),inspect:inspectNow,
-  record:rec,hold:()=>post('/hold',{reason:'operator voice command'})};
-async function send(blob,mode){
-  show("Working...");$("heard").textContent="";const f=new FormData();f.append("audio",blob,"rule.wav");
-  const l=$("lang").value;if(l!=="Auto")f.append("languages",l);
-  if(mode==="command"){
-    let r;try{const res=await fetch("/command",{method:"POST",body:f});if(!res.ok)throw new Error("HTTP "+res.status);r=await res.json()}
-    catch(e){return show({error:"Voice command failed: "+e.message+". Use the buttons."})}
-    if(r.error)return show(r);
-    if(!ACTIONS[r.command]){$("heard").textContent="Heard: "+r.transcript;return show("Command not understood — use the buttons")}
-    $("heard").textContent="Heard: "+r.transcript+" — Command: "+r.command;return ACTIONS[r.command]()}
-  shown(await (await fetch("/describe",{method:"POST",body:f})).json());
-}
-refresh();setInterval(refresh,2000);
-</script></body></html>
+<script src="/static/station.js"></script>
+</body></html>

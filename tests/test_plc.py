@@ -77,3 +77,22 @@ def test_supervisor_hold_survives_verdicts():
     assert plc.coils[2] is False
     plc.set_verdict(Verdict("HOLD", [], []))
     assert plc.coils[2] is True
+
+
+def test_connected_follows_the_machine_link():
+    plc = Plc(host="127.0.0.1", port=0)
+    plc.start()
+    try:
+        assert plc.connected is False
+        s = socket.create_connection(("127.0.0.1", plc.port), timeout=1)
+        s.sendall(struct.pack(">HHHB", 1, 0, 6, 1) + struct.pack(">BHH", 1, 0, 3))
+        s.recv(64)
+        assert plc.connected is True
+        s.close()
+        for _ in range(50):
+            if not plc.connected:
+                break
+            time.sleep(0.02)
+        assert plc.connected is False
+    finally:
+        plc.stop()

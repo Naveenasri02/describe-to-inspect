@@ -18,6 +18,7 @@ from d2i.checklist import CHECKS, approve
 from d2i.meta_api import SamTrackPoint
 from d2i.record import _lines
 from d2i.station import Verdict
+from d2i.supervisor import set_hold
 from d2i.plc import Plc
 from tests.conftest import make_strip
 from tests.test_station import CHECKLIST
@@ -813,3 +814,28 @@ def test_leak_refuses_negative_samples(tmp_path):
     login(c, "qa1", "pw-qa")
     assert c.post("/leak", data={"result": "pass", "samples": "-2"}).json() == {"error": "Samples must be 0 or more"}
     assert not any(r["event"] == "leak" for r in Batches(p).rows)
+
+
+def test_status_gives_the_screens_their_data(tmp_path):
+    c, p = bench(tmp_path, plc=Plc(host="127.0.0.1", port=0))
+    s = c.get("/status").json()
+    assert s["taught"] is True and s["good_photos"] == 6 and s["checklist"]["approved_by"] == "Priya"
+    assert s["selftest"]["at"] and s["machine_link"] is False and s["hold_reason"] == ""
+    assert s["totals"] == {"inspected": 0, "passed": 0, "rejected": 0, "held": 0, "no_strip": 0, "balanced": True}
+    c.post("/inspect", files=up(make_strip(seed=15)))
+    c.post("/hold", json={"reason": "foil looks wrong"})
+    s = c.get("/status").json()
+    assert s["totals"]["inspected"] == 1 and s["hold_reason"] == "foil looks wrong"
+    set_hold(p, Plc(host="127.0.0.1", port=0), True, "supervisor")  # the agent's hold: no stale operator reason
+    assert c.get("/status").json()["hold_reason"] == ""
+    assert c.get("/good/0").headers["content-type"] == "image/jpeg" and c.get("/good/6").status_code == 404
+    assert c.get("/static/station.css").status_code == 200
+    assert c.get("/static/fonts/IBMPlexSans-Regular.woff2").headers["content-type"] == "font/woff2"
+    assert TestClient(app_mod.create_app(tmp_path / "q", None)).get("/status").json()["machine_link"] is None
+
+
+def test_status_shows_the_pending_sentence(tmp_path):
+    c = TestClient(app_mod.create_app(tmp_path, None, client=FakeClient()))
+    c.post("/describe", json={"text": "ten tablets"})
+    s = c.get("/status").json()
+    assert s["pending_sentence"] == "ten tablets" and s["taught"] is False and s["totals"] is None

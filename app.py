@@ -3,6 +3,7 @@ import argparse
 import html
 import hashlib
 import json
+import mimetypes
 import secrets
 import threading
 import time
@@ -15,7 +16,8 @@ import cv2
 import numpy as np
 from fastapi import FastAPI, File, Form, Request, UploadFile
 from fastapi.concurrency import run_in_threadpool
-from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 
 from d2i import record, trace
 from d2i.commands import KEYWORDS, match
@@ -33,6 +35,7 @@ from d2i.supervisor import Supervisor, baseline_from, hold_line, hold_state, res
 from d2i.tray import inspect_clip, record_clip
 
 STATIC = Path(__file__).parent / "static"
+mimetypes.add_type("font/woff2", ".woff2")  # Windows may not know it: the bundled fonts would go out as text/plain
 NEED_GOOD = 5
 NO_CHECKLIST = "Describe and approve the good strip first"
 NO_BATCH = "Start a batch first (QA)"
@@ -95,6 +98,7 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
     product_dir = Path(product_dir)
     product_dir.mkdir(parents=True, exist_ok=True)
     app = FastAPI()
+    app.mount("/static", StaticFiles(directory=STATIC), name="static")  # station.css / .js and the bundled fonts
     trace.set_path(product_dir / "trace.jsonl")
     audit, users = AuditLog(product_dir / "audit.jsonl"), Users(product_dir.parent / "users.json")
     sessions = {}  # token -> (name, role); in memory, lost on restart
@@ -196,14 +200,23 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
     def lamp():
         return (STATIC / "lamp.html").read_text(encoding="utf-8")
 
+    @app.get("/good/{i}")
+    def good_photo(i: int):  # the saved teaching photos, by position, for the Setup screen
+        files = sorted((product_dir / "good").glob("*.jpg"))
+        if not 0 <= i < len(files):
+            return JSONResponse({"error": "No such photo"}, status_code=404)
+        return FileResponse(files[i], media_type="image/jpeg")
+
     @app.get("/status")
     def status(request: Request):
-        counts = {}
+        counts, rows = {}, []
         try:
             for line in (product_dir / "log.jsonl").read_text(encoding="utf-8", errors="replace").splitlines():
                 try:
-                    k = json.loads(line)["status"]
+                    row = json.loads(line)
+                    k = row["status"]
                     counts[k] = counts.get(k, 0) + 1
+                    rows.append(row)
                 except Exception:
                     pass  # unreadable line: skip
         except OSError:
@@ -223,16 +236,20 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
             reason = st.lock_reason if cl else NO_CHECKLIST
             tests = st._selftests()
             uncovered = tests[-1].get("skipped", []) if tests else []
+            last_test = tests[-1] if tests else None
         except Exception as ex:  # unreadable self-test log: stay locked
-            locked, reason, uncovered = True, f"Cannot read self-test log: {ex}", []
+            locked, reason, uncovered, last_test = True, f"Cannot read self-test log: {ex}", [], None
         if plc:
             plc.set_locked(locked)  # every poll, so shift expiry reaches coil 1
+        (held, by), (qn, qerr) = hold_state(product_dir), quarantine_count()
         try:
             blockers = blockers_for(open_batch) if open_batch else []
             overdue = due(open_batch, check_events(product_dir, open_batch["batch"]), clock()) if open_batch else []
+            totals = reconcile(rows, open_batch["batch"]) if open_batch else None
+            hold_reason = next((e["reason"] for e in reversed(audit.entries()) if e["action"] == "hold_line" and e["user"] == by),
+                               "") if held and by != "supervisor" else ""  # the supervisor's hold has no hold_line row
         except Exception:  # unreadable records: not released (the safe direction)
-            blockers, overdue = ["Cannot read the batch records"], []
-        (held, by), (qn, qerr) = hold_state(product_dir), quarantine_count()
+            blockers, overdue, totals, hold_reason = ["Cannot read the batch records"], [], None, ""
         if held:
             by = "the Shift Supervisor" if by == "supervisor" else by
             banner, text = "HOLD", (f"Line held by {by} — QA must resume." if by else "Line held — QA must resume.") \
@@ -252,6 +269,10 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
                 "counts": counts, "batch": open_batch, "blockers": blockers, "due": overdue, "last_verdict": last, "selftest_skipped": uncovered, "state": banner, "text": text,
                 "rules": cl["rules"] if cl else [], "pending": pending["rules"] if pending else None,
                 "held": held, "quarantine_count": qn, "quarantine_error": qerr,
+                "checklist": cl, "pending_sentence": pending and pending.get("sentence"), "totals": totals,
+                "selftest": last_test, "taught": st._template is not None,
+                "good_photos": len(list((product_dir / "good").glob("*.jpg"))), "hold_reason": hold_reason,
+                "machine_link": plc.connected if plc else None,
                 "user": dict(zip(("name", "role"), who(request))) if request.cookies.get("d2i_session") in sessions else None}
 
     @app.post("/describe")
@@ -696,7 +717,7 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
                 last = state["last"] or {}
                 bad = {r.get("pocket") for r in last.get("reasons", [])}
                 for i, (x0, y0, x1, y1) in enumerate(overlay_boxes(f)):
-                    cv2.rectangle(f, (x0, y0), (x1, y1), (0, 0, 220) if i + 1 in bad else (0, 200, 0), 2)
+                    cv2.rectangle(f, (x0, y0), (x1, y1), (42, 42, 194) if i + 1 in bad else (74, 128, 16), 3)  # screen reject / pass red and green (BGR)
                 if last:
                     cv2.putText(f, last["status"], (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
                 ok, buf = cv2.imencode(".jpg", f)
