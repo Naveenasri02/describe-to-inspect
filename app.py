@@ -394,7 +394,7 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
                     v = Verdict("HOLD", [{"rule": None, "check": "inspection_error", "pocket": None,
                                           "text": INSPECT_ERROR}], at=st._now())
                     out = publish([v])  # the hold reaches the PLC even if the log cannot be written either
-                    st.log(v, batch=no)
+                    st.log(v, batch=no, image=im)
                     return out
                 out = publish([v])
                 after_verdicts([v], no)
@@ -726,7 +726,8 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
         d.mkdir(exist_ok=True)
         stamp = datetime.fromtimestamp(clock()).strftime("%Y%m%d-%H%M%S")
         name = f"{stamp}-{len(list(d.glob(stamp + '-*.jpg'))) + 1}.jpg"
-        cv2.imwrite(str(d / name), f)
+        if not cv2.imwrite(str(d / name), f):
+            raise OSError("reject photo not written")  # log() then leaves "photo" out
         return name
 
     st.snap = snap

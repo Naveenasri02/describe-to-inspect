@@ -29,7 +29,7 @@ Each strip gets one verdict. Every reason carries a severity: critical, major or
 | Empty pocket | Tablet side | major | DINOv2 judge (frozen) against good pockets | Yes |
 | Broken tablet | Tablet side | major | DINOv2 judge (frozen) against good pockets | Yes |
 | Two tablets in one pocket | Tablet side | major | SAM 3.1 outlines the tablets, then plain measurement against the taught tablet | No (needs SAM 3.1) |
-| Wrong tablet (shape or colour) | Tablet side | critical | SAM 3.1 outlines, then measurement against the taught tablet | No (needs SAM 3.1) |
+| Wrong tablet (shape or colour) | Tablet side | critical | SAM 3.1 outlines, then measurement against the taught tablet; a pocket the DINOv2 judge fails can also be named by the DINOv2 prototypes | Judge route: yes; measurement: no (needs SAM 3.1) |
 | Spot on a tablet | Tablet side | minor | SAM 3.1 outlines, then measurement against the taught tablet | No (needs SAM 3.1) |
 | Foil damage at the strip border | Foil or tablet side | major | DINOv2 judge (frozen) on the strip border | Yes |
 | Strip cut wrong or wrong size | Tablet side | major | SAM 3.1 strip outline, then measurement against the taught strip | No (needs SAM 3.1) |

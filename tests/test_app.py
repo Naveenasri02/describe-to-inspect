@@ -868,3 +868,19 @@ def test_rejects_route_refuses_bad_names(tmp_path):
     for bad in ("../x.jpg", "a.jpg", "..%2Fx.jpg", "20260101-000000-1.png"):
         assert c.get("/rejects/" + bad).status_code == 404
     assert c.get("/rejects/20260101-000000-9.jpg").status_code == 404  # right shape, no such file
+
+
+def test_inspection_error_hold_gets_a_photo(tmp_path, monkeypatch):
+    c, p = bench(tmp_path)
+    monkeypatch.setattr(c.app.state.station, "_judge", lambda *a: (_ for _ in ()).throw(RuntimeError("boom")))
+    assert c.post("/inspect", files=up(make_strip(seed=15))).json()["status"] == "HOLD"
+    row = _lines(p / "log.jsonl")[-1]
+    assert (p / "rejects" / row["photo"]).is_file()
+
+
+def test_failed_imwrite_leaves_no_photo_name(tmp_path, monkeypatch):
+    c, p = bench(tmp_path)
+    _fake_judge(c, "empty_pocket")
+    monkeypatch.setattr(cv2, "imwrite", lambda *a, **k: False)
+    assert c.post("/inspect", files=up(make_strip(seed=15))).json()["status"] == "REJECT"
+    assert "photo" not in _lines(p / "log.jsonl")[-1]

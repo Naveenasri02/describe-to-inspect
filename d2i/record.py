@@ -192,7 +192,7 @@ def _batch_section(product_dir: Path, audit: AuditLog | None = None, until: floa
     by_rule = Counter(_label(r) for v in vs for r in v["reasons"])
     shots = [v for v in vs if v.get("photo")][-12:]  # the 12 latest reject photos, each with its reasons
     photos = "".join(f'<figure style="display:inline-block;margin:4px;width:200px;vertical-align:top">'
-                     f'<a href="/rejects/{e(v["photo"])}"><img src="/rejects/{e(v["photo"])}" width="200" alt="Reject photo"></a>'
+                     f'<a href="/rejects/{e(v["photo"])}" target="_blank"><img src="/rejects/{e(v["photo"])}" width="200" alt="Reject photo"></a>'
                      f'<figcaption>{e(v["at"])}: {e("; ".join(r["text"] for r in v["reasons"]))}</figcaption></figure>'
                      for v in shots)
     return ("<h2>Batch</h2>" + _table(["Item", "Value"], fields) + "<h2>Release</h2>"

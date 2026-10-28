@@ -65,3 +65,10 @@ def test_run_tab_has_no_spend_or_trace():
     run = re.search(r'<section[^>]*\bid="run"[^>]*>(.*?)</section>', html, re.S).group(1)
     assert 'id="trace"' in html and 'id="spent"' in html  # they live on System
     assert "spent" not in run.lower() and "trace" not in run.lower()
+
+
+def test_record_frame_loads_photos_but_runs_no_scripts():
+    import re
+    html = open("static/index.html", encoding="utf-8").read()
+    box = re.search(r'<iframe id="recframe"[^>]*sandbox="([^"]*)"', html).group(1).split()
+    assert "allow-same-origin" in box and "allow-popups" in box and "allow-scripts" not in box
