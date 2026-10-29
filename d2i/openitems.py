@@ -162,7 +162,7 @@ def open_items(product_dir: Path, now: float) -> list[dict]:
                 evidence="record: In-process checks")
 
     def challenge_failed():
-        f =challenge_failure(p, audit.entries())
+        f = challenge_failure(p, audit.entries())
         if f:
             add("challenge_failed", f["text"], f["since"], evidence=f["evidence"])
 
