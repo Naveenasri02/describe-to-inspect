@@ -1566,3 +1566,25 @@ def test_held_and_locked_shows_locked_on_the_lamp_as_stopped_on_the_board(tmp_pa
     assert (s["state"], s["held"], s["locked"]) == ("LOCKED", True, True)
     assert s["text"].startswith("Line held by op — QA must resume.") and "Self-test missed: x" in s["text"]
     assert c.get("/line").json()["state"] == "STOPPED"
+
+
+def test_hold_line_reaches_the_machine_while_a_long_action_runs(tmp_path):
+    """Review: "Hold line" waited for the station lock, so during a tray clip, a teach or a self-test the hold reached
+    the PLC only when that action ended. The coil is set at once; hold.json and the audit row follow."""
+    plc = Plc(host="127.0.0.1", port=0)
+    c, p = bench(tmp_path, plc=plc)
+    lock, out = c.app.state.station_lock, {}
+    lock.acquire()  # a long station action runs
+    try:
+        t = threading.Thread(target=lambda: out.update(r=c.post("/hold", json={"reason": "foil jam"}).json()))
+        t.start()
+        for _ in range(100):
+            if plc.coils[2]:
+                break
+            time.sleep(0.02)
+        assert plc.coils[2] is True and not _holds(p) and t.is_alive()
+    finally:
+        lock.release()
+    t.join()
+    assert out["r"] == {"held": True} and [e["reason"] for e in _holds(p)] == ["foil jam"]
+    assert c.get("/status").json()["held"] is True

@@ -801,6 +801,8 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
     @app.post("/hold")
     def hold_ep(request: Request, body: dict | None = None):
         def run():
+            if plc:  # at once, the safe direction: a tray clip, teach or self-test may hold the lock for minutes
+                plc.set_hold(True)
             with lock:  # hold.json + PLC only: works before teaching and without the agent
                 return hold_line(product_dir, plc or _NoPlc(), audit, who(request)[0],
                                  str((body or {}).get("reason", "")) or "operator voice command")
