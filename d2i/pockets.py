@@ -8,10 +8,13 @@ import numpy as np
 from d2i.meta_api import SAM_SIDE, BudgetExceeded, MetaError
 
 MIN_SCORE = 0.5
-STRIP_PROMPTS = ("blister strip", "blister pack", "pill pack")  # "blister strip" finds nothing on close-ups
+# "blister strip" finds nothing on close-ups; "blister" found 13/25 real photos alone (missed 4 tablet-side), so it is last
+STRIP_PROMPTS = ("blister strip", "blister pack", "pill pack", "blister")
 PAD = 0.08  # pill-outline strip: padding as a fraction of the pill bounds
-# shortcut: only white tablets measured (27 Oct); add colour words when a coloured product is taught
+# every one is asked and their boxes merged: "pill" missed real white tablets (wa5) that "white pill" found, and a
+# coloured odd tablet among white ones is outlined by "pill" alone
 POCKET_PROMPTS = ("pill", "white pill")  # "blister pocket" and "tablet" find nothing
+SAME_TABLET = 0.5  # IoU from which a later prompt's box is the tablet an earlier prompt already outlined
 GROW = 0.5  # a pill follows a taught pocket when its centre is inside that pocket grown by half a pocket each way
 # every SAM 3.1 image call goes through here: one image's prompts together, at most 10 calls in flight station-wide
 SAM_POOL = ThreadPoolExecutor(10, thread_name_prefix="sam")
@@ -32,6 +35,23 @@ class Layout:
 
 def pill_prompts(item: str) -> tuple:
     return ("capsule", "pill") if "capsule" in item.lower() else POCKET_PROMPTS
+
+
+def _iou(a, b) -> float:
+    w, h = min(a[2], b[2]) - max(a[0], b[0]), min(a[3], b[3]) - max(a[1], b[1])
+    inter = max(0, w) * max(0, h)
+    union = (a[2] - a[0]) * (a[3] - a[1]) + (b[2] - b[0]) * (b[3] - b[1]) - inter
+    return inter / union if union > 0 else 0.0
+
+
+def merged(answers) -> list:
+    """Every prompt's boxes in prompt order; a box on a tablet an earlier prompt outlined is dropped (one prompt's own
+    overlapping boxes stay: two tablets in one pocket)."""
+    out = []
+    for boxes in answers:
+        before = list(out)
+        out += [b for b in boxes if all(_iou(b, k) < SAME_TABLET for k in before)]
+    return out
 
 
 def grid(strip_box, rows: int, per_row: int, margin: float = 0.06) -> list[tuple]:
@@ -180,19 +200,21 @@ def _from_template(strip, template):
 def find_layout(image: np.ndarray, cl: dict, client=None, template=None) -> Layout:
     if client is not None:
         try:
-            # asked together (one wait, not one per prompt), except the last strip prompt: it is asked only when the
-            # others found no strip (two whole-strip outlines in flight took 15 s each instead of 9)
-            first, last = STRIP_PROMPTS[:-1], STRIP_PROMPTS[-1]
+            # asked together (one wait, not one per prompt), except the later strip prompts: each is asked only when
+            # the ones before found no strip (two whole-strip outlines in flight took 15 s each instead of 9)
+            first, later = STRIP_PROMPTS[:2], STRIP_PROMPTS[2:]
             asked = {p: SAM_POOL.submit(client.sam_image, image, p) for p in first + pill_prompts(cl["item"])}
             wait(asked.values())  # no call outlives its layout
             # answers are read in the order they used to be asked; one that is not needed is not opened, nor its error
             found = lambda p: [o.box for o in asked[p].result() if o.score is None or o.score >= MIN_SCORE]
             boxes = next((f for f in map(found, first) if f), None)
-            if boxes is None:
-                asked[last] = SAM_POOL.submit(client.sam_image, image, last)
-                boxes = found(last) or None
+            for p in later:
+                if boxes is not None:
+                    break
+                asked[p] = SAM_POOL.submit(client.sam_image, image, p)
+                boxes = found(p) or None
             strip = tuple(max(boxes, key=lambda b: (b[2] - b[0]) * (b[3] - b[1]))) if boxes else None
-            pills = next((f for f in map(found, pill_prompts(cl["item"])) if f), [])
+            pills = merged(map(found, pill_prompts(cl["item"])))
             source = "sam"
             if strip is None:
                 if not pills:

@@ -92,6 +92,17 @@ def test_clearance_nothing_found_clear():
     assert line_clearance(None, FakeSam({"capsule": [SamObject(1, (0, 0, 5, 5), 0.3, None)]})) == {"clear": True, "found": []}
 
 
+def test_clearance_asks_the_whole_strip_chain_and_every_tablet_prompt():
+    """Real photos (29 Oct): clearance said CLEAR with a strip in view on 18/33; "pill pack" (2632) and "blister" (wa0,
+    wa3, wa7, 2626, 2640) found strips "blister pack" missed, "white pill" the white tablets of wa5."""
+    from d2i.pockets import POCKET_PROMPTS, STRIP_PROMPTS
+    from d2i.batch import CLEARANCE_PROMPTS
+    assert set(STRIP_PROMPTS + POCKET_PROMPTS + ("capsule",)) <= set(CLEARANCE_PROMPTS)
+    for prompt in ("blister", "pill pack", "white pill"):
+        out = line_clearance(None, FakeSam({prompt: [SamObject(1, (0, 0, 5, 5), 0.5, None)]}))
+        assert out == {"clear": False, "found": [{"prompt": prompt, "count": 1}]}, prompt
+
+
 def test_clearance_without_client_refuses():
     class Down:
         def sam_image(self, image, prompt):

@@ -3,6 +3,7 @@ import shutil
 import threading
 import time
 
+import cv2
 import numpy as np
 import pytest
 import torch
@@ -457,6 +458,32 @@ def test_empty_pocket_outlined_by_sam_is_named_empty(tmp_path):
     assert got["empty_pocket"]["caught"] and got["empty_pocket"]["named_right"] and r["passed"], r
     v = st._judge(make_strip(seed=13, missing=(6,)), None, None)
     assert v.status == "REJECT" and v.reasons[0]["text"] == "Rule 2 failed: pocket 7 is empty", v.reasons
+
+
+def test_real_empty_dome_is_named_empty_not_a_different_tablet(tmp_path):
+    """Real photos: SAM outlined 87/88 empty pockets; their colour (reflections, the table through the dome) is past the
+    foil tolerance, so the colour test called them a different tablet (critical, line held). The judge says empty:
+    the verdict is empty."""
+    approve(dict(CHECKLIST, reject_if=list(CHECKS)), "Priya", tmp_path / "checklists.jsonl")
+    st = Station(tmp_path, client=DomeSam(), clock=lambda: T0)
+    st.teach([make_strip(seed=i, shift=(i, 0)) for i in range(6)])
+    img = make_strip(seed=13, missing=(6,))
+    x0, y0, x1, y1 = pocket_box(6, strip=_strip_by_contour(img))
+    cv2.circle(img, ((x0 + x1) // 2, (y0 + y1) // 2), (x1 - x0) * 32 // 88, (120, 120, 120), -1)  # a real dome, not foil
+    assert [r["check"] for r in st._judge(img, None, None).reasons] == ["wrong_tablet"]  # the judge named it broken
+    # shortcut: the painted empty prototype is foil-coloured, so the judge calls this dome broken; here it says empty
+    st.prototypes["empty_pocket"] = st.judge.pocket_embeddings(img, st._layout(img))[6].cpu()
+    v = st._judge(img, None, None)
+    assert v.status == "REJECT" and [r["check"] for r in v.reasons] == ["empty_pocket"] and v.reasons[0]["pocket"] == 7,         v.reasons
+
+
+def test_teach_refuses_a_photo_with_an_outlined_empty_pocket(tmp_path):
+    approve(CHECKLIST, "Priya", tmp_path / "checklists.jsonl")
+    st = Station(tmp_path, client=DomeSam(), clock=lambda: T0)
+    photos = [make_strip(seed=i, shift=(i, 0)) for i in range(6)]
+    photos[2] = make_strip(seed=2, shift=(2, 0), missing=(4,))  # 10 boxes: 9 tablets and the empty dome
+    with pytest.raises(ValueError, match="photo 3: pocket 5 looks empty"):
+        st.teach(photos)
 
 
 class CutSam(ImageSam):

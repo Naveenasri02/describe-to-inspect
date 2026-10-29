@@ -103,7 +103,7 @@ def test_api_error_gives_single_hold(tmp_path):
 def test_no_tracks_for_any_prompt_gives_one_hold(tmp_path):
     client = FakeClient([])
     (v,) = inspect_clip(_clip(tmp_path), FakeStation(), client)
-    assert client.prompts == ["blister strip", "blister pack", "pill pack"]
+    assert client.prompts == ["blister strip", "blister pack", "pill pack", "blister"]
     assert v.status == "HOLD" and "by hand" in v.reasons[0]["text"]
 
 
