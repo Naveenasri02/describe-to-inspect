@@ -344,7 +344,13 @@ def test_record_words_a_print_check_by_eye(product):
         f.write("".join(json.dumps(r) + chr(10) for r in (held, ok, wrong)))
     html = shift_record(product, 0, T0 + 100, "LOT9", "Asha", audit=audit)
     assert "Check by eye" in html and "Wrong print" in html and "Print matches (checked by eye): LOT9 on the strip" in html
-    assert "WRONG_PRINT" not in html
+    assert "WRONG_PRINT" not in html and "Superseded" not in html
+    again = dict(held, at=_at(T0 + 84), time=T0 + 84)  # flagged, then read again before QA decided: never decided
+    later = dict(held, at=_at(T0 + 85), time=T0 + 85, status="PRINT_OK", by_eye=False, reasons=[], supersedes=again["at"])
+    with (product / "prints.jsonl").open("a", encoding="utf-8") as f:
+        f.write("".join(json.dumps(r) + chr(10) for r in (again, later)))
+    html = shift_record(product, 0, T0 + 100, "LOT9", "Asha", audit=audit)
+    assert html.count('<span class="chip grey">Superseded</span>') == 2 and html.count("Check by eye") == 2  # both tables
 
 
 def test_record_look_draft_badge_and_fonts(product):

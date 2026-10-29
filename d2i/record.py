@@ -114,8 +114,8 @@ def _chip(word: str) -> _Html:
     return _Html(f'<span class="chip {TONE.get(word, "grey")}">{e(word)}</span>')
 
 
-def _print_word(r) -> str:  # a flagged read waits for QA's check by eye ("Print matches" / "Wrong print")
-    return "Check by eye" if r.get("by_eye") is True else r["status"]
+def _print_word(r, superseded=()) -> str:  # a flagged read waits for QA's check by eye, unless a later read replaced it
+    return ("Superseded" if r["at"] in superseded else "Check by eye") if r.get("by_eye") is True else r["status"]
 
 
 def _when(x) -> str:
@@ -403,6 +403,7 @@ def _batch_section(product_dir: Path, audit: AuditLog | None = None, until: floa
                if clr else "not found"]]
     leaks = [[_when(r["at"]), r["by"], _chip(r["result"]), r["note"]] for r in mine if r["event"] == "leak"]
     prints = [r for r in _lines(Path(product_dir) / "prints.jsonl") if r.get("batch") == start["batch"]]
+    gone = {r["supersedes"] for r in prints if r.get("supersedes")}  # flagged reads read again before QA decided
     ev = check_events(product_dir, start["batch"])
     ts = lambda a: datetime.fromisoformat(a).timestamp()
     arows = [r for r in (audit.entries() if audit else []) if isinstance(r.get("details"), dict)]
@@ -419,7 +420,7 @@ def _batch_section(product_dir: Path, audit: AuditLog | None = None, until: floa
         release.insert(1, ["Physical challenge for this batch", _when(run["at"]) if run else _chip("Not done"),
                            run["by"] if run else ""])
     checks = [(r["time"], [_when(r["at"]), "Leak test" if r["event"] == "leak" else "Print check", r["by"],
-                           _chip(r["result"] if r["event"] == "leak" else _print_word(r))]) for r in ev if r["event"] != "foil_change"]
+                           _chip(r["result"] if r["event"] == "leak" else _print_word(r, gone))]) for r in ev if r["event"] != "foil_change"]
     checks += [(r["time"], [_when(r["time"]), "Foil roll changed", r["by"], ""]) for r in ev if r["event"] == "foil_change"]
     notes = {r.get("window"): r for r in _lines(Path(product_dir) / "reviews.jsonl")}  # QA review notes, per window
     for text, a, b in missed_windows(start, ev, end["time"] if end else until):
@@ -453,7 +454,7 @@ def _batch_section(product_dir: Path, audit: AuditLog | None = None, until: floa
             + _table(["Time", "Check", "By", "Result"], checks) + "<h2>Leak test</h2>"
             + _table(["Time", "By", "Result", "Note"], leaks)
             + "<h2>Print checks</h2>" + _table(["Time", "By", "Result", "Read on strip", "Reasons"], [
-                [_when(r["at"]), r["by"], _chip(_print_word(r)),
+                [_when(r["at"]), r["by"], _chip(_print_word(r, gone)),
                  " / ".join(str(r["read"].get(k) or "–") for k in ("batch", "mfg", "exp", "mrp"))
                  + (f" / {r['read'].get('product') or '–'} {r['read'].get('strength') or '–'}" if start.get("product") else ""), "; ".join(r["reasons"])]
                 for r in prints])

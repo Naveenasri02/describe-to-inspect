@@ -452,9 +452,11 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
             out = check_print(read, b, date.fromtimestamp(clock()))
             out["by_eye"] = out["status"] == "HOLD"  # the model only flags (a difference, a blank, a cut-off): QA decides at /print/eye
             with meta:
+                waiting = print_by_eye(b)  # read again before QA decided: that read is superseded, never decided
                 batches._write("prints.jsonl", {"at": datetime.fromtimestamp(clock()).isoformat(timespec="seconds"), "time": clock(),
                                                 "batch": b["batch"], "read": read, "status": out["status"],
-                                                "reasons": out["reasons"], "by": name, "by_eye": out["by_eye"]})
+                                                "reasons": out["reasons"], "by": name, "by_eye": out["by_eye"],
+                                                **({"supersedes": waiting["at"]} if waiting else {})})
             return out
         return paid(run)
 

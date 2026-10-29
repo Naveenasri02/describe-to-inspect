@@ -773,6 +773,15 @@ def test_check_by_eye_is_qa_only_and_needs_a_flagged_read(tmp_path):
     assert not [e for e in _audit(p) if e["action"] == "print_checked_by_eye"]
 
 
+def test_a_new_print_read_supersedes_an_undecided_one(tmp_path):
+    c, p = _eye_bench(tmp_path, read=(read := dict(WA7)))
+    c.post("/print", files=up(make_strip(seed=1)))
+    read["batch"] = "26F1206IS"  # the fake client answers this dict: read again, read right
+    assert c.post("/print", files=up(make_strip(seed=1))).json()["status"] == "PRINT_OK"
+    first, second = _lines(p / "prints.jsonl")
+    assert second["supersedes"] == first["at"] and "supersedes" not in first
+
+
 def test_undecided_print_read_waits_for_qa_and_blocks_sign_and_end(tmp_path):
     """A flagged read QA has not decided is not a done hourly print check: it waits for QA on the board, and signing and
     End batch wait for the decision."""
