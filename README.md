@@ -102,7 +102,7 @@ Keys: the Meta Model API key as above; the Baseten key from `BASETEN_API_KEY` or
 
 ## Tests
 
-538 tests (count them with `python -m pytest --collect-only -q`). None makes a paid call: the model calls go to fakes, and the test strips are drawn in code (`tests/conftest.py`). Run them all with:
+563 tests (count them with `python -m pytest --collect-only -q`). None makes a paid call: the model calls go to fakes, and the test strips are drawn in code (`tests/conftest.py`). One test also judges a real photo (`photos/real_wa/wa5.jpg`, not in the repo); it is skipped unless `photos/` is there or `D2I_PHOTOS` points to it. Run them all with:
 
 ```
 python -m pytest -q -p no:warnings
@@ -141,6 +141,8 @@ python tools/eval_agent.py data/blister --bad photos/bad --runs 3 --yes-live
 - The SAM / Muse Spark cross-count is a code option: the station screen does not switch it on.
 - The tray clip opens the camera again while the stream is running; if the camera driver allows only one user, the clip fails with an error and nothing is judged.
 - The SAM prompt words were measured on real photos and may need tuning per product.
+- Strips turned more than about 7° may get false "no tablet" pockets — place the strip as taught.
+- Line clearance cannot see a strip lying foil side up — clear the line by eye too.
 - Alu-alu (all-silver) strips: once sealed, the tablets cannot be seen from the top, so this bench cannot teach or check their tablets (SAM 3.1 finds no tablets and teaching refuses the photos). Tablet checks for these strips belong before sealing, on the open pockets; on the sealed strip this bench checks only the foil print.
 - The offline strip finder (a product taught without a key) found 0 of 8 real strips in a photo test on 29 Oct 2026: a silver strip on a light table is about as bright as the table. "Works offline" in the table above is not yet shown on real strips.
 - A Muse Spark text call that hangs waits up to 180 s and is retried once, so on a lossy link one call can take about 6 minutes before it gives up (with the network off it fails at once). "Open shift record" makes one such call for the summary, so on a bad link the record is slow to open; it then says "Summary not available".
