@@ -172,7 +172,8 @@ class Supervisor:
         return list(self._steps)
 
     def investigate(self, trigger: str) -> dict:
-        self._set_hold(True, "supervisor")  # held for the whole investigation; only QA releases it
+        with self._locked():  # under the station lock, as every hold: never between the sign gate and the signature
+            self._set_hold(True, "supervisor")  # held for the whole investigation; only QA releases it
         self._trigger, self._steps, self._new = trigger, [], []
         messages = [{"role": "system", "content": SYSTEM}, {"role": "user", "content": f"Trigger: {trigger}"}]
         conclusion, platform, over = STEP_LIMIT, "none", False
@@ -203,7 +204,8 @@ class Supervisor:
                 conclusion = MODEL_DOWN
                 break
             if over:
-                self._set_hold(True, "supervisor")
+                with self._locked():
+                    self._set_hold(True, "supervisor")
                 conclusion = TOO_MANY
                 break
         fallback = conclusion == MODEL_DOWN
@@ -221,10 +223,13 @@ class Supervisor:
         if name not in self._tools:
             return args, {"error": f"unknown tool {name!r}"}
         try:
-            with (nullcontext() if name == "ask_operator" or self.tool_lock is None else self.tool_lock):
+            with (nullcontext() if name == "ask_operator" else self._locked()):
                 return args, self._tools[name](**args)
         except Exception as e:
             return args, {"error": f"{type(e).__name__}: {e}"}
+
+    def _locked(self):
+        return nullcontext() if self.tool_lock is None else self.tool_lock
 
     def _layout(self, frame):
         """The strip the station's last camera inspection found while the camera still shows it (no extra paid

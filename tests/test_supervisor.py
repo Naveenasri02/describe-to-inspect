@@ -424,4 +424,28 @@ def test_supervisor_tool_lock_is_used(bench):
     sup = Supervisor(bench.st, bench.plc, bench.audit, chat, lambda q: "no", baseline_from(GOOD), STRIP_BOX,
                      lambda: make_strip(seed=12), bench.good, tool_lock=Rec())
     sup.investigate("check")
-    assert Rec.n == 2 and [s["tool"] for s in sup.steps] == ["image_health", "reject_stats"]
+    assert Rec.n == 3 and [s["tool"] for s in sup.steps] == ["image_health", "reject_stats"]  # 2 tools + its own hold
+
+
+class FlagLock:
+    """A tool_lock that records whether it is held."""
+    held = False
+
+    def __enter__(self):
+        self.held = True
+
+    def __exit__(self, *a):
+        self.held = False
+
+
+def test_the_agents_own_holds_are_written_under_the_station_lock(bench, monkeypatch):
+    """Review: the hold at the start of an investigation and the too-many-calls hold were written outside the station
+    lock, so one could land between the sign gate and the signature."""
+    import d2i.supervisor as sv
+    lock, seen, real = FlagLock(), [], sv.set_hold
+    monkeypatch.setattr(sv, "set_hold", lambda *a, **k: (seen.append(lock.held), real(*a, **k))[1])
+    chat = Endless(("no_such_tool", {}), ("no_such_tool", {}))  # two calls per step: stopped at 20
+    sup = Supervisor(bench.st, bench.plc, bench.audit, chat, lambda q: "no", baseline_from(GOOD), STRIP_BOX,
+                     lambda: make_strip(seed=12), bench.good, tool_lock=lock)
+    assert sup.investigate("rejects rose")["conclusion"] == "investigation stopped: too many tool calls — call QA"
+    assert seen == [True, True] and bench.plc.coils[2] is True
