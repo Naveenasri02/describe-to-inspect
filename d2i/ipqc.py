@@ -55,7 +55,8 @@ def check_events(product_dir, batch: str) -> list[dict]:
 
 
 def _done(r, ev) -> bool:
-    return r["event"] == ev and (ev != "leak" or r.get("result") == "pass")  # a failed leak test is not a done one
+    # a failed leak test is not a done one, nor a print read still waiting for QA's check by eye
+    return r["event"] == ev and (ev != "leak" or r.get("result") == "pass") and r.get("by_eye") is not True
 
 
 def due_at(batch: dict, rows: list[dict]) -> dict:

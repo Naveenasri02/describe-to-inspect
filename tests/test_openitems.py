@@ -116,6 +116,18 @@ def test_missed_check_closed_by_a_review_note(tmp_path):
     assert i["text"].startswith("Print check missed") and window_id("print", t0) == "print " + iso(t0)
 
 
+def test_print_waiting_for_a_check_by_eye(tmp_path):
+    diff = "Batch no. on strip is 26F12061S, batch record says 26F1206IS"
+    start(tmp_path, NOW - 100)
+    read = {"at": iso(NOW - 50), "time": NOW - 50, "batch": "B1", "status": "HOLD", "reasons": [diff], "by": "op",
+            "by_eye": True}
+    put(tmp_path, "prints.jsonl", read)
+    [i] = open_items(tmp_path, NOW)
+    assert (i["kind"], i["who"], i["since"], i["text"]) == ("print_by_eye", "QA", NOW - 50, "Check the print by eye — " + diff)
+    put(tmp_path, "prints.jsonl", dict(read, time=NOW - 10, status="PRINT_OK", by_eye=None, checked_by_eye="matches"))
+    assert open_items(tmp_path, NOW) == []
+
+
 def test_failed_challenge_until_a_passed_run(tmp_path):
     run = {"time": NOW - 200, "at": iso(NOW - 200), "by": "op", "batch": "B1", "passed": False,
            "results": [{"label": "C1", "expected_rule": 2, "status": "PASS", "rules": [], "passed": False, "ejected": False}]}

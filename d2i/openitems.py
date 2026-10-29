@@ -11,10 +11,11 @@ from d2i.ipqc import check_events, missed_windows, window_id  # noqa: F401 (wind
 from d2i.linestate import holder
 from d2i.supervisor import hold_state, pending_requests
 
-KINDS = ("line_held", "quarantine", "request", "recheck", "reconciliation", "missed_check", "challenge_failed",
-         "record_unsigned")
+KINDS = ("line_held", "quarantine", "request", "recheck", "reconciliation", "missed_check", "print_by_eye",
+         "challenge_failed", "record_unsigned")
 _NAMES = {"line_held": "hold", "quarantine": "quarantine", "request": "supervisor request", "recheck": "re-check",
-          "reconciliation": "reconciliation", "missed_check": "in-process check", "challenge_failed": "challenge",
+          "reconciliation": "reconciliation", "missed_check": "in-process check", "print_by_eye": "print check",
+          "challenge_failed": "challenge",
           "record_unsigned": "batch"}
 
 
@@ -50,6 +51,12 @@ def missed_checks(product_dir: Path, now: float, batch: str | None = None) -> li
             out.append({"kind": kind, "text": text, "start": a, "end": b, "window": window_id(kind, a),
                         "batch": start["batch"]})
     return out
+
+
+def print_by_eye(product_dir: Path, batch: str) -> dict | None:
+    """The batch's latest print read when it waits for QA's check by eye ("Print matches" / "Wrong print"), else None."""
+    rows = [r for r in _rows(Path(product_dir) / "prints.jsonl") if r.get("batch") == batch]
+    return rows[-1] if rows and rows[-1].get("by_eye") is True else None
 
 
 def missed_text(m: dict) -> str:
@@ -147,8 +154,15 @@ def open_items(product_dir: Path, now: float) -> list[dict]:
         for m in missed_checks(p, now):
             add("missed_check", missed_text(m), m["end"], evidence="record: In-process checks")
 
+    def print_eye():
+        b = Batches(p).open
+        r = print_by_eye(p, b["batch"]) if b else None
+        if r:
+            add("print_by_eye", "Check the print by eye — " + "; ".join(r["reasons"]), r["time"],
+                evidence="record: In-process checks")
+
     def challenge_failed():
-        f = challenge_failure(p, audit.entries())
+        f =challenge_failure(p, audit.entries())
         if f:
             add("challenge_failed", f["text"], f["since"], evidence=f["evidence"])
 
@@ -158,8 +172,8 @@ def open_items(product_dir: Path, now: float) -> list[dict]:
             add("record_unsigned", f"Record unsigned — batch {end['batch']} ended {_hm(end['time'])}", end["time"],
                 evidence="record: Sign")
 
-    for kind, fn in zip(KINDS, (line_held, quarantine, request, recheck, reconciliation, missed_check, challenge_failed,
-                                unsigned)):
+    for kind, fn in zip(KINDS, (line_held, quarantine, request, recheck, reconciliation, missed_check, print_eye,
+                                challenge_failed, unsigned)):
         try:
             fn()
         except Exception:  # unknown is shown, never hidden

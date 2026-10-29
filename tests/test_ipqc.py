@@ -88,6 +88,13 @@ def test_failed_leak_test_does_not_count():
     assert due(BATCH, rows + [ev("leak", 1150.0)], 1200.0) == []
 
 
+def test_print_read_waiting_for_a_check_by_eye_is_not_done():
+    eye = dict(ev("print", 1100.0), by_eye=True)  # flagged, QA has not decided
+    assert due(BATCH, [ev("leak", 1100.0), eye], 1200.0) == ["Print check due"]
+    assert missed_windows(BATCH, [ev("leak", 1010.0), eye], 4600.0) == [("Print check missed", 1000.0, 4600.0)]
+    assert due(BATCH, [ev("leak", 1100.0), eye, ev("print", 1150.0)], 1200.0) == []  # QA's decision row is done
+
+
 C0 = {"received": 5, "good_tray": 2, "reject_box": 2, "samples": 1, "unused": 0,
       "foil_issued": 10, "foil_used": 8, "foil_returned": 1.5, "foil_destroyed": 0.5}
 L0 = {"strips": 0, "foil": 0.5}

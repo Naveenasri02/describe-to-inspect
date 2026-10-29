@@ -30,7 +30,7 @@ from d2i.llm import ToolChat
 from d2i.meta_api import Budget, MetaClient
 from d2i.ipqc import DRIFT_REJECTS, check_events, due, reconcile, reject_run, release_blockers
 from d2i.openitems import (challenge_failure, last_started, missed_checks, missed_text, open_items, signed,
-                           window_id)
+                           window_id, print_by_eye as by_eye_read)
 from d2i.printcheck import check_print, differs, read_print
 from d2i.pockets import find_layout
 from d2i.station import FINDER_DOWN, NEED_TEACH, Station, Verdict
@@ -216,8 +216,7 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
         return release_blockers(b, st._selftests(), record._lines(product_dir / "prints.jsonl"), signed, chal)
 
     def print_by_eye(b):  # the open batch's latest print read, when it waits for QA's check by eye
-        rows = [r for r in record._lines(product_dir / "prints.jsonl") if r.get("batch") == b["batch"]]
-        return rows[-1] if rows and rows[-1].get("by_eye") is True else None
+        return by_eye_read(product_dir, b["batch"])
 
     def not_released(b):
         left = blockers_for(b)
@@ -662,6 +661,8 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
                     return JSONResponse({"error": NO_BATCH}, status_code=409)
                 if recheck.active(product_dir, cur):  # the re-checked strips belong to this batch's counts
                     return {"error": "Finish or waive the re-check first."}
+                if print_by_eye(cur):  # its decision belongs to this batch, and /print/eye needs the batch open
+                    return {"error": "Decide the print check by eye first."}
                 totals = reconcile(record._lines(product_dir / "log.jsonl"), cur["batch"], counts, limits)
                 totals["cleared"] = True
                 if totals["status"] == "outside":

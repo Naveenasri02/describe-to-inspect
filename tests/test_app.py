@@ -759,6 +759,20 @@ def test_check_by_eye_is_qa_only_and_needs_a_flagged_read(tmp_path):
     assert not [e for e in _audit(p) if e["action"] == "print_checked_by_eye"]
 
 
+def test_undecided_print_read_waits_for_qa_and_blocks_sign_and_end(tmp_path):
+    """A flagged read QA has not decided is not a done hourly print check: it waits for QA on the board, and signing and
+    End batch wait for the decision."""
+    c, p = _eye_bench(tmp_path)
+    c.post("/print", files=up(make_strip(seed=1)))
+    eye = lambda: [(i["who"], i["text"]) for i in c.get("/line").json()["waiting"] if i["kind"] == "print_by_eye"]
+    assert eye() == [("QA", "Check the print by eye — " + WA7_DIFF)]
+    assert "Print check due" in c.get("/status").json()["due"]
+    assert "Check the print by eye — " + WA7_DIFF in _sign(c)["error"]
+    assert c.post("/batch/end", data=END_OK).json()["error"] == "Decide the print check by eye first."
+    _eye(c, "matches")
+    assert eye() == [] and "Print check due" not in c.get("/status").json()["due"]
+
+
 def test_unreadable_print_does_not_hold_line(tmp_path):
     read = {"batch": "", "mfg": "01/2026", "exp": "01/2028", "mrp": "45", "readable": True}
     c, p = _print_bench(tmp_path, read=read)
