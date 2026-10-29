@@ -20,8 +20,8 @@ document.querySelectorAll("nav button").forEach(b=>b.onclick=()=>go(b.dataset.ta
 let where=null,clicked=null,running=false,ticking=null,tickText=null;  // ticking: the box a long action counts its seconds in; tickText: its last count
 document.addEventListener("click",e=>{const b=e.target.closest("button");if(b){where=b.closest(".card,.tab");clicked=b}},true);
 const box=()=>(where&&!where.closest("[hidden]")&&where.querySelector(".msg"))||[...document.querySelectorAll("main .msg")].find(m=>!m.closest("[hidden]"));
-const show=(o,m=box())=>{const t=typeof o==="string"?o:(o.error||o.message||JSON.stringify(o,null,1));
-  if(m===ticking&&tickText!==null&&m.textContent!==tickText){if(t)m.textContent+="\n"+t;return refresh()}  // another message (e.g. Line held) took the long action's card: it stays, the answer goes below
+const show=(o,own)=>{const m=own||box(),t=typeof o==="string"?o:(o.error||o.message||JSON.stringify(o,null,1));  // own: a long action passes its card
+  if(own&&m===ticking&&tickText!==null&&m.textContent!==tickText){if(t)m.textContent+="\n"+t;return refresh()}  // another message (e.g. Line held) took the long action's card: it stays and the answer goes below; a later message replaces it
   document.querySelectorAll("main .msg").forEach(x=>{if(x!==m&&x!==ticking){x.textContent="";x.className="msg";x.style.cssText=""}});  // only the latest message stays
   m.className="msg";m.style.cssText="";
   m.textContent=t;if(o&&o.error)m.classList.add("err");refresh()};
@@ -47,8 +47,9 @@ const inspectNow=btn=>busy(async m=>{const v=await (await fetch("/inspect",{meth
   if(v.status==="NO_CHECKLIST")return show(v.reasons[0].text,m);
   show(v.reasons.length>1?"All reasons: "+v.reasons.map(reasonText).join("; "):"",m);red([v],m)},btn);
 const printNow=()=>busy(async m=>{const r=await j("/print");
-  if(r.error)return show(r,m);show((r.status==="PRINT_OK"?"PRINT OK":"HOLD")+(r.reasons.length?"\n"+r.reasons.join("\n"):""),m);
-  m.classList.add("print");m.style.background=r.status==="PRINT_OK"?"var(--pass)":"var(--hold)"});
+  if(r.error)return show(r,m);const mine=m.textContent===tickText;  // no other message took this card meanwhile
+  show((r.status==="PRINT_OK"?"PRINT OK":"HOLD")+(r.reasons.length?"\n"+r.reasons.join("\n"):""),m);
+  if(mine){m.classList.add("print");m.style.background=r.status==="PRINT_OK"?"var(--pass)":"var(--hold)"}});
 const trayNow=()=>busy(async m=>{const r=await j("/tray");
   show(r.verdicts?r.verdicts.map(v=>"Strip "+(v.strip_id??"-")+": "+v.status+" "+v.reasons.map(reasonText).join("; ")).join("\n"):r,m);if(r.verdicts)red(r.verdicts,m)});
 const clearance=()=>busy(async m=>{const r=await form("/clearance");
@@ -261,7 +262,7 @@ function wav(chunks,rate){
 const ACTIONS={self_test:()=>long('/selftest',{},selftestSaid,$("vcmd")),teach:()=>long('/teach',{capture:true},taught,$("vcmd")),
   inspect:()=>inspectNow($("vcmd")),record:rec,hold:()=>post('/hold',{reason:'operator voice command'},'Line held. QA must resume it.')};
 async function send(blob,mode){
-  show("Working...");$("heard").textContent="";const f=new FormData();f.append("audio",blob,"rule.wav");
+  show(mode==="command"?"Listening to the voice command…":"Turning the spoken rule into a checklist…");$("heard").textContent="";const f=new FormData();f.append("audio",blob,"rule.wav");
   const l=$("lang").value;if(l!=="Auto")f.append("languages",l);
   if(mode==="command"){
     let r;try{const res=await fetch("/command",{method:"POST",body:f});if(!res.ok)throw new Error("HTTP "+res.status);r=await res.json()}

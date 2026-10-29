@@ -255,3 +255,45 @@ const j=async(u,b)=>{posted.push([u,b]);list=list.slice(1);return {}};const show
     assert posted == [["/review-missed", {"batch": "B1", "window": "leak 0", "kind": "leak", "note": "tested 10:05",
                                           "password": "pw"}]]
     assert pw == "" and shown == ["Review note saved: Leak test missed."] and url == ["/missed?batch=B0"]
+
+
+def test_later_messages_replace_the_one_that_took_a_long_actions_card(tmp_path):
+    """Integration 3 note: while a long action ran, every later message in its card was added below the one that took
+    the card ("Line held. QA must resume it.\nLine resumed"). A later message replaces it; only the long action's
+    own answer goes below."""
+    out = _node_run('let S={step:"Finding the strip (SAM 3.1)"},running=false,ticking=null,tickText=null,'
+                    'clicked={disabled:false};const el=t=>({textContent:t||"",className:"msg",style:{cssText:""},'
+                    'classList:{add(){}}});const card=el();'
+                    'const document={querySelectorAll:()=>[card]};const box=()=>card,refresh=()=>{};'
+                    'const j=url=>new Promise(r=>setTimeout(()=>r({}),url==="/teach"?1500:10));\n'
+                    + _show() + "\n" + _actions() + '''
+(async()=>{const a=long("/teach",{},"Taught.");await new Promise(r=>setTimeout(r,300));
+  await post("/hold",{},"Line held. QA must resume it.");await post("/resume",{},"Line resumed");
+  console.log(JSON.stringify(card.textContent));await a;console.log(JSON.stringify(card.textContent))})()''',
+                    tmp_path / "later.js")
+    assert json.loads(out[0]) == "Line resumed"
+    assert json.loads(out[1]) == "Line resumed\nTaught."
+
+
+def test_print_check_colours_only_its_own_card(tmp_path):
+    """Integration 3 note: a Hold that took the print check's card got the PRINT OK / HOLD colour."""
+    js = (STATIC / "station.js").read_text(encoding="utf-8")
+    print_now = re.search(r"^const printNow=.*?\}\);$", js, re.M | re.S).group(0)
+    out = _node_run('let S={step:"Reading the print"},running=false,ticking=null,tickText=null,'
+                    'clicked={disabled:false};const el=t=>({textContent:t||"",className:"msg",style:{cssText:""},'
+                    'classList:{list:[],add(c){this.list.push(c)}}});const card=el();'
+                    'const document={querySelectorAll:()=>[card]};const box=()=>card,refresh=()=>{};'
+                    'const j=url=>new Promise(r=>setTimeout(()=>r({status:"PRINT_OK",reasons:[]}),url==="/print"?800:10));\n'
+                    + _show() + "\n" + _actions() + "\n" + print_now + '''
+(async()=>{let a=printNow();await a;console.log(JSON.stringify([card.textContent,card.style.background]));
+  card.style.background="";a=printNow();await new Promise(r=>setTimeout(r,300));await post("/hold",{},"Line held. QA must resume it.");
+  await a;console.log(JSON.stringify([card.textContent,card.style.background]))})()''', tmp_path / "print.js")
+    assert json.loads(out[0]) == ["PRINT OK", "var(--pass)"]
+    assert json.loads(out[1]) == ["Line held. QA must resume it.\nPRINT OK", ""]
+
+
+def test_voice_send_says_what_it_is_doing():
+    """Integration 3 note: the voice send showed "Working..." for the whole transcription."""
+    js = (STATIC / "station.js").read_text(encoding="utf-8")
+    send = re.search(r"^async function send\(blob,mode\)\{.*?^\}", js, re.M | re.S).group(0)
+    assert "Working" not in send and "Listening to the voice command" in send and "Turning the spoken rule" in send
