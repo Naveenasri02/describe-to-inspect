@@ -276,3 +276,34 @@ def test_line_board_lists_the_recheck_and_the_agent_request(tmp_path):
     assert (w["recheck"]["who"], w["recheck"]["text"]) == ("Operator", "Re-check 0 of 2: strips no. 1–2")
     assert "line_held" in w and w["request"]["text"] == ("Shift Supervisor asks QA to approve: recheck — "
                                                          "two wrong tablets this hour")
+
+
+def test_an_approved_recheck_writes_its_window_only_after_the_hold(tmp_path, monkeypatch):
+    """Lane C note: approve wrote recheck.json before hold_line, so a failing hold left a window open on a running line."""
+    import d2i.supervisor as sv
+    chat = ScriptChat(call("request_recheck", {"reason": "mix-up seen"}), {"content": "done"})
+    c, p = bench(tmp_path, chat)
+    _judge(c, *[PASS] * 8)
+    c.post("/investigate", json={"trigger": "t"})
+    rc, = wait_done(c)["pending"]
+    login(c, "qa1", "pw-qa")
+    time.sleep(1.1)  # verdict and audit times have one-second resolution
+    assert c.post("/resume", json={"password": "pw-qa", "reason": "ok"}).json()["resumed"] is True
+    time.sleep(1.1)
+    _inspect(c, 2)  # production on a running line
+    monkeypatch.setattr(sv, "hold_line", lambda *a, **k: 1 / 0)
+    assert "error" in c.post("/approve-request", json={"id": rc["id"], "password": "pw-qa"}).json()
+    assert c.get("/recheck").json() == {"open": False} and not any(e["action"] == "recheck_open" for e in _audit(p))
+    assert [r["id"] for r in c.get("/investigation").json()["pending"]] == [rc["id"]]  # still waiting for QA
+
+
+def test_a_window_is_written_only_after_its_audit_row(tmp_path):
+    class BrokenAudit(FakeAudit):
+        def append(self, *a, **k):
+            raise ValueError("audit log is damaged")
+    p = _product(tmp_path, time.time() - 100, "PP")
+    try:
+        recheck.open_window(p, BrokenAudit(), "wrong print", "station")
+    except ValueError:
+        pass
+    assert not (p / "recheck.json").exists()

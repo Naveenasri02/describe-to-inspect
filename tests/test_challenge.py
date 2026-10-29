@@ -186,6 +186,8 @@ def test_miss_is_audited_at_once_and_ejected_without_counting(tmp_path):
     assert len(rows) == 1 and rows[0]["details"]["strip_label"] == "C1" and rows[0]["details"]["passed"] is False
     assert plc._reject_until > 0 and plc.regs == [0, 0, 0, 0]  # the reject output pulsed; no verdict counter moved
     assert c.get("/status").json()["last_verdict"] is None
+    assert c.post("/challenge/eject", json={"ejected": True}).json()["run"]["passed"] is False
+    assert len([e for e in _audit(p) if e["action"] == "physical_challenge"]) == 1  # one row per missed strip
 
 
 def test_run_needs_an_open_batch_and_ends_with_its_batch(tmp_path):

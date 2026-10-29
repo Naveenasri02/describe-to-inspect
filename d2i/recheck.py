@@ -85,11 +85,12 @@ def released_at(product_dir, batch: dict, audit, first_strip: float | None) -> f
     return min(t, first_strip) if first_strip is not None else t
 
 
-def open_window(product_dir, audit, cause: str, by: str) -> dict | None:
+def open_window(product_dir, audit, cause: str, by: str, before=None) -> dict | None:
     """The passed strips of the open batch since the later of batch release, the last passed print check and the last
     QA resume (rejected and held strips are already out of the good tray), after any finished re-check of this batch.
     This batch's open window is kept, not replaced; another batch's is replaced. None when there is nothing to
-    re-check. Strip numbers count as the Run screen does (LOCKED and re-check rows are not strips)."""
+    re-check. Strip numbers count as the Run screen does (LOCKED and re-check rows are not strips). before(): called
+    once there is something to re-check, before anything is written (an approved agent re-check holds the line)."""
     b = Batches(product_dir)
     batch = b.open
     if not batch:
@@ -107,11 +108,12 @@ def open_window(product_dir, audit, cause: str, by: str) -> dict | None:
            if n > done and r["status"] == "PASS" and _ts(r) >= int(since)]  # same second: re-check it
     if not nos:
         return None
-    w = _write(product_dir, {"open": True, "window_id": uuid.uuid4().hex[:8], "since": since, "from_strip": nos[0],
-                             "to_strip": nos[-1], "total": len(nos), "done": 0, "opened_by": by, "cause": cause,
-                             "waived_by": None, "waiver_reason": None})
+    w = {"open": True, "window_id": uuid.uuid4().hex[:8], "since": since, "from_strip": nos[0], "to_strip": nos[-1],
+         "total": len(nos), "done": 0, "opened_by": by, "cause": cause, "waived_by": None, "waiver_reason": None}
+    if before:
+        before()
     audit.append("recheck_open", by, {k: w[k] for k in ("window_id", "from_strip", "to_strip", "total", "since")}, cause)
-    return w
+    return _write(product_dir, w)  # after its audit row: no open window without one
 
 
 def count(product_dir, w: dict, status: str) -> dict:

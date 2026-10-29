@@ -340,9 +340,9 @@ class Supervisor:
                 elif kind == "resume":
                     message = "Line resumed"  # hold.json is cleared after the audit row below
                 elif kind == "recheck":  # re-checks run on a held line, so production strips are never taken for them
-                    w = recheck.open_window(st.dir, self.audit, req["reason"], name)
-                    if w and not hold_state(st.dir)[0]:
-                        hold_line(st.dir, self.plc, self.audit, name, "Re-check approved: " + req["reason"])
+                    hold = None if hold_state(st.dir)[0] else (  # held first: the window is written only after it
+                        lambda: hold_line(st.dir, self.plc, self.audit, name, "Re-check approved: " + req["reason"]))
+                    w = recheck.open_window(st.dir, self.audit, req["reason"], name, before=hold)
                     message = recheck.text(w) if w else "Nothing to re-check: no passed strips since the last good check"
                 else:
                     release_quarantine(st.dir, self.audit, users, name, password, req["reason"])

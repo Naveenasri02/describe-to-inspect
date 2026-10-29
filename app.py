@@ -1022,8 +1022,9 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
                 if p["caught"] and not ej:  # rejected but still on the line: the reject path failed
                     challenge.lock(st, p, "not ejected")
                     sync_lock()
-                log_physical_challenge(audit, name, p["label"], ej, batch=r["batch"], source=r["source"],
-                                       **{k: res[k] for k in ("expected_rule", "status", "rules", "passed")})
+                if p["caught"]:  # a missed strip has its one row already, written at the miss
+                    log_physical_challenge(audit, name, p["label"], ej, batch=r["batch"], source=r["source"],
+                                           **{k: res[k] for k in ("expected_rule", "status", "rules", "passed")})
                 r["results"].append(res)
                 r["pending"] = None
                 if res["passed"] and len(r["results"]) < len(r["strips"]):
