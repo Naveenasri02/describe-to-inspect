@@ -154,3 +154,18 @@ def test_strength_forms():
 
 def test_prompt_separates_exp_and_mrp():
     assert "(EXP, Exp), MRP" in READ_SYSTEM
+
+
+def test_product_name_matches_when_every_typed_word_is_printed_in_order():
+    """Review: a typed "Paracetamol" against a foil reading "Paracetamol Tablets IP" was a critical wrong print."""
+    pb = dict(PB, product="Paracetamol")
+    ok = lambda got, want="Paracetamol": check_print(dict(PG, product=got), dict(pb, product=want), TODAY)  # noqa: E731
+    assert ok("Paracetamol Tablets IP")["status"] == "PRINT_OK"
+    assert ok("PARACETAMOL TABLETS I.P.", "Paracetamol Tablets IP")["status"] == "PRINT_OK"  # punctuation ignored
+    assert ok("Crocin® Advance", "crocin advance")["status"] == "PRINT_OK"
+    r = ok("Ibuprofen Tablets IP")
+    assert r["reasons"] == ["Product name on strip is Ibuprofen Tablets IP, batch record says Paracetamol"]
+    assert wrong_print(r["reasons"])
+    assert ok("Tablets Paracetamol", "Paracetamol Tablets")["status"] == "HOLD"  # in order
+    assert ok("Paracetamolum", "Paracetamol")["status"] == "HOLD"  # whole words
+    assert ok("Paracetamol", "Paracetamol Tablets IP")["status"] == "HOLD"  # every typed word

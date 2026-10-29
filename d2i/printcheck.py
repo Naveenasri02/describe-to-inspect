@@ -1,6 +1,7 @@
 """Foil print check: Muse Spark only READS the printed text; plain code compares it with the open batch record.
 A mismatch or an unreadable print is HOLD, never a pass or reject on the model's word."""
 import re
+import unicodedata
 from datetime import date
 
 from d2i.batch import parse_month, parse_strength
@@ -26,8 +27,15 @@ def _batch_key(s) -> str:
     return re.sub(rf"^(?:{"|".join(_LABELS)}):?", "", s)  # "B.No.: AB123" -> "AB123"
 
 
-def _key(s) -> str:
-    return re.sub(r"\s+", "", str(s)).casefold()
+def _words(s) -> list[str]:
+    """Words, case and punctuation ignored: "Crocin® Tablets I.P." -> ["crocin", "tablets", "ip"]."""
+    return "".join(c for c in str(s) if unicodedata.category(c)[0] not in "PS").casefold().split()
+
+
+def _name_printed(read: str, typed: str) -> bool:
+    """Every typed word is printed, in order: "Paracetamol" matches "Paracetamol Tablets IP"."""
+    printed, want = iter(_words(read)), _words(typed)
+    return bool(want) and all(w in printed for w in want)  # `in` moves the iterator on: words in order
 
 
 def _month(s):
@@ -83,7 +91,7 @@ def check_print(read: dict, batch: dict, today: date) -> dict:
         except ValueError:
             unreadable("MRP")
     if vals.get("Product name"):
-        if _key(vals["Product name"]) != _key(batch["product"]):
+        if not _name_printed(vals["Product name"], batch["product"]):
             differ("Product name", vals["Product name"], batch["product"])
     if vals.get("Strength"):
         try:

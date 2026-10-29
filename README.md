@@ -35,7 +35,7 @@ Each strip gets one verdict. Every reason carries a severity: critical, major or
 | Foil damage at the strip border | Foil or tablet side | major | DINOv2 judge (frozen) on the strip border | Yes |
 | Strip cut wrong or wrong size | Tablet side | major | SAM 3.1 strip outline, then measurement against the taught strip | No (needs SAM 3.1) |
 | Pocket count differs from the checklist | Tablet side | HOLD | SAM 3.1 pockets counted against the rule | No (needs SAM 3.1; the offline checklist grid always has the checklist count) |
-| Foil print: batch, MFG, EXP, MRP, product name, strength | Foil side | HOLD | Muse Spark reads the six fields; plain code compares them with the batch record (strength by number and unit, so "500mg" matches "500 mg") | No (needs the network) |
+| Foil print: batch, MFG, EXP, MRP, product name, strength | Foil side | HOLD | Muse Spark reads the six fields; plain code compares them with the batch record (strength by number and unit, so "500mg" matches "500 mg"; the product name matches when every word QA typed is printed in that order, case and punctuation ignored, so "Paracetamol" matches "Paracetamol Tablets I.P.") | No (needs the network) |
 
 Notes:
 
