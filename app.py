@@ -31,7 +31,7 @@ from d2i.meta_api import Budget, MetaClient
 from d2i.ipqc import DRIFT_REJECTS, check_events, due, reconcile, reject_run, release_blockers
 from d2i.openitems import (challenge_failure, last_started, missed_checks, missed_text, open_items, signed,
                            window_id, print_by_eye as by_eye_read)
-from d2i.printcheck import check_print, differs, read_print
+from d2i.printcheck import PAST_EXPIRY, check_print, differs, read_print
 from d2i.pockets import find_layout
 from d2i.station import FINDER_DOWN, NEED_TEACH, Station, Verdict
 from d2i.supervisor import Supervisor, baseline_from, hold_line, hold_state, pending_requests, resume_line
@@ -478,6 +478,8 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
                 held = print_by_eye(b)
                 if not held:
                     return {"error": "No print check waits for a check by eye"}
+                if result == "matches" and PAST_EXPIRY in held["reasons"]:
+                    return {"error": PAST_EXPIRY + " — Print matches is refused (read it again if its EXP was misread)"}
                 diff = differs(held["reasons"]) or "; ".join(held["reasons"])  # an unreadable read: what was flagged
                 row = batches._write("prints.jsonl", {
                     "at": datetime.fromtimestamp(clock()).isoformat(timespec="seconds"), "time": clock(), "batch": b["batch"],

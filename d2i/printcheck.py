@@ -19,6 +19,7 @@ READ_SYSTEM = ("You read the printed text on the foil side of a tablet blister s
                "Use an empty string for anything not printed or not readable. Never guess or complete partial text. "
                "Set readable to false if the photo is too blurred to read.")
 _LABELS = ("BATCHNO", "BNO", "BATCH", "LOT")
+PAST_EXPIRY = "Strip is past expiry"  # never a by-eye matter: "Print matches" is refused
 
 
 def read_print(image, client) -> dict:
@@ -119,11 +120,11 @@ def check_print(read: dict, batch: dict, today: date) -> dict:
     if m and e and e <= m:
         why.append("Expiry is not after manufacture")
     if e and e < (today.year, today.month):
-        why.append("Strip is past expiry")
+        why.append(PAST_EXPIRY)
     return {"status": "HOLD" if why else "PRINT_OK", "reasons": why}
 
 
 def differs(reasons: list[str]) -> str | None:
     """The first reason that says the read differs from the batch record (a mismatch or a bad date), for QA's check by
     eye; a missing or unreadable field is not one (check by hand)."""
-    return next((r for r in reasons if " on strip is " in r or r in ("Expiry is not after manufacture", "Strip is past expiry")), None)
+    return next((r for r in reasons if " on strip is " in r or r in ("Expiry is not after manufacture", PAST_EXPIRY)), None)

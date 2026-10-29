@@ -773,6 +773,14 @@ def test_check_by_eye_is_qa_only_and_needs_a_flagged_read(tmp_path):
     assert not [e for e in _audit(p) if e["action"] == "print_checked_by_eye"]
 
 
+def test_print_matches_is_refused_on_a_strip_past_expiry(tmp_path):
+    c, p = _eye_bench(tmp_path, read=dict(WA7, batch="26F1206IS", exp="SEP.2026"))
+    assert "Strip is past expiry" in c.post("/print", files=up(make_strip(seed=1))).json()["reasons"]
+    assert _eye(c, "matches")["error"] == "Strip is past expiry — Print matches is refused (read it again if its EXP was misread)"
+    assert not [e for e in _audit(p) if e["action"] == "print_checked_by_eye"]
+    assert _eye(c, "wrong")["status"] == "WRONG_PRINT"
+
+
 def test_a_new_print_read_supersedes_an_undecided_one(tmp_path):
     c, p = _eye_bench(tmp_path, read=(read := dict(WA7)))
     c.post("/print", files=up(make_strip(seed=1)))
