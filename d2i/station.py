@@ -241,17 +241,21 @@ class Station:
                 out[s["kind"]] = torch.vstack([out[s["kind"]].reshape(-1, len(v)), v])
         return out
 
-    def failing_pocket(self, image):
-        """The embedding of the worst pocket of a known-bad strip photo when the judge fails it; else None (not taught,
-        no clean layout, or no pocket fails)."""
+    def failing_pocket(self, image) -> tuple:
+        """(embedding, "pocket N") of the worst pocket of a known-bad strip photo when the judge fails it; else (None,
+        why nothing was learned), for QA's screen."""
         if self.taught_at is None:
-            return None
+            return None, "the station is not taught"
         lay = self._layout(image)
-        if not lay.ok or _finder(lay) != self.layout_source:
-            return None
+        if _finder(lay) != self.layout_source:
+            return None, "SAM 3.1 did not answer"
+        if not lay.ok:
+            return None, f"strip not found in full ({lay.note})"
         scores = self.judge.score_pockets(image, lay)
         i = int(np.argmax(scores))  # shortcut: the worst pocket is taken as the defect; QA registers one defect a strip
-        return self.judge.pocket_embeddings(image, lay)[i].cpu().numpy() if scores[i] > self.judge.pocket_threshold else None
+        if scores[i] <= self.judge.pocket_threshold:
+            return None, "no pocket failed"
+        return self.judge.pocket_embeddings(image, lay)[i].cpu().numpy(), f"pocket {i + 1}"
 
     def _reason(self, check, pocket=None):
         rule = rule_number(self.checklist, check)

@@ -506,17 +506,30 @@ ODD_COLOURS = {"tan": (140, 165, 190), "peach": (150, 180, 235), "orange": (40, 
 def test_challenge_strip_prototypes_follow_their_kind_and_a_new_photo(tmp_path):
     approve(dict(CHECKLIST, reject_if=list(CHECKS)), "Priya", tmp_path / "checklists.jsonl")
     st = Station(tmp_path, client=DomeSam(), clock=lambda: T0)
+    assert st.failing_pocket(make_strip(seed=16)) == (None, "the station is not taught")
     st.teach([make_strip(seed=i, shift=(i, 0)) for i in range(6)])
-    assert st.failing_pocket(make_strip(seed=15)) is None  # a good strip: no pocket fails, nothing is learned
+    assert st.failing_pocket(make_strip(seed=15)) == (None, "no pocket failed")  # a good strip: nothing is learned
+    st.client = FailingSam("all")
+    assert st.failing_pocket(make_strip(seed=16)) == (None, "SAM 3.1 did not answer")  # it fell back to the grid
+    st.client = DomeSam()
     cracked = make_strip(seed=16, cracked=(2,))
-    challenge.register(tmp_path, st.checklist, "C2", "broken_tablet", "", cracked, "qa1", "now",
-                       learn=lambda: st.failing_pocket(cracked))
+    out = challenge.register(tmp_path, st.checklist, "C2", "broken_tablet", "", cracked, "qa1", "now",
+                             learn=lambda: st.failing_pocket(cracked))
+    assert out["learned"] == "Learned the broken tablet from pocket 3" and "learned" not in challenge.load_set(tmp_path)
     assert [len(p.reshape(-1, p.shape[-1])) for p in st._prototypes().values()] == [1, 2]  # empty, broken (+C2)
     good = make_strip(seed=15)
-    challenge.register(tmp_path, st.checklist, "C2", "broken_tablet", "", good, "qa1", "now",
-                       learn=lambda: st.failing_pocket(good))  # the same label, a photo with no failing pocket
+    out = challenge.register(tmp_path, st.checklist, "C2", "broken_tablet", "", good, "qa1", "now",
+                             learn=lambda: st.failing_pocket(good))  # the same label, a photo with no failing pocket
+    assert out["learned"] == "Nothing learned: no pocket failed — register it again"
     assert not (tmp_path / "challenge" / "C2.npy").exists() and "prototype" not in challenge.load_set(tmp_path)["strips"][0]
     assert [len(p.reshape(-1, p.shape[-1])) for p in st._prototypes().values()] == [1, 1]
+    photo = (tmp_path / "challenge" / "C2.jpg").read_bytes()
+
+    def boom():
+        raise RuntimeError("judge failed")
+    with pytest.raises(RuntimeError):  # learned first: a failure leaves the photo and the set as they were
+        challenge.register(tmp_path, st.checklist, "C2", "broken_tablet", "", cracked, "qa1", "now", learn=boom)
+    assert (tmp_path / "challenge" / "C2.jpg").read_bytes() == photo
 
 
 PHOTOS = Path(os.environ.get("D2I_PHOTOS", Path(__file__).resolve().parents[1] / "photos"))  # git-ignored

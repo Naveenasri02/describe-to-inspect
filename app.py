@@ -990,10 +990,14 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
             with lock:  # the run in progress is checked and changed under the same lock as /challenge/inspect
                 out = challenge.register(product_dir, st.checklist, label, kind, rule, im, name, local_now(),
                                          learn=lambda: st.failing_pocket(im))  # a SAM 3.1 call when online
-                audit.append("challenge_register", name, {"strips": out["strips"]})
+                learned = out.pop("learned", None)
+                audit.append("challenge_register", name, {"strips": out["strips"], "learned": learned})
+                notes = [learned] if learned else []
                 if live_run():  # the set changed: the new set is run in full
                     chal["run"] = None
-                    out = dict(out, message="The challenge run in progress was stopped: run the new set in full")
+                    notes.append("The challenge run in progress was stopped: run the new set in full")
+                if notes:
+                    out = dict(out, message="\n".join(notes))
             return out
         return paid(run)
 

@@ -29,8 +29,9 @@ LEARNED = ("empty_pocket", "broken_tablet")  # the kinds the judge names a faili
 
 def register(product_dir, cl: dict, label: str, kind: str, rule: str, image, by: str, at: str, learn=None) -> dict:
     """Add a strip to the set (the same label replaces it in place); its photo goes to challenge/<label>.jpg.
-    learn: called after the checks for an empty / broken strip, it gives the photo's failing pocket embedding (or
-    None), kept in challenge/<label>.npy: the judge then knows what a real one of this product looks like."""
+    learn: called after the checks for an empty / broken strip, it gives (the photo's failing pocket embedding,
+    "pocket N") or (None, why not); the embedding is kept in challenge/<label>.npy: the judge then knows what a real
+    one of this product looks like. The returned set has "learned": what QA is told (only for those kinds)."""
     label = str(label).strip().upper()
     if not re.fullmatch(r"[A-Z0-9-]{1,12}", label):
         raise ValueError("Strip label: 1 to 12 letters, digits or -")
@@ -46,12 +47,12 @@ def register(product_dir, cl: dict, label: str, kind: str, rule: str, image, by:
         raise ValueError(f"Expected rule must be 1 to {top}")
     if image is None:
         raise ValueError("No camera frame to save.")
+    vec, where = learn() if learn and kind in LEARNED else (None, None)  # first: a failure leaves the old photo
     d = Path(product_dir)
     (d / "challenge").mkdir(parents=True, exist_ok=True)
     if not cv2.imwrite(str(d / "challenge" / f"{label}.jpg"), image):
         raise OSError("challenge photo not written")
     strip = {"label": label, "kind": kind, "rule": n, "photo": f"challenge/{label}.jpg"}
-    vec = learn() if learn and kind in LEARNED else None
     npy = d / "challenge" / f"{label}.npy"
     if vec is None:
         npy.unlink(missing_ok=True)  # a strip registered again never keeps its older photo's pocket
@@ -65,7 +66,10 @@ def register(product_dir, cl: dict, label: str, kind: str, rule: str, image, by:
     tmp = d / (SET + ".tmp")
     tmp.write_text(json.dumps(out, ensure_ascii=False), encoding="utf-8")
     os.replace(tmp, d / SET)  # one object, rewritten whole
-    return out
+    if where is None:
+        return out
+    return dict(out, learned=f"Learned the {kind.replace('_', ' ')} from {where}" if vec is not None
+                else f"Nothing learned: {where} — register it again")
 
 
 def place(strip: dict) -> str:

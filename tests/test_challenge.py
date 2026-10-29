@@ -62,18 +62,22 @@ def test_register_needs_qa_and_writes_the_set(tmp_path):
     login(c, "qa1", "pw-qa")
     assert "kind" in _register(c, "C1", "no_such_kind")["error"]
     assert "label" in _register(c, "../x", "empty_pocket")["error"]
-    # its empty pocket (the photo's failing pocket) is learned as a real empty pocket for the judge
-    assert _register(c, "c1", "empty_pocket")["strips"][0] == {"label": "C1", "kind": "empty_pocket", "rule": 2,
-                                                               "photo": "challenge/C1.jpg",
-                                                               "prototype": "challenge/C1.npy"}
+    # its empty pocket (the photo's failing pocket) is learned as a real empty pocket for the judge, and QA is told
+    s = _register(c, "c1", "empty_pocket")
+    assert s["strips"][0] == {"label": "C1", "kind": "empty_pocket", "rule": 2, "photo": "challenge/C1.jpg",
+                              "prototype": "challenge/C1.npy"}
+    assert s["message"] == "Learned the empty pocket from pocket 1" and _audit(p)[-1]["details"]["learned"] == s["message"]
     assert len(c.app.state.station._prototypes()["empty_pocket"].reshape(-1, 384)) == 2
     s = _register(c, "C2", "broken_tablet", "3")
     assert [x["label"] for x in s["strips"]] == ["C1", "C2"] and s["registered_by"] == "qa1" and s["at"]
-    assert json.loads((p / "challenge_set.json").read_text(encoding="utf-8")) == s
+    assert json.loads((p / "challenge_set.json").read_text(encoding="utf-8")) == {k: s[k] for k in ("strips", "registered_by", "at")}
+    none = c.post("/challenge/register", data={"label": "C3", "kind": "empty_pocket"}, files=up(make_strip(seed=15))).json()
+    assert none["message"] == "Nothing learned: no pocket failed — register it again" and "prototype" not in none["strips"][2]
     assert (p / "challenge" / "C1.jpg").is_file() and (p / "challenge" / "C2.jpg").is_file()
     assert c.get("/challenge/photo/C1").headers["content-type"] == "image/jpeg"
     assert c.get("/challenge/photo/C9").status_code == 404
-    assert _register(c, "C1", "foil_damage", "7")["strips"][0]["kind"] == "foil_damage"  # same label: replaced in place
+    s = _register(c, "C1", "foil_damage", "7")
+    assert s["strips"][0]["kind"] == "foil_damage" and "message" not in s  # same label: replaced in place
     assert not (p / "challenge" / "C1.npy").exists()  # foil damage teaches the judge no pocket
 
 
