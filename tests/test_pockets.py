@@ -210,14 +210,34 @@ def test_layout_asks_every_prompt_at_once_and_each_call_is_paid_and_traced(tmp_p
     assert len(rows) == 4 and all(e["usd"] == pytest.approx(SAM_IMAGE) for e in rows), rows
 
 
-def test_a_failed_prompt_whose_answer_is_not_needed_does_not_matter():
+def _down(prompt):
     class OneDown(FakeSam):
-        def sam_image(self, image, prompt):
-            if prompt == "white pill":
+        def sam_image(self, image, p):
+            if p == prompt:
                 raise MetaError("Meta API 503: busy")
-            return super().sam_image(image, prompt)
-    lay = find_layout(make_strip(), CL, OneDown([(STRIP_BOX, 0.95)], _pills(range(10))))
-    assert lay.source == "sam" and lay.ok  # "pill" answered first: "white pill" was not needed
+            return super().sam_image(image, p)
+    return OneDown
+
+
+def test_a_failed_prompt_whose_answer_is_not_needed_does_not_matter():
+    lay = find_layout(make_strip(), CL, _down("blister pack")([(STRIP_BOX, 0.95)], _pills(range(10))))
+    assert lay.source == "sam" and lay.ok  # "blister strip" answered first: "blister pack" was not needed
+
+
+def test_a_failed_pill_prompt_is_the_finder_down():
+    """Every pill prompt's answer is used now: without one, a tablet only it outlines would read as an empty pocket."""
+    lay = find_layout(make_strip(), CL, _down("white pill")([(STRIP_BOX, 0.95)], _pills(range(10))))
+    assert lay.source == "grid"
+
+
+def test_every_pill_prompt_is_used_and_the_same_tablet_counts_once():
+    """Real photo wa5: "pill" found none of 3 white tablets, "white pill" all 3; a coloured odd tablet among white ones
+    is outlined by "pill" only. The answers are merged: a box on a tablet already outlined (IoU >= 0.5) is dropped."""
+    sam = FakeSam([(STRIP_BOX, 0.95)], _pills([4]))  # "pill": the odd (coloured) tablet only
+    nudged = [((b[0] + 3, b[1] + 2, b[2] + 3, b[3] + 2), s) for b, s in _pills([4])]
+    sam.more["white pill"] = _pills([i for i in range(10) if i != 4]) + nudged  # the white ones, the odd one again
+    lay = find_layout(make_strip(), CL, sam)
+    assert lay.ok and lay.pockets == [pocket_box(i) for i in range(10)] and len(lay.pills) == 10
 
 
 def test_capsule_prompts():

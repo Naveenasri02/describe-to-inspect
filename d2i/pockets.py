@@ -11,8 +11,10 @@ MIN_SCORE = 0.5
 # "blister strip" finds nothing on close-ups; "blister" found 13/25 real photos alone (missed 4 tablet-side), so it is last
 STRIP_PROMPTS = ("blister strip", "blister pack", "pill pack", "blister")
 PAD = 0.08  # pill-outline strip: padding as a fraction of the pill bounds
-# shortcut: only white tablets measured (27 Oct); add colour words when a coloured product is taught
+# every one is asked and their boxes merged: "pill" missed real white tablets (wa5) that "white pill" found, and a
+# coloured odd tablet among white ones is outlined by "pill" alone
 POCKET_PROMPTS = ("pill", "white pill")  # "blister pocket" and "tablet" find nothing
+SAME_TABLET = 0.5  # IoU from which a later prompt's box is the tablet an earlier prompt already outlined
 GROW = 0.5  # a pill follows a taught pocket when its centre is inside that pocket grown by half a pocket each way
 # every SAM 3.1 image call goes through here: one image's prompts together, at most 10 calls in flight station-wide
 SAM_POOL = ThreadPoolExecutor(10, thread_name_prefix="sam")
@@ -33,6 +35,23 @@ class Layout:
 
 def pill_prompts(item: str) -> tuple:
     return ("capsule", "pill") if "capsule" in item.lower() else POCKET_PROMPTS
+
+
+def _iou(a, b) -> float:
+    w, h = min(a[2], b[2]) - max(a[0], b[0]), min(a[3], b[3]) - max(a[1], b[1])
+    inter = max(0, w) * max(0, h)
+    union = (a[2] - a[0]) * (a[3] - a[1]) + (b[2] - b[0]) * (b[3] - b[1]) - inter
+    return inter / union if union > 0 else 0.0
+
+
+def merged(answers) -> list:
+    """Every prompt's boxes in prompt order; a box on a tablet an earlier prompt outlined is dropped (one prompt's own
+    overlapping boxes stay: two tablets in one pocket)."""
+    out = []
+    for boxes in answers:
+        before = list(out)
+        out += [b for b in boxes if all(_iou(b, k) < SAME_TABLET for k in before)]
+    return out
 
 
 def grid(strip_box, rows: int, per_row: int, margin: float = 0.06) -> list[tuple]:
@@ -195,7 +214,7 @@ def find_layout(image: np.ndarray, cl: dict, client=None, template=None) -> Layo
                 asked[p] = SAM_POOL.submit(client.sam_image, image, p)
                 boxes = found(p) or None
             strip = tuple(max(boxes, key=lambda b: (b[2] - b[0]) * (b[3] - b[1]))) if boxes else None
-            pills = next((f for f in map(found, pill_prompts(cl["item"])) if f), [])
+            pills = merged(map(found, pill_prompts(cl["item"])))
             source = "sam"
             if strip is None:
                 if not pills:
