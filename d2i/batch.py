@@ -129,6 +129,9 @@ class Batches:
         m, e = parse_month(mfg), parse_month(exp)
         if e <= m:
             raise ValueError("Expiry must be after the manufacturing month")
+        today = datetime.fromtimestamp(now)
+        if e < (today.year, today.month):  # the print check's rule: a strip expiring this month is not past
+            raise ValueError("Expiry %02d/%d is already past" % (e[1], e[0]))
         bare = re.sub(r"rs\.?|₹|/-", "", str(mrp), flags=re.I).strip()  # "Rs. 1,250/-" -> 1,250
         clean = "" if re.search(r"\d\s+\d", bare) else re.sub(r"[\s,]", "", bare)  # "45 50" is not 4550
         price = float(clean) if re.fullmatch(r"\d+(\.\d+)?|\.\d+", clean) else 0.0

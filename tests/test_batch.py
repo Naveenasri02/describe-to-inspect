@@ -50,6 +50,18 @@ def test_start_validates_fields(tmp_path):
     assert (row["batch"], row["mrp"], row["mfg"], row["exp"]) == ("B12/X", "45.00", "05/2026", "10/2028")
 
 
+def test_start_refuses_an_expiry_already_past(tmp_path):
+    from datetime import datetime
+    now = datetime(2026, 10, 29, 10, 0).timestamp()
+    b = clear_batches(tmp_path, now)
+    with pytest.raises(ValueError, match="Expiry 09/2026 is already past"):
+        b.start("B1", "01/2025", "09/2026", "45", "qa1", now + 60)
+    with pytest.raises(ValueError, match="Expiry must be after the manufacturing month"):
+        b.start("B1", "12/2026", "11/2026", "45", "qa1", now + 60)
+    assert b.open is None
+    assert b.start("B1", "01/2025", "10/2026", "45", "qa1", now + 60)["exp"] == "10/2026"  # expires this month: not past
+
+
 def test_one_batch_at_a_time(tmp_path):
     b = clear_batches(tmp_path)
     b.start("B1", "01/2026", "01/2028", "45", "qa1", 1060.0)
