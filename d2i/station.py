@@ -233,7 +233,7 @@ class Station:
 
     def _prototypes(self) -> dict:
         """The painted prototypes plus the failing pocket of each registered empty / broken challenge strip: a real
-        empty dome of this product (a painted one named 23 of 82 real empty pockets empty, a real one 77 of 82)."""
+        empty dome of this product (a painted one named about 13 of 82 real empty pockets empty, a real one 77 of 82)."""
         out = dict(self.prototypes)
         for s in (load_set(self.dir) or {"strips": []})["strips"]:  # unreadable: raises (the gate is shut then too)
             if s.get("prototype") and s["kind"] in out:

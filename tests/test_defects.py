@@ -27,19 +27,21 @@ def test_each_kind_changes_only_near_pocket(kind, pocket):
     assert (diff[~near] > 20).sum() == 0 and diff[~near].mean() < 0.5, "nothing changes away from the pocket"
 
 
-def test_empty_pocket_looks_like_a_clear_dome_not_flat_foil():
-    """A real empty pocket shows the clear dome: the plastic's colour around the tablet, with a highlight."""
+def test_empty_pocket_shows_the_foil_through_a_dome_with_a_highlight():
+    """The foil's colour, not the plastic's around the tablet: on bright foil (real wa5) that plastic is near the
+    tablet's own colour, so the painted pocket read as a grey tablet with a spot (review 3, 8 of 12)."""
     img = make_strip()
     x0, y0, x1, y1 = box = pocket_box(3)
-    img[y0:y1, x0:x1] = (200, 185, 150)  # the clear plastic around the tablet, tinted unlike the foil (170)
+    img[y0:y1, x0:x1] = (225, 225, 225)  # the plastic around the tablet, bright: near the tablet (235), not the foil (170)
     cx, cy = (x0 + x1) // 2, (y0 + y1) // 2
     cv2.circle(img, (cx, cy), (x1 - x0) * 32 // 88, (235, 235, 235), -1)
     out = paint(img, box, "empty_pocket", STRIP_BOX, np.random.default_rng(2))
     centre = out[cy - 8:cy + 9, cx - 8:cx + 9].reshape(-1, 3)
-    assert np.abs(np.median(centre, axis=0) - (200, 185, 150)).max() < 8  # the plastic's colour, not the foil's
+    assert np.abs(np.median(centre, axis=0) - 170).max() < 8  # the foil's colour
     inner = np.zeros(img.shape[:2], np.uint8)  # inside the painted dome, clear of the tablet's rim
     cv2.circle(inner, (cx, cy), int((x1 - x0) * 0.3), 255, -1)
-    assert (out[inner > 0].astype(int).sum(axis=1) > 200 + 185 + 150 + 150).sum() >= 20  # a highlight
+    bright = (out[inner > 0].astype(int).sum(axis=1) > 3 * 170 + 120).sum()
+    assert 20 <= bright < 0.25 * (inner > 0).sum()  # a highlight, no tablet left
 
 
 def test_paint_is_seeded():

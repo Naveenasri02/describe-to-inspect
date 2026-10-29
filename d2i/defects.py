@@ -19,18 +19,6 @@ def _foil_colour(image, box, strip_box):
     return np.median(pixels, axis=0) if len(pixels) else np.array([170, 170, 170])
 
 
-def _plastic_colour(image, box, strip_box):
-    """Median colour inside the pocket box but outside the tablet's ellipse: the clear dome around the tablet."""
-    x0, y0, x1, y1 = (int(v) for v in box)
-    cx, cy, ax, ay = (x0 + x1) // 2, (y0 + y1) // 2, max(2, (x1 - x0) // 2), max(2, (y1 - y0) // 2)
-    x0, y0 = max(x0, 0), max(y0, 0)
-    crop = image[y0:y1, x0:x1]
-    plastic = np.full(crop.shape[:2], 255, np.uint8)
-    cv2.ellipse(plastic, (cx - x0, cy - y0), (ax, ay), 0, 0, 360, 0, -1)
-    pixels = crop[plastic > 0]
-    return np.median(pixels, axis=0) if len(pixels) else _foil_colour(image, box, strip_box)
-
-
 def _background_colour(image, strip_box):
     """Median colour of the table outside the strip."""
     sx0, sy0, sx1, sy1 = strip_box
@@ -52,10 +40,10 @@ def paint(image, pocket_box, kind, strip_box, rng):
     shape = image.shape[:2]
 
     if kind == "empty_pocket":
-        # a clear dome, not flat foil: the plastic's colour around the tablet with a highlight, the tablet's rim left as
-        # the dome wall. On 82 real empty pockets the judge named 23 empty against this (13 against flat foil), broken
-        # tablets unchanged (103/104); a registered challenge strip's real empty pocket does far better (challenge.py)
-        dome = _plastic_colour(image, pocket_box, strip_box)
+        # the foil seen through a clear dome, with a highlight, the tablet's rim left as the dome wall. Not the plastic's
+        # colour around the tablet: on bright foil that is near the tablet's own (real wa5: read a grey tablet with a
+        # spot, 4 of 12). A registered challenge strip's real empty pocket teaches the judge real domes (challenge.py)
+        dome = _foil_colour(image, pocket_box, strip_box)
         bx, by = max(2, int((x1 - x0) / 2 * 0.7)), max(2, int((y1 - y0) / 2 * 0.7))
         region = np.zeros(shape, np.uint8)
         cv2.ellipse(region, (cx, cy), (bx, by), 0, 0, 360, 255, -1)

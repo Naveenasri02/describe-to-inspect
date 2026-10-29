@@ -15,6 +15,7 @@ from d2i.checklist import CHECKS, approve
 from d2i.judge import Judge
 from d2i.meta_api import MetaError, SamObject
 from d2i.defects import paint
+from d2i.measure import pocket_check, teach_profile
 from d2i.pockets import Layout, _strip_by_contour
 from d2i.station import EMPTY_MARGIN, Station, Verdict, nearest, painted_prototypes, similarity
 from tests.conftest import STRIP_BOX, make_strip, pocket_box
@@ -547,6 +548,19 @@ def test_real_photo_empty_domes_named_empty_after_one_is_registered():
         crop[crop.mean(2) > 150] *= np.array(gain, np.float32)
         tinted[y0:y1, x0:x1] = np.clip(crop, 0, 255).astype(np.uint8)
         assert margin(judge.pocket_embeddings(tinted, Layout(strip, tablets, "sam", True)).cpu()[2]) < EMPTY_MARGIN, gain
+
+
+@pytest.mark.skipif(not WA5.exists(), reason="the real photos are not in the repo (set D2I_PHOTOS)")
+def test_real_photo_painted_empty_pocket_reads_empty_when_sam_outlines_it():
+    """wa5.jpg, each tablet painted empty (4 seeds), measured as when SAM outlines the painted pocket: the self-test's
+    empty pocket must read empty, never a tablet with a spot (the dome painting read tablet 2 as tablet_spot 4 of 4)."""
+    img = cv2.imread(str(WA5))
+    strip, tablets = (195, 390, 575, 905), [(247, 460, 340, 550), (400, 450, 485, 545), (262, 612, 356, 722)]
+    lay = Layout(strip, tablets, "sam", True, "", tablets)
+    prof = teach_profile([img, img], [lay, lay])
+    got = [pocket_check(paint(img, b, "empty_pocket", strip, np.random.default_rng(seed)), b, [b], prof)
+           for b in tablets for seed in range(4)]
+    assert got == ["empty_pocket"] * 12, got
 
 
 def test_teach_refuses_a_photo_with_an_outlined_empty_pocket(tmp_path):
