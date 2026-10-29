@@ -749,10 +749,24 @@ def test_qa_wrong_print_is_critical_and_holds_the_line(tmp_path):
     assert h["user"] == "qa1" and h["reason"] == "Critical: wrong print — " + WA7_DIFF
 
 
+def test_unreadable_print_is_decided_by_eye_too(tmp_path):
+    """Review 3: a blank or cut-off field had no QA decision, only another paid read could release the batch. QA reads
+    it on the strip: "Print matches" releases, "Wrong print" holds the line with what was flagged."""
+    blank = "Batch no. not printed or not readable"
+    for read, why in ((dict(WA7, batch=""), [blank]), (dict(WA7, readable=False), ["Print not readable — check by hand"])):
+        c, p = _eye_bench(tmp_path / str(len(why[0])), read=read)
+        assert c.post("/print", files=up(make_strip(seed=1))).json() == {"status": "HOLD", "reasons": why, "by_eye": True}
+        assert c.get("/status").json()["print_by_eye"] == why
+    assert _eye(c, "wrong")["status"] == "WRONG_PRINT" and _holds(p)[-1]["reason"] == "Critical: wrong print — " + why[0]
+    c, p = _eye_bench(tmp_path / "ok", read=dict(WA7, batch=""))
+    c.post("/print", files=up(make_strip(seed=1)))
+    assert _eye(c, "matches")["status"] == "PRINT_OK" and "Start-up print check" not in c.get("/status").json()["blockers"]
+
+
 def test_check_by_eye_is_qa_only_and_needs_a_flagged_read(tmp_path):
-    c, p = _eye_bench(tmp_path, read=dict(WA7, batch=""))  # unreadable field: check by hand, nothing to decide
+    c, p = _eye_bench(tmp_path, read=dict(WA7, batch="26F1206IS"))  # read as the batch record: nothing to decide
     r = c.post("/print", files=up(make_strip(seed=1))).json()
-    assert r["status"] == "HOLD" and r["by_eye"] is False and c.get("/status").json()["print_by_eye"] is None
+    assert r["status"] == "PRINT_OK" and r["by_eye"] is False and c.get("/status").json()["print_by_eye"] is None
     assert _eye(c, "matches")["error"] == "No print check waits for a check by eye"
     login(c, "op", "pw-op")
     assert "QA" in _eye(c, "matches", password="pw-op")["error"]

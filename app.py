@@ -450,7 +450,7 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
                 return JSONResponse({"error": NO_BATCH}, status_code=409)
             read = read_print(im, get_client())  # MetaError / BudgetExceeded reach paid(): plain text, nothing logged
             out = check_print(read, b, date.fromtimestamp(clock()))
-            out["by_eye"] = differs(out["reasons"]) is not None  # the model only flags: QA decides at /print/eye
+            out["by_eye"] = out["status"] == "HOLD"  # the model only flags (a difference, a blank, a cut-off): QA decides at /print/eye
             with meta:
                 batches._write("prints.jsonl", {"at": datetime.fromtimestamp(clock()).isoformat(timespec="seconds"), "time": clock(),
                                                 "batch": b["batch"], "read": read, "status": out["status"],
@@ -476,7 +476,7 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
                 held = print_by_eye(b)
                 if not held:
                     return {"error": "No print check waits for a check by eye"}
-                diff = differs(held["reasons"])
+                diff = differs(held["reasons"]) or "; ".join(held["reasons"])  # an unreadable read: what was flagged
                 row = batches._write("prints.jsonl", {
                     "at": datetime.fromtimestamp(clock()).isoformat(timespec="seconds"), "time": clock(), "batch": b["batch"],
                     "read": held["read"], "status": "PRINT_OK" if result == "matches" else "WRONG_PRINT",

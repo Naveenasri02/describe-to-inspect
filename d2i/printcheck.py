@@ -1,7 +1,8 @@
 """Foil print check: Muse Spark only READS the printed text; plain code compares it with the open batch record.
 A mismatch or an unreadable print is HOLD, never a pass or reject on the model's word. Spark is a generative model
-(draft EU GMP Annex 22: it must not make a critical GMP decision alone), so a difference only flags the strip
-"Check the print by eye": QA looks at it and decides "Print matches" or "Wrong print" (app.py /print/eye)."""
+(draft EU GMP Annex 22: it must not make a critical GMP decision alone), so a difference, a blank or a cut-off field
+only flags the strip "Check the print by eye": QA looks at it and decides "Print matches" or "Wrong print" (app.py
+/print/eye)."""
 import re
 import unicodedata
 from datetime import date
