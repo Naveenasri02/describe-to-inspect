@@ -205,3 +205,13 @@ def test_product_name_matches_when_every_typed_word_is_printed_in_order():
     assert ok("Tablets Paracetamol", "Paracetamol Tablets")["status"] == "HOLD"  # in order
     assert ok("Paracetamolum", "Paracetamol")["status"] == "HOLD"  # whole words
     assert ok("Paracetamol", "Paracetamol Tablets IP")["status"] == "HOLD"  # every typed word
+
+
+def test_product_name_ignores_hyphens_and_spaces_but_not_digits():
+    """Review 3: "DOLO-650" read against a typed "Dolo 650" was a difference for QA's eye; no PRINT OK for the shot."""
+    ok = lambda got, want: check_print(dict(PG, product=got), dict(PB, product=want), TODAY)["status"]  # noqa: E731
+    for got, want in (("DOLO-650", "Dolo 650"), ("Dolo 650", "DOLO-650"), ("DOLO 650", "Dolo650"),
+                      ("Dolo-650 Tablets IP", "dolo 650 tablets"), ("Rapeed-20", "Rapeed 20")):
+        assert ok(got, want) == "PRINT_OK", (got, want)
+    for got, want in (("DOLO-650", "Dolo 65"), ("Zivast 100", "Zivast 10"), ("DOLO-650", "Dolo 500")):
+        assert ok(got, want) == "HOLD", (got, want)  # whole words still: a digit more is a difference

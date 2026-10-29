@@ -30,15 +30,20 @@ def _batch_key(s) -> str:
     return re.sub(rf"^(?:{"|".join(_LABELS)}):?", "", s)  # "B.No.: AB123" -> "AB123"
 
 
-def _words(s) -> list[str]:
-    """Words, case and punctuation ignored: "Crocin® Tablets I.P." -> ["crocin", "tablets", "ip"]."""
-    return "".join(c for c in str(s) if unicodedata.category(c)[0] not in "PS").casefold().split()
+def _words(s, split: bool = False) -> list[str]:
+    """Words, case and punctuation ignored: "Crocin® Tablets I.P." -> ["crocin", "tablets", "ip"]; split: punctuation
+    also parts words ("DOLO-650" -> ["dolo", "650"])."""
+    return "".join(c if unicodedata.category(c)[0] not in "PS" else " " * split for c in str(s)).casefold().split()
 
 
 def _name_printed(read: str, typed: str) -> bool:
-    """Every typed word is printed, in order: "Paracetamol" matches "Paracetamol Tablets IP"."""
+    """Every typed word is printed, in order: "Paracetamol" matches "Paracetamol Tablets IP"; or the typed name, spaces
+    and hyphens ignored, is whole printed words in a row: "Dolo 650" matches "DOLO-650" (not "Dolo 65")."""
     printed, want = iter(_words(read)), _words(typed)
-    return bool(want) and all(w in printed for w in want)  # `in` moves the iterator on: words in order
+    if bool(want) and all(w in printed for w in want):  # `in` moves the iterator on: words in order
+        return True
+    t, parts = "".join(want), _words(read, split=True)
+    return bool(t) and any("".join(parts[i:j]) == t for i in range(len(parts)) for j in range(i + 1, len(parts) + 1))
 
 
 def _cut_off(read: str, typed: str) -> bool:
