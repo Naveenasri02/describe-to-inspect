@@ -87,6 +87,11 @@ class FrameSource:
             self.stop.wait(0.03)
 
 
+def source_kind(source: str) -> str:
+    """What a live frame came from, for the record: a camera (an index), a photo folder or a video (a file or stream)."""
+    return "camera" if source.isdigit() else "photo folder" if Path(source).is_dir() else "video"
+
+
 RECORD_EXPIRED = "Record expired — open it again before signing"
 
 
@@ -979,7 +984,7 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
                 res = challenge.judged(strip, v)
                 if r is None:
                     r = chal["run"] = {"by": name, "batch": b["batch"], "strips": s["strips"], "results": [],
-                                       "pending": None, "source": "camera" if src is not None else "upload"}
+                                       "pending": None, "source": source_kind(src.source) if src is not None else "upload"}
                 if not res["caught"]:  # fail-safe: locked and audited now, before anyone ticks anything
                     challenge.lock(st, res, res["why"])
                     sync_lock()

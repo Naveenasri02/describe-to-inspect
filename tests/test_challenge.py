@@ -231,8 +231,9 @@ def test_with_a_camera_the_run_uses_the_live_frame(tmp_path):
             time.sleep(0.05)
         assert c.post("/challenge/inspect").json()["caught"] is True
         run = c.post("/challenge/eject", json={"ejected": True}).json()["run"]
-        assert run["passed"] is True and run["source"] == "camera"
-        assert [e["details"]["source"] for e in _audit(p) if e["action"] == "physical_challenge"] == ["camera"]
+        assert run["passed"] is True and run["source"] == "photo folder"  # review: it said "camera" for any source
+        assert [e["details"]["source"] for e in _audit(p) if e["action"] == "physical_challenge"] == ["photo folder"]
+        assert "photo folder" in c.get("/record").text.split("<h2>Physical challenge</h2>")[1].split("<h2>")[0]
     finally:
         c.app.state.source.stop.set()
 
@@ -266,3 +267,8 @@ def test_line_board_shows_the_challenge_gate_and_a_miss(tmp_path):
     assert w["text"] == "Physical challenge failed: C1 not rejected" and w["who"] == "QA"
     row = json.loads((p / "states.jsonl").read_text(encoding="utf-8").splitlines()[-1])
     assert (row["to"], row["cause"]) == ("STOPPED", "Physical challenge missed: C1 not rejected")
+
+
+def test_challenge_source_names_the_kind_of_source():
+    from app import source_kind
+    assert [source_kind(s) for s in ("0", "2", "clip.mp4", "rtsp://cam/1")] == ["camera", "camera", "video", "video"]
