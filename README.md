@@ -104,7 +104,7 @@ Keys: the Meta Model API key as above; the Baseten key from `BASETEN_API_KEY` or
 
 ## Tests
 
-563 tests (count them with `python -m pytest --collect-only -q`). None makes a paid call: the model calls go to fakes, and the test strips are drawn in code (`tests/conftest.py`). One test also judges a real photo (`photos/real_wa/wa5.jpg`, not in the repo); it is skipped unless `photos/` is there or `D2I_PHOTOS` points to it. Run them all with:
+568 tests (count them with `python -m pytest --collect-only -q`). None makes a paid call: the model calls go to fakes, and the test strips are drawn in code (`tests/conftest.py`). Two tests also judge a real photo (`photos/real_wa/wa5.jpg`, not in the repo); they are skipped unless `photos/` is there or `D2I_PHOTOS` points to it. Run them all with:
 
 ```
 python -m pytest -q -p no:warnings
