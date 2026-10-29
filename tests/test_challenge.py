@@ -272,3 +272,15 @@ def test_line_board_shows_the_challenge_gate_and_a_miss(tmp_path):
 def test_challenge_source_names_the_kind_of_source():
     from app import source_kind
     assert [source_kind(s) for s in ("0", "2", "clip.mp4", "rtsp://cam/1")] == ["camera", "camera", "video", "video"]
+
+
+def test_no_production_strip_while_a_challenge_strip_waits_for_its_ejected_tick(tmp_path):
+    """Review: "Inspect strip" while a challenge strip waited for Ejected judged the challenge strip as production: it
+    was counted, and a wrong-tablet challenge strip raised a critical hold and a re-check."""
+    c, p = _set_bench(tmp_path, ("C1", "wrong_tablet"), verdicts=[("REJECT", ["wrong_tablet"])] * 3)
+    assert _run(c, True)[1]["run"]["passed"] is True  # the release run
+    assert c.post("/challenge/inspect", files=up(make_strip(seed=15))).json()["caught"] is True  # a mid-batch run
+    assert c.post("/inspect", files=up(make_strip(seed=15))).json() == {"error": "Tick Ejected for C1 and record it first"}
+    assert not (p / "log.jsonl").exists() and c.get("/status").json()["held"] is False
+    assert c.post("/challenge/eject", json={"ejected": True}).json()["run"]["passed"] is True
+    assert c.post("/inspect", files=up(make_strip(seed=15))).json()["status"] == "REJECT"

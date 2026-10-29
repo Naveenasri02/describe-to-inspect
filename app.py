@@ -405,7 +405,7 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
                 return {"error": "No image."}
             with lock:  # inspect and publish together so verdicts land in order; the open batch read under it too
                 no, refused = need_batch()
-                refused = refused or not_released(batches.open)
+                refused = refused or not_released(batches.open) or ejected_first()
                 if refused:
                     return refused
                 rc = recheck.current(product_dir) if held_now() else None  # a re-check runs on a held line only
@@ -463,7 +463,7 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
                 return {"error": "tray clip needs a camera or video source"}
             with lock:  # one slow station operation at a time; verdicts land in order; the open batch read under it too
                 no, refused = need_batch()
-                refused = refused or not_released(batches.open)
+                refused = refused or not_released(batches.open) or ejected_first()
                 if refused:
                     return refused
                 if recheck.current(product_dir):  # each re-checked strip is counted one at a time
@@ -923,6 +923,10 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
     def live_run():  # the run in progress, unless its batch is no longer the open one (then it is dropped)
         r, b = chal["run"], batches.open
         return r if r and b and r["batch"] == b["batch"] else None
+
+    def ejected_first():  # a challenge strip waits for its Ejected tick: no production strip is judged before it
+        r = live_run()
+        return {"error": f"Tick Ejected for {r['pending']['label']} and record it first"} if r and r["pending"] else None
 
     @app.get("/challenge")
     def challenge_state():
