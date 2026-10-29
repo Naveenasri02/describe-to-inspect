@@ -152,6 +152,7 @@ class ContourSam:
     """Fake SAM: strip from the contour finder, a pill in every pocket except `skip`."""
 
     bare_filter = True
+    has_key = True  # a key is set: teach needs SAM to answer
 
     def __init__(self, skip=()):
         self.skip = skip
@@ -555,6 +556,16 @@ def test_teach_refuses_a_photo_the_pocket_finder_missed(tmp_path):
                                          r"save that photo again$"):
         st.teach(photos)
     assert st.taught_at is None and not (tmp_path / "model.pt").exists()
+
+
+def test_teach_names_every_photo_the_pocket_finder_missed(tmp_path):
+    """Review: with SAM down on most photos the message named only the first grid photo, as if one photo were odd."""
+    approve(CHECKLIST, "Priya", tmp_path / "checklists.jsonl")
+    photos = [make_strip(seed=i, shift=(i, 0)) for i in range(6)]
+    st = Station(tmp_path, client=FailingSam(fail=lambda im: im is not photos[0]), clock=lambda: T0)
+    with pytest.raises(ValueError, match=r"^photos 2, 3, 4, 5, 6: the pocket finder \(SAM 3.1\) did not answer — "
+                                         r"save those photos again$"):
+        st.teach(photos)
 
 
 def test_teach_refuses_when_sam_answers_no_photo(tmp_path):

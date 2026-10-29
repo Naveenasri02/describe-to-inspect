@@ -163,10 +163,13 @@ class Station:
             layouts = [find_layout(im, self.checklist, self.client) for im in images]
         sources = [_finder(l) for l in layouts]
         if "sam" in sources and "grid" in sources:  # SAM 3.1 failed on some photos: their pockets came from the grid
-            raise ValueError(f"photo {sources.index('grid') + 1}: the pocket finder (SAM 3.1) did not answer — "
-                             f"save that photo again")
-        # all from the grid with a key set: SAM failed on every photo; only a bench with no key is taught offline
-        if sources and "sam" not in sources and self.client is not None and getattr(self.client, "has_key", True):
+            missed = [str(n) for n, s in enumerate(sources, 1) if s == "grid"]
+            raise ValueError(f"photo {missed[0]}: the pocket finder (SAM 3.1) did not answer — save that photo again"
+                             if len(missed) == 1 else f"photos {', '.join(missed)}: the pocket finder (SAM 3.1) did not "
+                                                      f"answer — save those photos again")
+        # all from the grid with a key set: SAM failed on every photo; only a bench with no key is taught offline.
+        # Every client says whether it has a key (MetaClient reads it; a test fake sets it): no default either way
+        if sources and "sam" not in sources and self.client is not None and self.client.has_key:
             raise ValueError("the pocket finder (SAM 3.1) did not answer — check the network and save the photos again")
         if all(l.ok for l in layouts) and len({len(l.pockets) for l in layouts}) == 1:  # else judge.teach says which
             # each photo's turn against the taught pockets, as inspect measures it (real pockets are not on the checklist
