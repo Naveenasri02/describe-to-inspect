@@ -17,7 +17,7 @@ from d2i.audit import json_line
 from d2i.checklist import SEVERITY, current, rule_number
 from d2i.defects import paint
 from d2i.judge import Judge
-from d2i.measure import features, pocket_check, strip_check, teach_profile, teach_strip
+from d2i.measure import empty_looking, features, pocket_check, strip_check, teach_profile, teach_strip
 from d2i.pockets import find_layout, framed, template_from, turn_of
 
 MEASURED = ("double_tablet", "wrong_tablet", "tablet_spot")  # decided by measure.py on SAM pill boxes
@@ -168,6 +168,8 @@ class Station:
         # all from the grid with a key set: SAM failed on every photo; only a bench with no key is taught offline
         if sources and "sam" not in sources and self.client is not None and getattr(self.client, "has_key", True):
             raise ValueError("the pocket finder (SAM 3.1) did not answer — check the network and save the photos again")
+        if bad := empty_looking(images, [l if l.ok else replace(l, pills=[]) for l in layouts]):
+            raise ValueError(f"photo {bad[0]}: pocket {bad[1]} looks empty — teach on full strips only")
         if all(l.ok for l in layouts) and len({len(l.pockets) for l in layouts}) == 1:  # else judge.teach says which
             # each photo's turn against the taught pockets, as inspect measures it (real pockets are not on the checklist
             # grid: straight photos read 0.55 deg against it)
@@ -246,6 +248,11 @@ class Station:
             return v
         v.pocket_scores = self.judge.score_pockets(image, lay)
         listed, unlisted, measured = [], [], set()
+        failing = [i for i, s in enumerate(v.pocket_scores) if s > self.judge.pocket_threshold]
+        named = {}  # the judge's name for each pocket it fails: the nearest painted defect
+        if failing:
+            embs = self.judge.pocket_embeddings(image, lay).cpu()
+            named = {i: max(self.prototypes, key=lambda k: float(embs[i] @ self.prototypes[k])) for i in failing}
         if cut:
             # the taught pocket template no longer fits a mis-sized strip, so per-pocket findings would be false
             self._find("strip_cut", listed, unlisted)
@@ -257,7 +264,8 @@ class Station:
             usable = 0
             for i, (slot, mine) in enumerate(zip(lay.slots, lay.in_pocket)):  # measured on the taught pocket scale
                 usable += len(mine) > 1 or (len(mine) == 1 and features(image, slot, mine[0]) is not None)
-                kind = pocket_check(image, slot, mine, self.profile)
+                # the judge says empty: a measurement may not turn an outlined empty dome into a different tablet
+                kind = pocket_check(image, slot, mine, self.profile, named.get(i) == "empty_pocket")
                 if kind:
                     self._find(kind, listed, unlisted, i)
                     measured.add(i)
@@ -267,12 +275,9 @@ class Station:
             v.skipped.append("tablet measurements")
         if not (lay.pills and self.strip_profile):
             v.skipped.append("strip size")
-        failing = [i for i, s in enumerate(v.pocket_scores) if s > self.judge.pocket_threshold and i not in measured]
-        if failing:
-            embs = self.judge.pocket_embeddings(image, lay).cpu()
-            for i in failing:
-                kind = max(self.prototypes, key=lambda k: float(embs[i] @ self.prototypes[k]))
-                self._find(kind, listed, unlisted, i)
+        for i in failing:
+            if i not in measured:
+                self._find(named[i], listed, unlisted, i)
         if self.judge.score_border(image, lay) > self.judge.border_threshold:
             self._find("foil_damage", listed, unlisted)
         v.reasons = listed + unlisted

@@ -188,3 +188,28 @@ def test_foil_coloured_pill_is_an_empty_pocket():
     other = bare.copy()  # a tablet of another colour is still a different tablet
     disc(other, 70, 70, 30, lab_bgr(85.0, 5.0, 45.0))
     assert pocket_check(other, POCKET, [box], prof) == "wrong_tablet"
+
+
+def test_a_real_empty_dome_is_empty_when_the_judge_says_so():
+    """Real empty domes sit a median 17 Lab dE from the foil ring (100 Roboflow photos), past the 12 tolerance, so the
+    colour test named them a different tablet (critical). Colour alone may not call them empty either: real peach,
+    orange and gold tablets read nearer their foil ring than a white taught tablet. Empty = the judge failed the pocket
+    and named it empty, and its colour is nearer the foil than the taught tablet."""
+    img = foil()
+    box = disc(img, 70, 70, 30, (120, 120, 120))  # the dome shows the table: 19 dE from the foil, 42 from the tablet
+    assert pocket_check(img, POCKET, [box], profile()) == "wrong_tablet"
+    assert pocket_check(img, POCKET, [box], profile(), judge_empty=True) == "empty_pocket"
+    img, box = one()  # a good tablet: the judge's word alone does not make it empty
+    assert pocket_check(img, POCKET, [box], profile(), judge_empty=True) is None
+
+
+def test_teach_photo_with_an_outlined_empty_dome_is_found():
+    from d2i.measure import empty_looking
+    images, layouts = [], []
+    for k in range(5):
+        img, box = one()
+        images.append(img)
+        layouts.append(Layout((0, 0, 140, 140), [box], "sam", True, "", [box]))
+    assert empty_looking(images, layouts) is None
+    images[3] = foil()  # SAM outlined the bare dome where the tablet should be
+    assert empty_looking(images, layouts) == (4, 1)

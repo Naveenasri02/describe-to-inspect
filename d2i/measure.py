@@ -65,9 +65,10 @@ def _foil_lab(image, box):
     return _lab(np.uint8([[ring]]))[0, 0]
 
 
-def pocket_check(image, pocket, mine, profile) -> str | None:
+def pocket_check(image, pocket, mine, profile, judge_empty: bool = False) -> str | None:
     """empty_pocket, double_tablet, wrong_tablet or tablet_spot; None for no pill (the judge's job) or a normal one.
-    pocket: the taught pocket box (the size scale); mine: the pills in this pocket, nearest first."""
+    pocket: the taught pocket box (the size scale); mine: the pills in this pocket, nearest first; judge_empty: the
+    DINOv2 judge failed this pocket and named it empty."""
     if not mine:
         return None
     if len(mine) >= 2:
@@ -76,8 +77,11 @@ def pocket_check(image, pocket, mine, profile) -> str | None:
     if f is None:
         return None
     foil = _delta_e(f["lab"], _foil_lab(image, mine[0]))
-    if foil <= profile["colour_tol"] and foil < _delta_e(f["lab"], profile["lab_med"]):
-        return "empty_pocket"  # SAM outlined the pocket itself: the foil's colour through the dome, not a tablet's
+    # SAM outlined the pocket itself: the foil's colour through the dome, not a tablet's. A real dome also shows
+    # reflections and the table (a median 17 dE from the foil ring, past colour_tol): then the judge's word decides.
+    # Never colour alone: peach, orange and gold tablets read nearer their foil ring than a white taught tablet.
+    if foil < _delta_e(f["lab"], profile["lab_med"]) and (foil <= profile["colour_tol"] or judge_empty):
+        return "empty_pocket"
     if f["area"] >= 1.7 * profile["area_med"]:
         return "double_tablet"
     if (abs(f["size"] - profile["size_med"]) > profile["size_tol"]
@@ -85,6 +89,23 @@ def pocket_check(image, pocket, mine, profile) -> str | None:
             or _delta_e(f["lab"], profile["lab_med"]) > profile["colour_tol"]):
         return "wrong_tablet"
     return "tablet_spot" if f["spot"] > profile["spot_max"] else None
+
+
+def empty_looking(images, layouts) -> tuple | None:
+    """(photo, pocket), from 1, of the first teach pill nearer in colour to the foil ring around it than to the median
+    of all teach pills: an empty dome SAM outlined (it did on 87/88 real empty pockets, so a count check passes). None
+    when every pill looks like a tablet; layouts without SAM pills are not looked at."""
+    labs = [[(f or {}).get("lab") for f in (features(im, b, b) for b in lay.pockets)] if lay.pills else []
+            for im, lay in zip(images, layouts)]
+    every = [l for row in labs for l in row if l is not None]
+    if not every:
+        return None
+    med = np.median(every, axis=0)
+    for n, (im, lay, row) in enumerate(zip(images, layouts, labs), 1):
+        for k, (b, l) in enumerate(zip(lay.pockets, row), 1):
+            if l is not None and _delta_e(l, _foil_lab(im, b)) < _delta_e(l, med):
+                return n, k
+    return None
 
 
 def strip_features(lay) -> dict | None:
