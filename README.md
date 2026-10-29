@@ -141,6 +141,7 @@ python tools/eval_agent.py data/blister --bad photos/bad --runs 3 --yes-live
 - The SAM / Muse Spark cross-count is a code option: the station screen does not switch it on.
 - The tray clip opens the camera again while the stream is running; if the camera driver allows only one user, the clip fails with an error and nothing is judged.
 - The SAM prompt words were measured on real photos and may need tuning per product.
+- A Muse Spark text call that hangs waits up to 180 s and is retried once, so on a lossy link one call can take about 6 minutes before it gives up (with the network off it fails at once). "Open shift record" makes one such call for the summary, so on a bad link the record is slow to open; it then says "Summary not available".
 - With `--host 0.0.0.0` anyone on the network can call the paid endpoints that need no login (`/command`, `/ask`, `/investigate`); keep the default 127.0.0.1 for a bench.
 
 ## Licence
