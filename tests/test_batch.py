@@ -1,6 +1,6 @@
 import pytest
 
-from d2i.batch import CLEARANCE_MAX_AGE_S, Batches, line_clearance, parse_month
+from d2i.batch import CLEARANCE_MAX_AGE_S, Batches, line_clearance, parse_month, parse_strength
 from d2i.meta_api import MetaError, SamObject
 
 
@@ -162,9 +162,25 @@ def test_start_records_product_and_strength(tmp_path):
 
 
 def test_start_refuses_bad_product_or_strength(tmp_path):
-    for p, s in (("", "500 mg"), ("X", ""), ("X", "strong")):
+    for p, s in (("", "500 mg"), ("X", "strong"), ("X", "500 mg + 1Z5 mg")):
         with pytest.raises(ValueError):
             clear_batches(tmp_path).start("B1", "01/2026", "01/2028", "45", "qa1", 1060.0, product=p, strength=s)
+
+
+def test_strength_is_optional_and_takes_real_combination_forms(tmp_path):
+    """Real foils (29 Oct): Havglo prints no strength (could not start a batch); CTD-L prints "12.5 mg & 50 mg";
+    Combiflam's strength names its ingredients."""
+    row = clear_batches(tmp_path / "h").start("B1", "01/2026", "01/2028", "45", "qa1", 1060.0, product="Havglo", strength=" ")
+    assert row["strength"] == ""
+    for i, s in enumerate(("12.5 mg & 50 mg", "Ibuprofen 400 mg & Paracetamol 325 mg", "400 mg, 325 mg", "75 mg + 750 mcg")):
+        assert clear_batches(tmp_path / str(i)).start("B1", "01/2026", "01/2028", "45", "qa1", 1060.0, product="X", strength=s)["strength"] == s
+    want = ((400.0, "mg", None), (325.0, "mg", None))
+    for s in ("Ibuprofen I.P. 400mg, Paracetamol I.P. 325mg", "400 mg & 325 mg", "400mg+325mg", "Ibuprofen 400 mg and Paracetamol 325 mg"):
+        assert parse_strength(s) == want, s
+    assert parse_strength("Vitamin B12 500 mcg") == ((500.0, "mcg", None),)  # a digit inside a name is not a strength
+    for bad in ("", "Ibuprofen", "5OOmg", "500 mg + 1Z5 mg", "500 mgx"):
+        with pytest.raises(ValueError):
+            parse_strength(bad)
 
 
 def test_start_limits_and_strength_forms(tmp_path):

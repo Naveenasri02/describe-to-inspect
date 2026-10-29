@@ -93,8 +93,8 @@ tr,figure,.kv dt,.kv dd,.sig{break-inside:avoid}
 h2{break-after:avoid}
 }"""
 PLAIN = {"PASS": "Passed", "REJECT": "Rejected", "HOLD": "Held", "LOCKED": "Locked", "NO_STRIP": "No strip",
-         "PRINT_OK": "Print OK", "pass": "Passed", "fail": "Failed"}  # the Run screen's band words
-TONE = {"Passed": "pass", "Print OK": "pass", "Clear": "pass", "Yes": "pass", "Rejected": "reject", "Failed": "reject",
+         "PRINT_OK": "Print OK", "WRONG_PRINT": "Wrong print", "pass": "Passed", "fail": "Failed"}  # the Run screen's band words
+TONE = {"Passed": "pass", "Print OK": "pass", "Wrong print": "reject", "Check by eye": "hold", "Clear": "pass", "Yes": "pass", "Rejected": "reject", "Failed": "reject",
         "Locked": "reject", "Not clear": "reject", "No": "reject", "Outside": "reject", "Within": "pass", "Held": "hold", "Missed": "hold", "Not done": "hold",
         "Complete": "pass", "Waived": "hold", "Open": "hold"}
 NAMES = {"model_sha256": "Model SHA-256", "checklist_version": "Checklist version", "checklist_sha256": "Checklist SHA-256"}
@@ -112,6 +112,10 @@ def _chip(word: str) -> _Html:
     """A result word as a coloured chip; the border and the word carry it in black-and-white print."""
     word = PLAIN.get(word, word)
     return _Html(f'<span class="chip {TONE.get(word, "grey")}">{e(word)}</span>')
+
+
+def _print_word(r) -> str:  # a flagged read waits for QA's check by eye ("Print matches" / "Wrong print")
+    return "Check by eye" if r.get("by_eye") is True else r["status"]
 
 
 def _when(x) -> str:
@@ -392,7 +396,7 @@ def _batch_section(product_dir: Path, audit: AuditLog | None = None, until: floa
     end = next((r for r in mine if r["event"] == "end"), None)
     clr = next((c for c in Batches(product_dir).clearances() if c["at"] == start["clearance_at"]), None)
     fields = [["Batch", start["batch"]],
-              *([["Product", f"{start['product']} {start['strength']}"]] if start.get("product") else []), ["MFG", start["mfg"]], ["EXP", start["exp"]], ["MRP", f"₹ {start['mrp']}"],
+              *([["Product", f"{start['product']} {start['strength']}" if start.get("strength") else f"{start['product']}, strength: not printed"]] if start.get("product") else []), ["MFG", start["mfg"]], ["EXP", start["exp"]], ["MRP", f"₹ {start['mrp']}"],
               ["Started", f"{_when(start['at'])} by {start['by']}"],
               ["Ended", f"{_when(end['at'])} by {end['by']}" if end else "still open"],
               ["Line clearance", _Html(f"{e(_when(clr['at']))} by {e(clr['by'])} " + _chip("Clear" if clr["clear"] else "Not clear"))
@@ -415,7 +419,7 @@ def _batch_section(product_dir: Path, audit: AuditLog | None = None, until: floa
         release.insert(1, ["Physical challenge for this batch", _when(run["at"]) if run else _chip("Not done"),
                            run["by"] if run else ""])
     checks = [(r["time"], [_when(r["at"]), "Leak test" if r["event"] == "leak" else "Print check", r["by"],
-                           _chip(r["result"] if r["event"] == "leak" else r["status"])]) for r in ev if r["event"] != "foil_change"]
+                           _chip(r["result"] if r["event"] == "leak" else _print_word(r))]) for r in ev if r["event"] != "foil_change"]
     checks += [(r["time"], [_when(r["time"]), "Foil roll changed", r["by"], ""]) for r in ev if r["event"] == "foil_change"]
     notes = {r.get("window"): r for r in _lines(Path(product_dir) / "reviews.jsonl")}  # QA review notes, per window
     for text, a, b in missed_windows(start, ev, end["time"] if end else until):
@@ -449,7 +453,7 @@ def _batch_section(product_dir: Path, audit: AuditLog | None = None, until: floa
             + _table(["Time", "Check", "By", "Result"], checks) + "<h2>Leak test</h2>"
             + _table(["Time", "By", "Result", "Note"], leaks)
             + "<h2>Print checks</h2>" + _table(["Time", "By", "Result", "Read on strip", "Reasons"], [
-                [_when(r["at"]), r["by"], _chip(r["status"]),
+                [_when(r["at"]), r["by"], _chip(_print_word(r)),
                  " / ".join(str(r["read"].get(k) or "–") for k in ("batch", "mfg", "exp", "mrp"))
                  + (f" / {r['read'].get('product') or '–'} {r['read'].get('strength') or '–'}" if start.get("product") else ""), "; ".join(r["reasons"])]
                 for r in prints])

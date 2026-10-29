@@ -48,7 +48,7 @@ const inspectNow=btn=>busy(async m=>{const v=await (await fetch("/inspect",{meth
   show(v.reasons.length>1?"All reasons: "+v.reasons.map(reasonText).join("; "):"",m);red([v],m)},btn);
 const printNow=()=>busy(async m=>{const r=await j("/print");
   if(r.error)return show(r,m);const mine=m.textContent===tickText;  // no other message took this card meanwhile
-  show((r.status==="PRINT_OK"?"PRINT OK":"HOLD")+(r.reasons.length?"\n"+r.reasons.join("\n"):""),m);
+  show((r.status==="PRINT_OK"?"PRINT OK":r.by_eye?"HOLD — Check the print by eye":"HOLD")+(r.reasons.length?"\n"+r.reasons.join("\n"):""),m);
   if(mine){m.classList.add("print");m.style.background=r.status==="PRINT_OK"?"var(--pass)":"var(--hold)"}});
 const trayNow=()=>busy(async m=>{const r=await j("/tray");
   show(r.verdicts?r.verdicts.map(v=>"Strip "+(v.strip_id??"-")+": "+v.status+" "+v.reasons.map(reasonText).join("; ")).join("\n"):r,m);if(r.verdicts)red(r.verdicts,m)});
@@ -58,6 +58,9 @@ async function batchStart(){const r=await form("/batch/start",{batch:$("bn").val
   show(r.error?r:"Batch "+r.batch+" started.")}
 async function leak(x){const r=await form("/leak",{result:x,note:$("bnote").value,samples:$("bsamp").value||0});
   show(r.error?r:"Leak test "+x+" recorded ("+r.samples+" samples).")}
+// a flagged print read: QA looks at the strip and decides (the model only flags); sent at once, like a resume
+async function printEye(x){const r=await j("/print/eye",{result:x,password:$("epw").value,note:$("enote").value});$("epw").value="";
+  if(!r.error)$("enote").value="";show(r.error?r:x==="matches"?"Print matches: PRINT OK recorded.":"Wrong print: line held.")}
 async function specimen(){const r=await j("/specimen/sign",{password:$("spw").value});$("spw").value="";show(r.error?r:"Start-up specimen signed.")}
 async function foil(){const r=await form("/foil-change");show(r.error?r:"Foil roll change recorded.")}
 async function batchEnd(){if(!confirm("End this batch? Its batch number cannot be used again."))return;
@@ -122,6 +125,7 @@ function runTab(s){
   if(own&&v.reasons.length>1)notes.push("Also: "+v.reasons.slice(1).map(x=>x.text).join("; "));
   if(own&&(v.skipped||[]).length)notes.push("Not checked: "+v.skipped.join(", "));
   if(s.held&&s.hold_reason)notes.push(s.text);
+  if(s.print_by_eye)notes.push("Print check: QA checks the print by eye");
   $("skipped").textContent=notes.join("\n");
   $("stripno").textContent=v?(v.strip_id!=null?"Tray strip "+v.strip_id:s.totals?"No. "+s.totals.inspected:"–"):"–";
   $("vtime").textContent=v?String(v.at).slice(11,19):"–";
@@ -174,9 +178,10 @@ function qaTab(s){
   const item=(ok,text,small)=>{const li=mk("li","",ok?"":b?"todo":"off");li.append(mk("span",ok?"✓":"!"));
     const d=mk("div",text);d.append(mk("small",small));li.append(d);ul.append(li)};
   item(!!b,"Line clearance",b?"Clear at "+hhmm(b.clearance_at)+", before batch "+b.batch:$("clr").textContent||"Run it before the batch starts");
-  REL.forEach((x,k)=>{const ok=b&&!unreadable&&!s.blockers.includes(x);item(ok,x,ok?"Done":b?WAIT[k]:"After the batch starts");
+  REL.forEach((x,k)=>{const ok=b&&!unreadable&&!s.blockers.includes(x);item(ok,x,ok?"Done":b?(k===1&&s.print_by_eye?"Waiting: Check the print by eye, below":WAIT[k]):"After the batch starts");
     if(k===0&&C.set){const c=b&&!unreadable&&!s.blockers.includes(CHAL);item(c,CHAL,c?"Done":b?"Waiting: Challenge run, on the Run screen":"After the batch starts")}});
   $("spw").parentNode.hidden=!(b&&s.blockers.includes(REL[2]));
+  $("eyebox").hidden=!(b&&s.print_by_eye);$("eyewhy").textContent=(s.print_by_eye||[]).join("; ");
   $("nobatch").hidden=!!b;$("inbatch").hidden=!b;
   $("due").hidden=!s.due.length;$("due").textContent=s.due.join(". ")+".";
   $("heldh").textContent=s.held?"Line held":"Line running";

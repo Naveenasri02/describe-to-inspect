@@ -29,17 +29,19 @@ def parse_month(s: str) -> tuple[int, int]:
 
 
 _NUM = r"(?:\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?|\.\d+)"
-_STRENGTH = re.compile(rf"({_NUM})\s*(mg|mcg|[µμu]g|g|ml|iu|%)(?:\s*/\s*({_NUM})?\s*(ml|mg|g))?", re.I)
+_STRENGTH = re.compile(rf"(?<![A-Za-z\d.])({_NUM})\s*(mg|mcg|[µμu]g|g|ml|iu|%)(?:\s*/\s*({_NUM})?\s*(ml|mg|g))?(?![A-Za-z])", re.I)
 
 
 def parse_strength(s) -> tuple:
-    """"500 mg" = "500mg" = "500MG" -> ((500.0, "mg", None),); "1,000 mg" and "500 mg + 125 mg" (parts in order) and
-    "250 mg/5 ml" work too. Only known units (mg, g, mcg, ug, ml, iu, %); anything else (a garbled "5OOmg") is a ValueError."""
+    """"500 mg" = "500mg" = "500MG" -> ((500.0, "mg", None),); "1,000 mg" and "250 mg/5 ml" work too. A combination is
+    every number and unit in order, whatever joins them: "500 mg + 125 mg", "12.5 mg & 50 mg", "400 mg, 325 mg",
+    "Ibuprofen 400 mg & Paracetamol 325 mg". Only known units (mg, g, mcg, ug, ml, iu, %); no part, or a number outside
+    a part (a garbled "5OOmg" or "1Z5 mg"), is a ValueError. A digit inside a name ("B12", "D3") is not a number."""
+    found = list(_STRENGTH.finditer(str(s)))
+    if not found or re.search(r"(?<![A-Za-z\d])\d", _STRENGTH.sub(" ", str(s))):
+        raise ValueError("Strength: a number and a unit, e.g. 500 mg, or blank if not printed")
     parts = []
-    for part in str(s).split("+"):
-        m = _STRENGTH.fullmatch(part.strip())
-        if not m:
-            raise ValueError("Strength: a number and a unit, e.g. 500 mg")
+    for m in found:
         n, unit, per_n, per_unit = m.groups()
         unit = "mcg" if unit.lower() in ("µg", "μg", "ug") else unit.lower()
         per = (float(per_n.replace(",", "")) if per_n else 1.0, per_unit.lower()) if per_unit else None
@@ -115,10 +117,12 @@ class Batches:
             prod = re.sub(r"\s+", " ", str(product or "")).strip()
             if not 1 <= len(prod) <= 80:
                 raise ValueError("Product name: 1 to 80 characters")
-            if len(str(strength)) > 40:
+            stren = re.sub(r"\s+", " ", str(strength or "")).strip()
+            if len(stren) > 40:
                 raise ValueError("Strength: 40 characters at most")
-            parse_strength(strength or "")
-            extra = {"product": prod, "strength": re.sub(r"\s+", " ", str(strength)).strip()}
+            if stren:  # blank: the strip prints no strength, so it is not compared
+                parse_strength(stren)
+            extra = {"product": prod, "strength": stren}
         m, e = parse_month(mfg), parse_month(exp)
         if e <= m:
             raise ValueError("Expiry must be after the manufacturing month")

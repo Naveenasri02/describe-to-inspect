@@ -1,5 +1,7 @@
 """Foil print check: Muse Spark only READS the printed text; plain code compares it with the open batch record.
-A mismatch or an unreadable print is HOLD, never a pass or reject on the model's word."""
+A mismatch or an unreadable print is HOLD, never a pass or reject on the model's word. Spark is a generative model
+(draft EU GMP Annex 22: it must not make a critical GMP decision alone), so a difference only flags the strip
+"Check the print by eye": QA looks at it and decides "Print matches" or "Wrong print" (app.py /print/eye)."""
 import re
 import unicodedata
 from datetime import date
@@ -12,7 +14,7 @@ READ_SCHEMA = {"type": "object", "additionalProperties": False,
                               "mrp": {"type": "string"}, "product": {"type": "string"},
                               "strength": {"type": "string"}, "readable": {"type": "boolean"}}}
 READ_SYSTEM = ("You read the printed text on the foil side of a tablet blister strip. Copy exactly what is printed for: "
-               "batch number (B.No., Batch, Lot), manufacturing date (MFG, Mfd), expiry date (EXP, Exp), MRP (price), product name (the medicine name) and strength (number and unit). "
+               "batch number (B.No., Batch, Lot), manufacturing date (MFG, Mfd), expiry date (EXP, Exp), MRP (price), product name (the brand name printed largest on the strip, not the ingredient or generic name line) and strength (number and unit). "
                "Use an empty string for anything not printed or not readable. Never guess or complete partial text. "
                "Set readable to false if the photo is too blurred to read.")
 _LABELS = ("BATCHNO", "BNO", "BATCH", "LOT")
@@ -36,6 +38,12 @@ def _name_printed(read: str, typed: str) -> bool:
     """Every typed word is printed, in order: "Paracetamol" matches "Paracetamol Tablets IP"."""
     printed, want = iter(_words(read)), _words(typed)
     return bool(want) and all(w in printed for w in want)  # `in` moves the iterator on: words in order
+
+
+def _cut_off(read: str, typed: str) -> bool:
+    """The read is only the start of the typed name ("Rapeed-" of "Rapeed-20"): cut off by the strip edge, not a different name."""
+    r, t = "".join(_words(read)), "".join(_words(typed))
+    return bool(r) and len(r) < len(t) and t.startswith(r)
 
 
 def _month(s):
@@ -64,7 +72,7 @@ def check_print(read: dict, batch: dict, today: date) -> dict:
 
     fields = {"Batch no.": "batch", "MFG": "mfg", "EXP": "exp", "MRP": "mrp"}
     if batch.get("product"):  # batches started before these fields existed have nothing to compare
-        fields |= {"Product name": "product", "Strength": "strength"}
+        fields |= {"Product name": "product"} | ({"Strength": "strength"} if batch.get("strength") else {})  # blank: not printed
     vals = {k: str(read.get(f) or "").strip() for k, f in fields.items()}
     for k, v in vals.items():
         if not v:
@@ -91,7 +99,9 @@ def check_print(read: dict, batch: dict, today: date) -> dict:
         except ValueError:
             unreadable("MRP")
     if vals.get("Product name"):
-        if not _name_printed(vals["Product name"], batch["product"]):
+        if _cut_off(vals["Product name"], batch["product"]):
+            unreadable("Product name")
+        elif not _name_printed(vals["Product name"], batch["product"]):
             differ("Product name", vals["Product name"], batch["product"])
     if vals.get("Strength"):
         try:
@@ -107,6 +117,7 @@ def check_print(read: dict, batch: dict, today: date) -> dict:
     return {"status": "HOLD" if why else "PRINT_OK", "reasons": why}
 
 
-def wrong_print(reasons: list[str]) -> str | None:
-    """The first reason that says the strip carries the wrong print (a mismatch or a bad date); a missing or unreadable field is not one."""
+def differs(reasons: list[str]) -> str | None:
+    """The first reason that says the read differs from the batch record (a mismatch or a bad date), for QA's check by
+    eye; a missing or unreadable field is not one (check by hand)."""
     return next((r for r in reasons if " on strip is " in r or r in ("Expiry is not after manufacture", "Strip is past expiry")), None)

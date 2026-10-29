@@ -31,7 +31,7 @@ from d2i.meta_api import Budget, MetaClient
 from d2i.ipqc import DRIFT_REJECTS, check_events, due, reconcile, reject_run, release_blockers
 from d2i.openitems import (challenge_failure, last_started, missed_checks, missed_text, open_items, signed,
                            window_id)
-from d2i.printcheck import check_print, read_print, wrong_print
+from d2i.printcheck import check_print, differs, read_print
 from d2i.pockets import find_layout
 from d2i.station import FINDER_DOWN, NEED_TEACH, Station, Verdict
 from d2i.supervisor import Supervisor, baseline_from, hold_line, hold_state, pending_requests, resume_line
@@ -176,11 +176,11 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
             state["last"] = asdict(verdicts[-1])
         return state["last"]
 
-    def station_hold(reason):  # the existing hold (hold.json + PLC coil + audit), raised by the station itself
+    def station_hold(reason, by="station"):  # the existing hold (hold.json + PLC coil + audit), raised by the station itself
         if not held_now():  # already held: the first hold stays open, no second one
-            hold_line(product_dir, plc or _NoPlc(), audit, "station", reason)
+            hold_line(product_dir, plc or _NoPlc(), audit, by, reason)
         if reason.startswith("Critical"):  # wrong tablet / wrong print, held line or not: re-check since the last good check
-            recheck.open_window(product_dir, audit, reason, "station")
+            recheck.open_window(product_dir, audit, reason, by)
 
     def log_rows():  # log.jsonl verdict rows; an unreadable line is skipped, so it never errors /status or /inspect
         rows = []
@@ -214,6 +214,10 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
         signed = any(e["action"] == "specimen_signed" and e["details"].get("batch") == b["batch"] for e in audit.entries())
         chal = challenge.runs(product_dir) if challenge.load_set(product_dir) else None  # no set: no challenge run needed
         return release_blockers(b, st._selftests(), record._lines(product_dir / "prints.jsonl"), signed, chal)
+
+    def print_by_eye(b):  # the open batch's latest print read, when it waits for QA's check by eye
+        rows = [r for r in record._lines(product_dir / "prints.jsonl") if r.get("batch") == b["batch"]]
+        return rows[-1] if rows and rows[-1].get("by_eye") is True else None
 
     def not_released(b):
         left = blockers_for(b)
@@ -269,6 +273,7 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
         (held, by), (qn, qerr) = hold_state(product_dir), quarantine_count()
         try:
             blockers = blockers_for(open_batch) if open_batch else []
+            eye = (print_by_eye(open_batch) or {}).get("reasons") if open_batch else None
             overdue = due(open_batch, check_events(product_dir, open_batch["batch"]), clock()) if open_batch else []
             totals = reconcile(rows, open_batch["batch"]) if open_batch else None
             recon = "open" if open_batch else next((r["totals"].get("status") for r in reversed(batches.rows)
@@ -276,7 +281,7 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
             hold_reason = next((e["reason"] for e in reversed(audit.entries()) if e["action"] == "hold_line" and e["user"] == by),
                                "") if held and by != "supervisor" else ""  # the supervisor's hold has no hold_line row
         except Exception:  # unreadable records: not released (the safe direction)
-            blockers, overdue, totals, hold_reason, recon = ["Cannot read the batch records"], [], None, "", None
+            blockers, overdue, totals, hold_reason, recon, eye = ["Cannot read the batch records"], [], None, "", None, None
         if held:
             by = "the Shift Supervisor" if by == "supervisor" else by
             # held and locked: LOCKED, as the board says STOPPED (the more serious state; the lamp shows this word)
@@ -294,7 +299,7 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
             banner, text = "READY", ""
         return {"locked": locked, "lock_reason": reason if locked else "",
                 "checklist_version": cl and cl["version"], "spent_usd": spent,
-                "counts": counts, "batch": open_batch, "blockers": blockers, "due": overdue, "last_verdict": last, "selftest_skipped": uncovered, "state": banner, "text": text,
+                "counts": counts, "batch": open_batch, "blockers": blockers, "print_by_eye": eye, "due": overdue, "last_verdict": last, "selftest_skipped": uncovered, "state": banner, "text": text,
                 "rules": cl["rules"] if cl else [], "pending": pending["rules"] if pending else None,
                 "held": held, "quarantine_count": qn, "quarantine_error": qerr,
                 "checklist": cl, "pending_sentence": pending and pending.get("sentence"), "totals": totals, "reconciliation": recon,
@@ -446,15 +451,44 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
                 return JSONResponse({"error": NO_BATCH}, status_code=409)
             read = read_print(im, get_client())  # MetaError / BudgetExceeded reach paid(): plain text, nothing logged
             out = check_print(read, b, date.fromtimestamp(clock()))
+            out["by_eye"] = differs(out["reasons"]) is not None  # the model only flags: QA decides at /print/eye
             with meta:
                 batches._write("prints.jsonl", {"at": datetime.fromtimestamp(clock()).isoformat(timespec="seconds"), "time": clock(),
                                                 "batch": b["batch"], "read": read, "status": out["status"],
-                                                "reasons": out["reasons"], "by": name})
-            bad = wrong_print(out["reasons"])
-            if bad:  # after the row is written: a failing hold must not lose the read
-                with lock:
-                    station_hold("Critical: wrong print — " + bad)
+                                                "reasons": out["reasons"], "by": name, "by_eye": out["by_eye"]})
             return out
+        return paid(run)
+
+    @app.post("/print/eye")
+    def print_eye(body: dict, request: Request):
+        """QA's decision on a flagged print read: "matches" (note needed) is PRINT_OK, "wrong" a critical wrong print."""
+        def run():
+            name = qa(request)
+            _require_qa(users, name, str(body.get("password", "")))  # re-typed password
+            result, note = str(body.get("result", "")), str(body.get("note", "")).strip()
+            if result not in ("matches", "wrong"):
+                return {"error": "Result must be matches or wrong"}
+            if result == "matches" and not note:
+                return {"error": "Write a note: what you checked on the strip"}
+            with meta:
+                b = batches.open
+                if not b:
+                    return JSONResponse({"error": NO_BATCH}, status_code=409)
+                held = print_by_eye(b)
+                if not held:
+                    return {"error": "No print check waits for a check by eye"}
+                diff = differs(held["reasons"])
+                row = batches._write("prints.jsonl", {
+                    "at": datetime.fromtimestamp(clock()).isoformat(timespec="seconds"), "time": clock(), "batch": b["batch"],
+                    "read": held["read"], "status": "PRINT_OK" if result == "matches" else "WRONG_PRINT",
+                    "reasons": ["Print matches (checked by eye): " + note if result == "matches" else "Wrong print (checked by eye): " + diff],
+                    "by": name, "checked_by_eye": result, "read_at": held["at"]})
+                audit.append("print_checked_by_eye", name, {"batch": b["batch"], "result": result, "read_at": held["at"],
+                                                            "reasons": held["reasons"]}, note)
+            if result == "wrong":  # after the row is written: a failing hold must not lose the decision
+                with lock:
+                    station_hold("Critical: wrong print — " + diff, by=name)
+            return row
         return paid(run)
 
     @app.post("/tray")

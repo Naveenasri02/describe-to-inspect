@@ -332,6 +332,21 @@ def test_record_uses_plain_words_not_codes(product):
     assert 'href="/rejects/p.jpg" target="_blank" rel="noopener"' in html
 
 
+def test_record_words_a_print_check_by_eye(product):
+    audit, _ = _filled(product)
+    held = {"at": _at(T0 + 81), "time": T0 + 81, "batch": "LOT9", "read": {"batch": "L0T9"}, "status": "HOLD", "by_eye": True,
+            "reasons": ["Batch no. on strip is L0T9, batch record says LOT9"], "by": "op"}
+    ok = dict(held, at=_at(T0 + 82), time=T0 + 82, status="PRINT_OK", by="qa1", by_eye=None, checked_by_eye="matches",
+              reasons=["Print matches (checked by eye): LOT9 on the strip"])
+    wrong = dict(ok, at=_at(T0 + 83), time=T0 + 83, status="WRONG_PRINT", checked_by_eye="wrong",
+                 reasons=["Wrong print (checked by eye): Batch no. on strip is L0T9, batch record says LOT9"])
+    with (product / "prints.jsonl").open("a", encoding="utf-8") as f:
+        f.write("".join(json.dumps(r) + chr(10) for r in (held, ok, wrong)))
+    html = shift_record(product, 0, T0 + 100, "LOT9", "Asha", audit=audit)
+    assert "Check by eye" in html and "Wrong print" in html and "Print matches (checked by eye): LOT9 on the strip" in html
+    assert "WRONG_PRINT" not in html
+
+
 def test_record_look_draft_badge_and_fonts(product):
     html = shift_record(product, T0 - 10, T0 + 100, "B", "A")
     assert "DRAFT — needs QA signature</span>" in html and "<h1>Shift record</h1>" in html
@@ -496,6 +511,11 @@ def test_record_shows_expected_and_read_product_and_strength(product):
     html = shift_record(product, T0 - 10, T0 + 100, "LOT9", "A", audit=audit)
     assert "<dt>Product</dt><dd>Paracetamol Tablets 500 mg</dd>" in html
     assert "PARACETAMOL TABLETS 500mg" in html
+    for r in rows:
+        r.update(strength="") if r["event"] == "start" else None
+    (product / "batches.jsonl").write_text("".join(json.dumps(r) + chr(10) for r in rows), encoding="utf-8")
+    html = shift_record(product, T0 - 10, T0 + 100, "LOT9", "A", audit=audit)
+    assert "<dt>Product</dt><dd>Paracetamol Tablets, strength: not printed</dd>" in html
 
 
 def test_record_header_grid_wraps_on_a_narrow_screen():
