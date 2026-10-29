@@ -1588,3 +1588,14 @@ def test_hold_line_reaches_the_machine_while_a_long_action_runs(tmp_path):
     t.join()
     assert out["r"] == {"held": True} and [e["reason"] for e in _holds(p)] == ["foil jam"]
     assert c.get("/status").json()["held"] is True
+
+
+def test_board_strip_number_does_not_count_rechecked_strips(tmp_path):
+    """Integration 2 note: the board chip's strip number counted re-check rows; the Run screen does not."""
+    c, p = bench(tmp_path)
+    c.post("/inspect", files=up(make_strip(seed=15)))  # strip 1 passes
+    _fake_judge(c, "wrong_tablet")
+    c.post("/inspect", files=up(make_strip(seed=15)))  # strip 2: critical, strip 1 goes into a re-check
+    assert c.get("/line").json()["chip"]["strip"] == 2
+    c.post("/inspect", files=up(make_strip(seed=15)))  # the re-check of strip 1
+    assert _lines(p / "log.jsonl")[-1]["recheck"] is True and c.get("/line").json()["chip"]["strip"] == 2

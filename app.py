@@ -1231,7 +1231,7 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
             "release": [{"item": x, "done": known and x not in s["blockers"]} for x in need],
             "chip": last and {"status": last["status"], "rule": first and first["rule"], "at": last.get("at"),
                               "text": first["text"] if first else "; ".join(r.get("text", "") for r in last["reasons"]),
-                              "strip": sum(r["status"] != "LOCKED" for r in mine)},
+                              "strip": sum(r["status"] != "LOCKED" and not r.get("recheck") for r in mine)},  # as the Run screen counts
             "waiting": [dict(i, age=now - i["since"]) for i in items], "due": due,
             "challenge": {"time": run_["time"], "passed": run_["passed"]} if run_ else
             {"time": _t(phys["at"]), "label": phys["details"].get("strip_label"), "ejected": phys["details"].get("ejected")}
