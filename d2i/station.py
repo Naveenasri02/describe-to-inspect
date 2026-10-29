@@ -63,9 +63,20 @@ def painted_prototypes(judge, images, layouts) -> dict:
     return protos
 
 
+def similarity(emb, protos) -> dict:
+    """Per kind, how near this pocket is to that kind's nearest prototype; a kind may hold several (one per row)."""
+    return {k: float((protos[k].reshape(-1, emb.shape[-1]) @ emb).max()) for k in protos}
+
+
 def nearest(emb, protos) -> str:
-    """The kind whose prototype is nearest this pocket; a kind may hold several (one per row)."""
-    return max(protos, key=lambda k: float((protos[k].reshape(-1, emb.shape[-1]) @ emb).max()))
+    """The kind whose prototype is nearest this pocket."""
+    s = similarity(emb, protos)
+    return max(s, key=s.get)
+
+
+# how much nearer "empty" than "broken" the judge must find a pocket before its "empty" outweighs a measured different
+# tablet: real empty domes won by 0.13 and 0.22 on wa5 (0.17-0.20 on the test strips), tinted real tablets by 0.00-0.02
+EMPTY_MARGIN = 0.12
 
 
 @dataclass
@@ -286,10 +297,11 @@ class Station:
         v.pocket_scores = self.judge.score_pockets(image, lay)
         listed, unlisted, measured = [], [], set()
         failing = [i for i, s in enumerate(v.pocket_scores) if s > self.judge.pocket_threshold]
-        named = {}  # the judge's name for each pocket it fails: the nearest painted or registered real defect
+        sims = {}  # per pocket the judge fails: how near each painted or registered real defect is
         if failing:
             embs, protos = self.judge.pocket_embeddings(image, lay).cpu(), self._prototypes()
-            named = {i: nearest(embs[i], protos) for i in failing}
+            sims = {i: similarity(embs[i], protos) for i in failing}
+        named = {i: max(s, key=s.get) for i, s in sims.items()}  # the judge's name: the nearest one
         if cut:
             # the taught pocket template no longer fits a mis-sized strip, so per-pocket findings would be false
             self._find("strip_cut", listed, unlisted)
@@ -301,8 +313,9 @@ class Station:
             usable = 0
             for i, (slot, mine) in enumerate(zip(lay.slots, lay.in_pocket)):  # measured on the taught pocket scale
                 usable += len(mine) > 1 or (len(mine) == 1 and features(image, slot, mine[0]) is not None)
-                # the judge says empty: a measurement may not turn an outlined empty dome into a different tablet
-                kind = pocket_check(image, slot, mine, self.profile, named.get(i) == "empty_pocket")
+                # the judge is sure it is empty: a measurement may not turn an outlined empty dome into a different tablet
+                sure = i in sims and sims[i]["empty_pocket"] - sims[i]["broken_tablet"] >= EMPTY_MARGIN
+                kind = pocket_check(image, slot, mine, self.profile, sure)
                 if kind:
                     self._find(kind, listed, unlisted, i)
                     measured.add(i)

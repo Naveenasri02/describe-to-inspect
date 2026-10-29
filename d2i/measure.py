@@ -68,7 +68,7 @@ def _foil_lab(image, box):
 def pocket_check(image, pocket, mine, profile, judge_empty: bool = False) -> str | None:
     """empty_pocket, double_tablet, wrong_tablet or tablet_spot; None for no pill (the judge's job) or a normal one.
     pocket: the taught pocket box (the size scale); mine: the pills in this pocket, nearest first; judge_empty: the
-    DINOv2 judge failed this pocket and named it empty."""
+    DINOv2 judge failed this pocket and is sure it is empty (station.EMPTY_MARGIN)."""
     if not mine:
         return None
     if len(mine) >= 2:

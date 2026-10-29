@@ -16,7 +16,7 @@ from d2i.judge import Judge
 from d2i.meta_api import MetaError, SamObject
 from d2i.defects import paint
 from d2i.pockets import Layout, _strip_by_contour
-from d2i.station import Station, Verdict, nearest, painted_prototypes
+from d2i.station import EMPTY_MARGIN, Station, Verdict, nearest, painted_prototypes, similarity
 from tests.conftest import STRIP_BOX, make_strip, pocket_box
 
 T0 = 1_800_000_000.0
@@ -489,6 +489,17 @@ def test_real_empty_dome_is_named_empty_once_an_empty_challenge_strip_is_registe
     assert v.status == "REJECT" and [r["check"] for r in v.reasons] == ["empty_pocket"] and v.reasons[0]["pocket"] == 9, \
         v.reasons
     assert st.self_test(make_strip(seed=12), rng_seed=5, record=False)["passed"]  # painted defects still named right
+    # review 3: a coloured tablet reads nearer its foil ring than the white taught one, and the judge leaned "empty" by
+    # 0.02-0.10 only (real domes by 0.17+): 5 of 6 were named empty (major), not a different tablet (critical)
+    for name, bgr in ODD_COLOURS.items():
+        img = make_strip(seed=21)
+        x0, y0, x1, y1 = pocket_box(3, strip=_strip_by_contour(img))
+        cv2.circle(img, ((x0 + x1) // 2, (y0 + y1) // 2), 30, bgr, -1)
+        assert [(r["check"], r["pocket"]) for r in st._judge(img, None, None).reasons] == [("wrong_tablet", 4)], name
+
+
+ODD_COLOURS = {"tan": (140, 165, 190), "peach": (150, 180, 235), "orange": (40, 140, 240), "brown": (60, 90, 130),
+               "pink": (190, 170, 240), "yellow": (80, 220, 235)}  # BGR; a light grey one reads as the foil itself
 
 
 def test_challenge_strip_prototypes_follow_their_kind_and_a_new_photo(tmp_path):
@@ -527,6 +538,15 @@ def test_real_photo_empty_domes_named_empty_after_one_is_registered():
     assert [nearest(e, learned) for e in emb[1:]] == ["empty_pocket"] * 2
     broken = paint(img, tablets[0], "broken_tablet", strip, np.random.default_rng(3))
     assert nearest(judge.pocket_embeddings(broken, Layout(strip, tablets, "sam", True))[0].cpu(), learned) == "broken_tablet"
+    margin = lambda e: (lambda s: s["empty_pocket"] - s["broken_tablet"])(similarity(e, learned))
+    assert all(margin(e) >= EMPTY_MARGIN for e in emb[1:])  # the judge's "empty" outweighs the colour test here
+    for gain in ((0.75, 0.85, 1.0), (0.3, 0.65, 1.0), (0.4, 0.95, 1.0), (0.85, 0.75, 1.0), (0.35, 0.45, 0.6)):
+        tinted = img.copy()  # the real white tablet 3 tinted peach, orange, yellow, pink, brown: a different tablet
+        x0, y0, x1, y1 = tablets[2]
+        crop = tinted[y0:y1, x0:x1].astype(np.float32)
+        crop[crop.mean(2) > 150] *= np.array(gain, np.float32)
+        tinted[y0:y1, x0:x1] = np.clip(crop, 0, 255).astype(np.uint8)
+        assert margin(judge.pocket_embeddings(tinted, Layout(strip, tablets, "sam", True)).cpu()[2]) < EMPTY_MARGIN, gain
 
 
 def test_teach_refuses_a_photo_with_an_outlined_empty_pocket(tmp_path):
