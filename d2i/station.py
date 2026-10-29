@@ -14,6 +14,7 @@ import torch.nn.functional as F
 
 from d2i import trace
 from d2i.audit import json_line
+from d2i.challenge import load_set
 from d2i.checklist import SEVERITY, current, rule_number
 from d2i.defects import paint
 from d2i.judge import Judge
@@ -44,6 +45,27 @@ SELF_TEST_WORKERS = 4  # painted strips judged at once (their SAM 3.1 calls are 
 
 def _finder(lay) -> str:
     return "grid" if lay.source == "grid" else "sam"  # "sam-pills" is SAM 3.1 too
+
+
+def painted_prototypes(judge, images, layouts) -> dict:
+    """Per pocket kind, the mean embedding of 3 pockets painted with it on each of the first 3 teach photos."""
+    protos = {}
+    for kind in POCKET_KINDS:
+        embs = []
+        for i in range(min(3, len(images))):
+            rng = np.random.default_rng(1000 + i)
+            lay, img = layouts[i], images[i]
+            chosen = rng.choice(len(lay.pockets), size=3, replace=False)
+            for p in chosen:
+                img = paint(img, lay.pockets[p], kind, lay.strip_box, rng)
+            embs.append(judge.pocket_embeddings(img, lay)[torch.as_tensor(chosen)])
+        protos[kind] = F.normalize(torch.cat(embs).mean(0), dim=0).cpu()
+    return protos
+
+
+def nearest(emb, protos) -> str:
+    """The kind whose prototype is nearest this pocket; a kind may hold several (one per row)."""
+    return max(protos, key=lambda k: float((protos[k].reshape(-1, emb.shape[-1]) @ emb).max()))
 
 
 @dataclass
@@ -186,17 +208,7 @@ class Station:
             trace.record("dinov2-small", "local", "teach", (time.perf_counter() - t0) * 1000 / len(images))
         template = template_from(layouts)
         strip_box = tuple(float(v) for v in np.median([l.strip_box for l in layouts], axis=0))  # SAM's, when online
-        protos = {}
-        for kind in POCKET_KINDS:
-            embs = []
-            for i in range(min(3, len(images))):
-                rng = np.random.default_rng(1000 + i)
-                lay, img = layouts[i], images[i]
-                chosen = rng.choice(len(lay.pockets), size=3, replace=False)
-                for p in chosen:
-                    img = paint(img, lay.pockets[p], kind, lay.strip_box, rng)
-                embs.append(self.judge.pocket_embeddings(img, lay)[torch.as_tensor(chosen)])
-            protos[kind] = F.normalize(torch.cat(embs).mean(0), dim=0).cpu()
+        protos = painted_prototypes(self.judge, images, layouts)
         profile, strip_profile = teach_profile(images, layouts), teach_strip(layouts)
         self.judge.save(self.dir / "model.pt")
         self.taught_at = self.clock()
@@ -207,6 +219,28 @@ class Station:
         self.prototypes, self.template, self.strip_box, self.profile = protos, template, strip_box, profile
         self.strip_profile, self.layout_source = strip_profile, sources[0]
         return info
+
+    def _prototypes(self) -> dict:
+        """The painted prototypes plus the failing pocket of each registered empty / broken challenge strip: a real
+        empty dome of this product (a painted one named 23 of 82 real empty pockets empty, a real one 77 of 82)."""
+        out = dict(self.prototypes)
+        for s in (load_set(self.dir) or {"strips": []})["strips"]:  # unreadable: raises (the gate is shut then too)
+            if s.get("prototype") and s["kind"] in out:
+                v = torch.from_numpy(np.load(self.dir / s["prototype"])).float()
+                out[s["kind"]] = torch.vstack([out[s["kind"]].reshape(-1, len(v)), v])
+        return out
+
+    def failing_pocket(self, image):
+        """The embedding of the worst pocket of a known-bad strip photo when the judge fails it; else None (not taught,
+        no clean layout, or no pocket fails)."""
+        if self.taught_at is None:
+            return None
+        lay = self._layout(image)
+        if not lay.ok or _finder(lay) != self.layout_source:
+            return None
+        scores = self.judge.score_pockets(image, lay)
+        i = int(np.argmax(scores))  # shortcut: the worst pocket is taken as the defect; QA registers one defect a strip
+        return self.judge.pocket_embeddings(image, lay)[i].cpu().numpy() if scores[i] > self.judge.pocket_threshold else None
 
     def _reason(self, check, pocket=None):
         rule = rule_number(self.checklist, check)
@@ -252,10 +286,10 @@ class Station:
         v.pocket_scores = self.judge.score_pockets(image, lay)
         listed, unlisted, measured = [], [], set()
         failing = [i for i, s in enumerate(v.pocket_scores) if s > self.judge.pocket_threshold]
-        named = {}  # the judge's name for each pocket it fails: the nearest painted defect
+        named = {}  # the judge's name for each pocket it fails: the nearest painted or registered real defect
         if failing:
-            embs = self.judge.pocket_embeddings(image, lay).cpu()
-            named = {i: max(self.prototypes, key=lambda k: float(embs[i] @ self.prototypes[k])) for i in failing}
+            embs, protos = self.judge.pocket_embeddings(image, lay).cpu(), self._prototypes()
+            named = {i: nearest(embs[i], protos) for i in failing}
         if cut:
             # the taught pocket template no longer fits a mis-sized strip, so per-pocket findings would be false
             self._find("strip_cut", listed, unlisted)

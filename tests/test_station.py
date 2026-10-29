@@ -1,19 +1,22 @@
 import json
+import os
 import shutil
 import threading
 import time
+from pathlib import Path
 
 import cv2
 import numpy as np
 import pytest
 import torch
 
+from d2i import challenge
 from d2i.checklist import CHECKS, approve
 from d2i.judge import Judge
 from d2i.meta_api import MetaError, SamObject
 from d2i.defects import paint
-from d2i.pockets import _strip_by_contour
-from d2i.station import Station, Verdict
+from d2i.pockets import Layout, _strip_by_contour
+from d2i.station import Station, Verdict, nearest, painted_prototypes
 from tests.conftest import STRIP_BOX, make_strip, pocket_box
 
 T0 = 1_800_000_000.0
@@ -460,21 +463,70 @@ def test_empty_pocket_outlined_by_sam_is_named_empty(tmp_path):
     assert v.status == "REJECT" and v.reasons[0]["text"] == "Rule 2 failed: pocket 7 is empty", v.reasons
 
 
-def test_real_empty_dome_is_named_empty_not_a_different_tablet(tmp_path):
+def _dome(seed, k):
+    """A strip whose pocket k is a real empty dome: grey (reflections, the table through the plastic), not foil."""
+    img = make_strip(seed=seed, missing=(k,))
+    x0, y0, x1, y1 = pocket_box(k, strip=_strip_by_contour(img))
+    cv2.circle(img, ((x0 + x1) // 2, (y0 + y1) // 2), (x1 - x0) * 32 // 88, (120, 120, 120), -1)
+    return img
+
+
+def test_real_empty_dome_is_named_empty_once_an_empty_challenge_strip_is_registered(tmp_path):
     """Real photos: SAM outlined 87/88 empty pockets; their colour (reflections, the table through the dome) is past the
-    foil tolerance, so the colour test called them a different tablet (critical, line held). The judge says empty:
-    the verdict is empty."""
+    foil tolerance, and the judge named them broken (nearest painted pocket), so the colour test called them a different
+    tablet (critical, line held). QA's registered empty challenge strip teaches the judge a real empty dome: later
+    domes, in any pocket, are named empty."""
     approve(dict(CHECKLIST, reject_if=list(CHECKS)), "Priya", tmp_path / "checklists.jsonl")
     st = Station(tmp_path, client=DomeSam(), clock=lambda: T0)
     st.teach([make_strip(seed=i, shift=(i, 0)) for i in range(6)])
-    img = make_strip(seed=13, missing=(6,))
-    x0, y0, x1, y1 = pocket_box(6, strip=_strip_by_contour(img))
-    cv2.circle(img, ((x0 + x1) // 2, (y0 + y1) // 2), (x1 - x0) * 32 // 88, (120, 120, 120), -1)  # a real dome, not foil
-    assert [r["check"] for r in st._judge(img, None, None).reasons] == ["wrong_tablet"]  # the judge named it broken
-    # shortcut: the painted empty prototype is foil-coloured, so the judge calls this dome broken; here it says empty
-    st.prototypes["empty_pocket"] = st.judge.pocket_embeddings(img, st._layout(img))[6].cpu()
-    v = st._judge(img, None, None)
-    assert v.status == "REJECT" and [r["check"] for r in v.reasons] == ["empty_pocket"] and v.reasons[0]["pocket"] == 7,         v.reasons
+    later = _dome(15, 8)
+    assert [r["check"] for r in st._judge(later, None, None).reasons] == ["wrong_tablet"]  # painted prototypes only
+    photo = _dome(13, 6)
+    challenge.register(tmp_path, st.checklist, "C1", "empty_pocket", "", photo, "qa1", "now",
+                       learn=lambda: st.failing_pocket(photo))
+    assert (tmp_path / "challenge" / "C1.npy").is_file()
+    v = st._judge(later, None, None)
+    assert v.status == "REJECT" and [r["check"] for r in v.reasons] == ["empty_pocket"] and v.reasons[0]["pocket"] == 9, \
+        v.reasons
+    assert st.self_test(make_strip(seed=12), rng_seed=5, record=False)["passed"]  # painted defects still named right
+
+
+def test_challenge_strip_prototypes_follow_their_kind_and_a_new_photo(tmp_path):
+    approve(dict(CHECKLIST, reject_if=list(CHECKS)), "Priya", tmp_path / "checklists.jsonl")
+    st = Station(tmp_path, client=DomeSam(), clock=lambda: T0)
+    st.teach([make_strip(seed=i, shift=(i, 0)) for i in range(6)])
+    assert st.failing_pocket(make_strip(seed=15)) is None  # a good strip: no pocket fails, nothing is learned
+    cracked = make_strip(seed=16, cracked=(2,))
+    challenge.register(tmp_path, st.checklist, "C2", "broken_tablet", "", cracked, "qa1", "now",
+                       learn=lambda: st.failing_pocket(cracked))
+    assert [len(p.reshape(-1, p.shape[-1])) for p in st._prototypes().values()] == [1, 2]  # empty, broken (+C2)
+    good = make_strip(seed=15)
+    challenge.register(tmp_path, st.checklist, "C2", "broken_tablet", "", good, "qa1", "now",
+                       learn=lambda: st.failing_pocket(good))  # the same label, a photo with no failing pocket
+    assert not (tmp_path / "challenge" / "C2.npy").exists() and "prototype" not in challenge.load_set(tmp_path)["strips"][0]
+    assert [len(p.reshape(-1, p.shape[-1])) for p in st._prototypes().values()] == [1, 1]
+
+
+PHOTOS = Path(os.environ.get("D2I_PHOTOS", Path(__file__).resolve().parents[1] / "photos"))  # git-ignored
+WA5 = PHOTOS / "real_wa" / "wa5.jpg"
+
+
+@pytest.mark.skipif(not WA5.exists(), reason="the real photos are not in the repo (set D2I_PHOTOS)")
+def test_real_photo_empty_domes_named_empty_after_one_is_registered():
+    """wa5.jpg: three white tablets, three empty domes, silver foil. The painted prototypes (taught on its three
+    tablets, as teach paints them) named every real dome broken (29 Oct, flat foil and dome paintings alike); one dome
+    as a registered challenge strip names the other two empty, and a painted broken tablet stays broken."""
+    img = cv2.imread(str(WA5))
+    strip = (195, 390, 575, 905)
+    tablets = [(247, 460, 340, 550), (400, 450, 485, 545), (262, 612, 356, 722)]
+    domes = [(400, 600, 525, 720), (255, 760, 380, 885), (415, 755, 540, 880)]  # as SAM outlines a dome
+    judge = Judge()
+    protos = painted_prototypes(judge, [img], [Layout(strip, tablets, "sam", True)])
+    emb = judge.pocket_embeddings(img, Layout(strip, domes, "sam", True)).cpu()
+    learned = dict(protos, empty_pocket=torch.vstack([protos["empty_pocket"], emb[0]]))
+    assert [nearest(e, learned) for e in emb[1:]] == ["empty_pocket"] * 2
+    broken = paint(img, tablets[0], "broken_tablet", strip, np.random.default_rng(3))
+    assert nearest(judge.pocket_embeddings(broken, Layout(strip, tablets, "sam", True))[0].cpu(), learned) == "broken_tablet"
 
 
 def test_teach_refuses_a_photo_with_an_outlined_empty_pocket(tmp_path):

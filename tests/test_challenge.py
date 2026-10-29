@@ -62,8 +62,11 @@ def test_register_needs_qa_and_writes_the_set(tmp_path):
     login(c, "qa1", "pw-qa")
     assert "kind" in _register(c, "C1", "no_such_kind")["error"]
     assert "label" in _register(c, "../x", "empty_pocket")["error"]
+    # its empty pocket (the photo's failing pocket) is learned as a real empty pocket for the judge
     assert _register(c, "c1", "empty_pocket")["strips"][0] == {"label": "C1", "kind": "empty_pocket", "rule": 2,
-                                                               "photo": "challenge/C1.jpg"}
+                                                               "photo": "challenge/C1.jpg",
+                                                               "prototype": "challenge/C1.npy"}
+    assert len(c.app.state.station._prototypes()["empty_pocket"].reshape(-1, 384)) == 2
     s = _register(c, "C2", "broken_tablet", "3")
     assert [x["label"] for x in s["strips"]] == ["C1", "C2"] and s["registered_by"] == "qa1" and s["at"]
     assert json.loads((p / "challenge_set.json").read_text(encoding="utf-8")) == s
@@ -71,6 +74,7 @@ def test_register_needs_qa_and_writes_the_set(tmp_path):
     assert c.get("/challenge/photo/C1").headers["content-type"] == "image/jpeg"
     assert c.get("/challenge/photo/C9").status_code == 404
     assert _register(c, "C1", "foil_damage", "7")["strips"][0]["kind"] == "foil_damage"  # same label: replaced in place
+    assert not (p / "challenge" / "C1.npy").exists()  # foil damage teaches the judge no pocket
 
 
 def test_pass_run_clears_the_gate_and_is_recorded(tmp_path):

@@ -19,6 +19,18 @@ def _foil_colour(image, box, strip_box):
     return np.median(pixels, axis=0) if len(pixels) else np.array([170, 170, 170])
 
 
+def _plastic_colour(image, box, strip_box):
+    """Median colour inside the pocket box but outside the tablet's ellipse: the clear dome around the tablet."""
+    x0, y0, x1, y1 = (int(v) for v in box)
+    cx, cy, ax, ay = (x0 + x1) // 2, (y0 + y1) // 2, max(2, (x1 - x0) // 2), max(2, (y1 - y0) // 2)
+    x0, y0 = max(x0, 0), max(y0, 0)
+    crop = image[y0:y1, x0:x1]
+    plastic = np.full(crop.shape[:2], 255, np.uint8)
+    cv2.ellipse(plastic, (cx - x0, cy - y0), (ax, ay), 0, 0, 360, 0, -1)
+    pixels = crop[plastic > 0]
+    return np.median(pixels, axis=0) if len(pixels) else _foil_colour(image, box, strip_box)
+
+
 def _background_colour(image, strip_box):
     """Median colour of the table outside the strip."""
     sx0, sy0, sx1, sy1 = strip_box
@@ -39,24 +51,34 @@ def paint(image, pocket_box, kind, strip_box, rng):
     ax, ay = max(2, int((x1 - x0) / 2 * 0.85)), max(2, int((y1 - y0) / 2 * 0.85))
     shape = image.shape[:2]
 
-    if kind in ("empty_pocket", "broken_tablet"):
+    if kind == "empty_pocket":
+        # a clear dome, not flat foil: the plastic's colour around the tablet with a highlight, the tablet's rim left as
+        # the dome wall. On 82 real empty pockets the judge named 23 empty against this (13 against flat foil), broken
+        # tablets unchanged (103/104); a registered challenge strip's real empty pocket does far better (challenge.py)
+        dome = _plastic_colour(image, pocket_box, strip_box)
+        bx, by = max(2, int((x1 - x0) / 2 * 0.7)), max(2, int((y1 - y0) / 2 * 0.7))
+        region = np.zeros(shape, np.uint8)
+        cv2.ellipse(region, (cx, cy), (bx, by), 0, 0, 360, 255, -1)
+        _fill(out, region > 0, dome, rng)
+        start = rng.uniform(180, 270)  # the lamp's highlight on the dome, upper left
+        cv2.ellipse(out, (cx, cy), (int(bx * 0.65), int(by * 0.65)), 0, start, start + 60,
+                    tuple(int(c) for c in dome * 0.3 + 255 * 0.7), max(2, int(bx * 0.08)))
+        return out
+
+    if kind == "broken_tablet":
         foil = _foil_colour(image, pocket_box, strip_box)
         region = np.zeros(shape, np.uint8)
-        if kind == "empty_pocket":
-            cv2.ellipse(region, (cx, cy), (ax, ay), 0, 0, 360, 255, -1)
-        else:  # a missing wedge (about 1/6) of the tablet
-            start = rng.uniform(0, 360)
-            cv2.ellipse(region, (cx, cy), (ax, ay), 0, start, start + 60, 255, -1)
+        start = rng.uniform(0, 360)  # a missing wedge (about 1/6) of the tablet
+        cv2.ellipse(region, (cx, cy), (ax, ay), 0, start, start + 60, 255, -1)
         _fill(out, region > 0, foil, rng)
-        if kind == "broken_tablet":  # plus a dark jagged crack across the tablet
-            n = int(rng.integers(5, 8))
-            angle = rng.uniform(0, np.pi)
-            t = np.linspace(-0.8, 0.8, n)
-            jitter = rng.normal(0, 0.12, n)
-            pts = np.stack([cx + t * ax * np.cos(angle) - jitter * ax * np.sin(angle),
-                            cy + t * ay * np.sin(angle) + jitter * ay * np.cos(angle)], axis=1).astype(np.int32)
-            dark = tuple(int(c) for c in np.clip(foil * 0.25, 0, 255))
-            cv2.polylines(out, [pts], False, dark, int(rng.integers(2, 4)))
+        n = int(rng.integers(5, 8))  # plus a dark jagged crack across the tablet
+        angle = rng.uniform(0, np.pi)
+        t = np.linspace(-0.8, 0.8, n)
+        jitter = rng.normal(0, 0.12, n)
+        pts = np.stack([cx + t * ax * np.cos(angle) - jitter * ax * np.sin(angle),
+                        cy + t * ay * np.sin(angle) + jitter * ay * np.cos(angle)], axis=1).astype(np.int32)
+        dark = tuple(int(c) for c in np.clip(foil * 0.25, 0, 255))
+        cv2.polylines(out, [pts], False, dark, int(rng.integers(2, 4)))
         return out
 
     if kind == "foil_damage":  # a jagged notch torn in from the nearest strip edge

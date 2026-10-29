@@ -6,6 +6,7 @@ import re
 from pathlib import Path
 
 import cv2
+import numpy as np
 
 from d2i.batch import Batches
 from d2i.checklist import rule_number
@@ -23,8 +24,13 @@ def runs(product_dir) -> list[dict]:
     return Batches(product_dir)._read(RUNS)
 
 
-def register(product_dir, cl: dict, label: str, kind: str, rule: str, image, by: str, at: str) -> dict:
-    """Add a strip to the set (the same label replaces it in place); its photo goes to challenge/<label>.jpg."""
+LEARNED = ("empty_pocket", "broken_tablet")  # the kinds the judge names a failing pocket by
+
+
+def register(product_dir, cl: dict, label: str, kind: str, rule: str, image, by: str, at: str, learn=None) -> dict:
+    """Add a strip to the set (the same label replaces it in place); its photo goes to challenge/<label>.jpg.
+    learn: called after the checks for an empty / broken strip, it gives the photo's failing pocket embedding (or
+    None), kept in challenge/<label>.npy: the judge then knows what a real one of this product looks like."""
     label = str(label).strip().upper()
     if not re.fullmatch(r"[A-Z0-9-]{1,12}", label):
         raise ValueError("Strip label: 1 to 12 letters, digits or -")
@@ -45,6 +51,13 @@ def register(product_dir, cl: dict, label: str, kind: str, rule: str, image, by:
     if not cv2.imwrite(str(d / "challenge" / f"{label}.jpg"), image):
         raise OSError("challenge photo not written")
     strip = {"label": label, "kind": kind, "rule": n, "photo": f"challenge/{label}.jpg"}
+    vec = learn() if learn and kind in LEARNED else None
+    npy = d / "challenge" / f"{label}.npy"
+    if vec is None:
+        npy.unlink(missing_ok=True)  # a strip registered again never keeps its older photo's pocket
+    else:
+        np.save(npy, np.asarray(vec, np.float32))
+        strip["prototype"] = f"challenge/{label}.npy"
     strips = list((load_set(d) or {"strips": []})["strips"])
     i = next((i for i, s in enumerate(strips) if s["label"] == label), len(strips))
     strips[i:i + 1] = [strip]
