@@ -273,8 +273,9 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
             blockers, overdue, totals, hold_reason, recon = ["Cannot read the batch records"], [], None, "", None
         if held:
             by = "the Shift Supervisor" if by == "supervisor" else by
-            banner, text = "HOLD", (f"Line held by {by} — QA must resume." if by else "Line held — QA must resume.") \
-                + (f" {reason}" if locked else "")
+            # held and locked: LOCKED, as the board says STOPPED (the more serious state; the lamp shows this word)
+            banner, text = "LOCKED" if locked else "HOLD", (f"Line held by {by} — QA must resume." if by else
+                                                             "Line held — QA must resume.") + (f" {reason}" if locked else "")
         elif locked:
             banner, text = "LOCKED", reason
         elif blockers:

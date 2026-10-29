@@ -265,7 +265,7 @@ def test_status_shows_held(tmp_path):
     (tmp_path / "hold.json").write_text('{"held": true}')
     c = TestClient(app_mod.create_app(tmp_path, None))
     s = c.get("/status").json()
-    assert s["held"] is True and s["state"] == "HOLD" and s["quarantine_count"] == 0
+    assert s["held"] is True and s["state"] == "LOCKED" and s["quarantine_count"] == 0  # no checklist: locked too
 
 
 def test_sign_signs_the_record_that_was_viewed(tmp_path):
@@ -437,7 +437,7 @@ def test_hold_and_resume_work_without_a_supervisor(tmp_path):
     c = TestClient(app_mod.create_app(tmp_path / "p", None, plc=plc))  # never taught: no Supervisor can be built
     assert c.post("/hold", json={"reason": "jam"}).json() == {"held": True}
     s = c.get("/status").json()
-    assert plc.coils[2] is True and s["state"] == "HOLD"
+    assert plc.coils[2] is True and s["state"] == "LOCKED"  # never taught: locked as well as held
     assert s["text"].startswith("Line held by operator — QA must resume.")
     assert "Log in" in c.post("/resume", json={"password": "pw-qa", "reason": "ok"}).json()["error"]
     login(c, "qa1", "pw-qa")
@@ -1553,3 +1553,16 @@ def test_batch_end_refuses_numbers_python_reads_but_people_do_not_type(tmp_path)
         assert c.post("/batch/end", data=dict(END_OK, **bad)).json() == {"error": "Counts and limits must be numbers"}, bad
     assert c.post("/batch/end", data=dict(END_OK, received="-1")).json() == {"error": "Counts and limits cannot be negative"}
     assert Batches(p).open and c.post("/batch/end", data=dict(END_OK, foil_issued=".4", foil_used="0.4")).json()["event"] == "end"
+
+
+def test_held_and_locked_shows_locked_on_the_lamp_as_stopped_on_the_board(tmp_path):
+    """Review: held and locked at once, the lamp showed amber HOLD while the board showed red STOPPED (ruling 22)."""
+    c, p = bench(tmp_path)
+    c.post("/hold", json={"reason": "foil jam"})
+    assert c.get("/status").json()["state"] == "HOLD"
+    b = Batches(p)
+    b._write("selftests.jsonl", dict(b._read("selftests.jsonl")[-1], passed=False, failed=["x"], time=time.time()))
+    s = c.get("/status").json()
+    assert (s["state"], s["held"], s["locked"]) == ("LOCKED", True, True)
+    assert s["text"].startswith("Line held by op — QA must resume.") and "Self-test missed: x" in s["text"]
+    assert c.get("/line").json()["state"] == "STOPPED"
