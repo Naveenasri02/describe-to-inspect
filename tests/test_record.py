@@ -1,5 +1,6 @@
 import hashlib
 import json
+import os
 import time
 from datetime import datetime
 
@@ -292,8 +293,28 @@ def _filled(product):
     return audit, sig
 
 
-def test_record_shows_local_human_times_only(product):
+@pytest.fixture
+def station_zone():
+    """A station 5:30 ahead of UTC, so a UTC time left in the record cannot pass as local on a UTC machine (CI)."""
+    if not hasattr(time, "tzset"):  # Windows cannot switch zones in-process: the machine's own zone
+        if datetime.now().astimezone().utcoffset().total_seconds() == 0:
+            pytest.skip("needs a station zone other than UTC")
+        yield
+        return
+    old = os.environ.get("TZ")
+    os.environ["TZ"] = "IST-05:30"
+    time.tzset()
+    yield
+    if old is None:
+        del os.environ["TZ"]
+    else:
+        os.environ["TZ"] = old
+    time.tzset()
+
+
+def test_record_shows_local_human_times_only(station_zone, product):
     import re
+    assert datetime.fromtimestamp(T0).astimezone().utcoffset().total_seconds() != 0  # else the test proves nothing
     audit, sig = _filled(product)
     html = shift_record(product, T0 - 10, T0 + 100, "LOT9", "Asha", audit=audit)
     assert not re.search(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}", html) and "+00:00" not in html
@@ -475,3 +496,8 @@ def test_record_shows_expected_and_read_product_and_strength(product):
     html = shift_record(product, T0 - 10, T0 + 100, "LOT9", "A", audit=audit)
     assert "<dt>Product</dt><dd>Paracetamol Tablets 500 mg</dd>" in html
     assert "PARACETAMOL TABLETS 500mg" in html
+
+
+def test_record_header_grid_wraps_on_a_narrow_screen():
+    from d2i.record import CSS
+    assert "@media (max-width:640px){.meta{grid-template-columns:1fr 1fr}" in CSS

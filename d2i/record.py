@@ -44,6 +44,8 @@ border:1px solid var(--rule);border-radius:4px}
 .meta dt{font-size:12px;color:var(--steel)}
 .meta dd{margin:0;font-size:15px;font-weight:600}
 .meta dd.cap::first-letter{text-transform:uppercase}
+@media (max-width:640px){.meta{grid-template-columns:1fr 1fr}.meta div:nth-child(2n){border-right:0}
+.meta div:nth-child(-n+2){border-bottom:1px solid var(--rule)}}
 h2{font-size:16px;font-weight:600;color:var(--ink);margin:32px 0 10px;padding-bottom:6px;border-bottom:1px solid var(--rule)}
 p{margin:8px 0}
 table{width:100%;border-collapse:collapse;margin:6px 0}
