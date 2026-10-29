@@ -100,6 +100,14 @@ def test_print_check_by_eye_has_qa_buttons_sent_at_once():
     assert '"HOLD — Check the print by eye"' in js and "$(\"eyebox\").hidden=!(b&&s.print_by_eye)" in js
 
 
+def test_readme_states_the_real_strip_limits():
+    """Task 41a, real photos (29 Oct): alu-alu strips hide their tablets; the offline strip finder found 0 of 8."""
+    readme = (STATIC.parent / "README.md").read_text(encoding="utf-8")
+    limits = readme.split("## Honest limits")[1].split("\n## ")[0]
+    for want in ("Alu-alu (all-silver) strips", "before sealing", "found 0 of 8 real strips", "Open shift record"):
+        assert want in limits, want
+
+
 def test_end_batch_asks_first():  # a batch number cannot be used again
     js = (STATIC / "station.js").read_text(encoding="utf-8")
     assert re.search(r"async function batchEnd\(\)\{if\(!confirm\(", js)

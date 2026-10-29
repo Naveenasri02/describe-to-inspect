@@ -141,6 +141,9 @@ python tools/eval_agent.py data/blister --bad photos/bad --runs 3 --yes-live
 - The SAM / Muse Spark cross-count is a code option: the station screen does not switch it on.
 - The tray clip opens the camera again while the stream is running; if the camera driver allows only one user, the clip fails with an error and nothing is judged.
 - The SAM prompt words were measured on real photos and may need tuning per product.
+- Alu-alu (all-silver) strips: once sealed, the tablets cannot be seen from the top, so this bench cannot teach or check their tablets (SAM 3.1 finds no tablets and teaching refuses the photos). Tablet checks for these strips belong before sealing, on the open pockets; on the sealed strip this bench checks only the foil print.
+- The offline strip finder (a product taught without a key) found 0 of 8 real strips in a photo test on 29 Oct 2026: a silver strip on a light table is about as bright as the table. "Works offline" in the table above is not yet shown on real strips.
+- On a lossy link a hung Muse Spark call waits its full time-out and is tried once more, so it can take about 6 minutes before it fails (with Wi-Fi off it fails at once). "Open shift record" makes a Muse Spark summary call, so a lossy link slows it too.
 - With `--host 0.0.0.0` anyone on the network can call the paid endpoints (`/describe`, `/command`, `/ask`, `/investigate`); keep the default 127.0.0.1 for a bench.
 
 ## Licence
