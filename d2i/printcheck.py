@@ -72,7 +72,7 @@ def check_print(read: dict, batch: dict, today: date) -> dict:
 
     fields = {"Batch no.": "batch", "MFG": "mfg", "EXP": "exp", "MRP": "mrp"}
     if batch.get("product"):  # batches started before these fields existed have nothing to compare
-        fields |= {"Product name": "product", "Strength": "strength"}
+        fields |= {"Product name": "product"} | ({"Strength": "strength"} if batch.get("strength") else {})  # blank: not printed
     vals = {k: str(read.get(f) or "").strip() for k, f in fields.items()}
     for k, v in vals.items():
         if not v:

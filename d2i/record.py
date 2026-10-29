@@ -396,7 +396,7 @@ def _batch_section(product_dir: Path, audit: AuditLog | None = None, until: floa
     end = next((r for r in mine if r["event"] == "end"), None)
     clr = next((c for c in Batches(product_dir).clearances() if c["at"] == start["clearance_at"]), None)
     fields = [["Batch", start["batch"]],
-              *([["Product", f"{start['product']} {start['strength']}"]] if start.get("product") else []), ["MFG", start["mfg"]], ["EXP", start["exp"]], ["MRP", f"₹ {start['mrp']}"],
+              *([["Product", f"{start['product']} {start['strength']}" if start.get("strength") else f"{start['product']}, strength: not printed"]] if start.get("product") else []), ["MFG", start["mfg"]], ["EXP", start["exp"]], ["MRP", f"₹ {start['mrp']}"],
               ["Started", f"{_when(start['at'])} by {start['by']}"],
               ["Ended", f"{_when(end['at'])} by {end['by']}" if end else "still open"],
               ["Line clearance", _Html(f"{e(_when(clr['at']))} by {e(clr['by'])} " + _chip("Clear" if clr["clear"] else "Not clear"))

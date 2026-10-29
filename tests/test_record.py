@@ -511,6 +511,11 @@ def test_record_shows_expected_and_read_product_and_strength(product):
     html = shift_record(product, T0 - 10, T0 + 100, "LOT9", "A", audit=audit)
     assert "<dt>Product</dt><dd>Paracetamol Tablets 500 mg</dd>" in html
     assert "PARACETAMOL TABLETS 500mg" in html
+    for r in rows:
+        r.update(strength="") if r["event"] == "start" else None
+    (product / "batches.jsonl").write_text("".join(json.dumps(r) + chr(10) for r in rows), encoding="utf-8")
+    html = shift_record(product, T0 - 10, T0 + 100, "LOT9", "A", audit=audit)
+    assert "<dt>Product</dt><dd>Paracetamol Tablets, strength: not printed</dd>" in html
 
 
 def test_record_header_grid_wraps_on_a_narrow_screen():

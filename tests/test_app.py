@@ -1170,6 +1170,7 @@ def test_batch_start_needs_product_and_strength_and_audits_them(tmp_path):
     assert "Strength" in c.post("/batch/start", data=dict(base, product="Para", strength="x")).json()["error"]
     row = c.post("/batch/start", data=dict(base, product="Para", strength="500 mg")).json()
     assert (row["product"], row["strength"]) == ("Para", "500 mg")
+    assert '<input id="bst" maxlength="40" placeholder="Strength (blank if not printed)"' in c.get("/").text
     last = [json.loads(x) for x in (p / "audit.jsonl").read_text(encoding="utf-8").splitlines()][-1]
     assert last["action"] == "batch_start" and last["details"]["strength"] == "500 mg"
 

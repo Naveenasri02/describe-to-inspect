@@ -177,6 +177,17 @@ def test_name_cut_off_by_the_strip_edge_is_unreadable_not_wrong():
     assert differs(r["reasons"]) == "Product name on strip is Hovglo, batch record says Havglo"
 
 
+def test_real_strength_forms_compare_and_an_empty_strength_is_not_compared():
+    """Real foils: CTD-L "12.5 mg & 50 mg" and Combiflam with ingredient names were "not readable"; Shelcal's strength
+    is not printed as one (read empty), so QA leaves it blank and it is not compared."""
+    ok = lambda got, want: check_print(dict(PG, strength=got), dict(PB, strength=want), TODAY)  # noqa: E731
+    assert ok("12.5 mg & 50 mg", "12.5 mg & 50 mg")["status"] == "PRINT_OK"
+    assert ok("Ibuprofen I.P. 400mg, Paracetamol I.P. 325mg", "Ibuprofen 400 mg & Paracetamol 325 mg")["status"] == "PRINT_OK"
+    assert differs(ok("75 mg", "75 mg + 750 mcg")["reasons"])  # Pregalin: a part missing is a difference for QA's eye
+    for got in ("", "Calcium 500 mg, D3 500 IU"):
+        assert ok(got, "") == {"status": "PRINT_OK", "reasons": []}, got
+
+
 def test_prompt_separates_exp_and_mrp():
     assert "(EXP, Exp), MRP" in READ_SYSTEM
 
