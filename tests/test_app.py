@@ -688,13 +688,69 @@ def test_pass_resets_the_reject_run(tmp_path):
     assert c.get("/status").json()["held"] is False
 
 
-def test_wrong_print_holds_line(tmp_path):
-    read = {"batch": "B9", "mfg": "01/2026", "exp": "01/2028", "mrp": "45", "readable": True}
-    c, p = _print_bench(tmp_path, read=read)
-    assert c.post("/print", files=up(make_strip(seed=1))).json()["status"] == "HOLD"
-    assert c.get("/status").json()["held"] is True
+WA7 = {"batch": "26F12061S", "mfg": "JUL.2026", "exp": "DEC.2027", "mrp": "₹700.00/10 Tablets (₹70.00/1N)", "readable": True}
+WA7_DIFF = "Batch no. on strip is 26F12061S, batch record says 26F1206IS"
+
+
+def _eye_bench(tmp_path, read=WA7):
+    """The real wa7 foil: B.No 26F1206IS, read by Spark as 26F12061S (3 of 3 reads). QA is logged in."""
+    c, p = bench(tmp_path, client=PrintClient(read=read), batch=False)
+    b = Batches(p)
+    b.clearance({"clear": True, "found": []}, "qa1", time.time())
+    b.start("26F1206IS", "07/2026", "12/2027", "700", "qa1", time.time())
+    login(c, "qa1", "pw-qa")
+    return c, p
+
+
+def _eye(c, result, password="pw-qa", note="B.No 26F1206IS on the strip, checked by eye"):
+    return c.post("/print/eye", json={"result": result, "password": password, "note": note}).json()
+
+
+def test_print_difference_holds_the_strip_for_a_check_by_eye_not_the_line(tmp_path):
+    """Spark is a generative model: per draft EU Annex 22 it only flags. A read that differs from the batch record
+    holds the print check for QA's check by eye; it no longer holds the line on the model's word."""
+    c, p = _eye_bench(tmp_path)
+    r = c.post("/print", files=up(make_strip(seed=1))).json()
+    assert r == {"status": "HOLD", "reasons": [WA7_DIFF], "by_eye": True}
+    s = c.get("/status").json()
+    assert s["held"] is False and not _holds(p) and s["print_by_eye"] == [WA7_DIFF]
+    assert "Start-up print check" in s["blockers"] and _lines(p / "prints.jsonl")[-1]["by_eye"] is True
+
+
+def test_qa_print_matches_is_print_ok_audited_and_releases(tmp_path):
+    c, p = _eye_bench(tmp_path)
+    c.post("/print", files=up(make_strip(seed=1)))
+    assert "error" in _eye(c, "matches", password="wrong")
+    assert _eye(c, "matches", note=" ")["error"] == "Write a note: what you checked on the strip"
+    row = _eye(c, "matches")
+    assert row["status"] == "PRINT_OK" and row["by"] == "qa1" and row["checked_by_eye"] == "matches"
+    assert row["read"] == WA7 and row["reasons"] == ["Print matches (checked by eye): B.No 26F1206IS on the strip, checked by eye"]
+    s = c.get("/status").json()
+    assert "Start-up print check" not in s["blockers"] and s["print_by_eye"] is None and s["held"] is False
     e = _audit(p)[-1]
-    assert e["user"] == "station" and e["reason"].startswith("Critical: wrong print — Batch no. on strip is B9")
+    assert (e["action"], e["user"], e["details"]["result"], e["details"]["reasons"]) == ("print_checked_by_eye", "qa1", "matches", [WA7_DIFF])
+    assert _eye(c, "matches")["error"] == "No print check waits for a check by eye"  # one decision per read
+    assert c.post("/specimen/sign", json={"password": "pw-qa"}).json()["action"] == "specimen_signed"
+
+
+def test_qa_wrong_print_is_critical_and_holds_the_line(tmp_path):
+    c, p = _eye_bench(tmp_path)
+    c.post("/print", files=up(make_strip(seed=1)))
+    assert _eye(c, "wrong", note="")["status"] == "WRONG_PRINT"
+    s = c.get("/status").json()
+    assert s["held"] is True and s["print_by_eye"] is None and "Start-up print check" in s["blockers"]
+    h = _holds(p)[-1]
+    assert h["user"] == "qa1" and h["reason"] == "Critical: wrong print — " + WA7_DIFF
+
+
+def test_check_by_eye_is_qa_only_and_needs_a_flagged_read(tmp_path):
+    c, p = _eye_bench(tmp_path, read=dict(WA7, batch=""))  # unreadable field: check by hand, nothing to decide
+    r = c.post("/print", files=up(make_strip(seed=1))).json()
+    assert r["status"] == "HOLD" and r["by_eye"] is False and c.get("/status").json()["print_by_eye"] is None
+    assert _eye(c, "matches")["error"] == "No print check waits for a check by eye"
+    login(c, "op", "pw-op")
+    assert "QA" in _eye(c, "matches", password="pw-op")["error"]
+    assert not [e for e in _audit(p) if e["action"] == "print_checked_by_eye"]
 
 
 def test_unreadable_print_does_not_hold_line(tmp_path):
@@ -762,22 +818,22 @@ def test_drift_restarts_after_qa_resume(tmp_path):
     assert c.get("/status").json()["held"] is True and len(_holds(p)) == 2
 
 
-def test_failing_hold_still_records_the_print(tmp_path, monkeypatch):
-    read = {"batch": "B9", "mfg": "01/2026", "exp": "01/2028", "mrp": "45", "readable": True}
-    c, p = _print_bench(tmp_path, read=read)
+def test_failing_hold_still_records_the_wrong_print(tmp_path, monkeypatch):
+    c, p = _eye_bench(tmp_path)
+    c.post("/print", files=up(make_strip(seed=1)))
     monkeypatch.setattr(app_mod, "hold_line", lambda *a: 1 / 0)
-    assert "error" in c.post("/print", files=up(make_strip(seed=1))).json()
-    assert _lines(p / "prints.jsonl")[0]["status"] == "HOLD"
+    assert "error" in _eye(c, "wrong")
+    assert _lines(p / "prints.jsonl")[-1]["status"] == "WRONG_PRINT"
 
 
 def test_wrong_print_while_held_adds_no_second_hold(tmp_path):
-    read = {"batch": "B9", "mfg": "01/2026", "exp": "01/2028", "mrp": "45", "readable": True}
-    c, p = _print_bench(tmp_path, read=read)
+    c, p = _eye_bench(tmp_path)
     c.post("/hold", json={})
     first = (p / "hold.json").read_text(encoding="utf-8")
     n = len(_holds(p))
     assert c.post("/print", files=up(make_strip(seed=1))).json()["status"] == "HOLD"
-    assert len(_lines(p / "prints.jsonl")) == 1 and len(_holds(p)) == n
+    assert _eye(c, "wrong")["status"] == "WRONG_PRINT"
+    assert len(_lines(p / "prints.jsonl")) == 2 and len(_holds(p)) == n
     assert (p / "hold.json").read_text(encoding="utf-8") == first
 
 

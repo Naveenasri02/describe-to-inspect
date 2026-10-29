@@ -1,5 +1,7 @@
 """Foil print check: Muse Spark only READS the printed text; plain code compares it with the open batch record.
-A mismatch or an unreadable print is HOLD, never a pass or reject on the model's word."""
+A mismatch or an unreadable print is HOLD, never a pass or reject on the model's word. Spark is a generative model
+(draft EU GMP Annex 22: it must not make a critical GMP decision alone), so a difference only flags the strip
+"Check the print by eye": QA looks at it and decides "Print matches" or "Wrong print" (app.py /print/eye)."""
 import re
 import unicodedata
 from datetime import date
@@ -107,6 +109,7 @@ def check_print(read: dict, batch: dict, today: date) -> dict:
     return {"status": "HOLD" if why else "PRINT_OK", "reasons": why}
 
 
-def wrong_print(reasons: list[str]) -> str | None:
-    """The first reason that says the strip carries the wrong print (a mismatch or a bad date); a missing or unreadable field is not one."""
+def differs(reasons: list[str]) -> str | None:
+    """The first reason that says the read differs from the batch record (a mismatch or a bad date), for QA's check by
+    eye; a missing or unreadable field is not one (check by hand)."""
     return next((r for r in reasons if " on strip is " in r or r in ("Expiry is not after manufacture", "Strip is past expiry")), None)

@@ -139,7 +139,10 @@ def test_wrong_print_opens_a_window(tmp_path):
     _judge(c, PASS, PASS)
     _inspect(c, 2)
     login(c, "op", "pw-op")
-    assert c.post("/print", files=up(make_strip(seed=1))).json()["status"] == "HOLD"
+    r = c.post("/print", files=up(make_strip(seed=1))).json()
+    assert r["status"] == "HOLD" and r["by_eye"] and c.get("/recheck").json() == {"open": False}  # the model only flags
+    login(c, "qa1", "pw-qa")
+    assert c.post("/print/eye", json={"result": "wrong", "password": "pw-qa"}).json()["status"] == "WRONG_PRINT"
     w = c.get("/recheck").json()
     assert w["open"] and (w["from_strip"], w["to_strip"]) == (1, 2) and w["cause"].startswith("Critical: wrong print")
 
