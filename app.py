@@ -314,6 +314,10 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
                 state["pending"] = cl
             return {"checklist": cl, "transcript": text}
         try:
+            qa(request)  # teaching is QA-only, from the sentence on (and no paid call for anyone else)
+        except PermissionError as ex:
+            return {"error": str(ex)}
+        try:
             if "multipart" in request.headers.get("content-type", ""):
                 form = await request.form()
                 if "audio" not in form:

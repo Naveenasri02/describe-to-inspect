@@ -41,7 +41,9 @@ def test_status_starts_locked(tmp_path):
 def test_describe_without_key_returns_error_not_500(tmp_path, monkeypatch):
     monkeypatch.delenv("MODEL_API_KEY", raising=False)
     monkeypatch.setattr("d2i.meta_api.KEY_FILE", tmp_path / "nokey.txt")
-    c = TestClient(app_mod.create_app(tmp_path, None))
+    Users(tmp_path / "users.json").add("qa1", "qa", "pw-qa")
+    c = TestClient(app_mod.create_app(tmp_path / "p", None))
+    login(c, "qa1", "pw-qa")
     r = c.post("/describe", json={"text": "ten tablets, two rows of five"})
     assert r.status_code == 200 and "nokey.txt" in r.json()["error"]
 
@@ -112,11 +114,13 @@ def test_describe_then_approve_flow(tmp_path):
 
 
 def test_approve_and_teach_need_a_qa_login(tmp_path):
-    c, p = bench(tmp_path, client=FakeClient())
-    c.post("/describe", json={"text": "ten tablets"})
+    c, p = bench(tmp_path, client=FakeClient(), as_user=None)
     for user in (None, ("op", "pw-op")):
         if user:
             login(c, *user)
+        assert c.post("/describe", json={"text": "ten tablets"}).json() == {"error": "Log in as a QA user first"}
+        assert c.post("/describe", files={"audio": ("a.wav", b"x")}).json() == {"error": "Log in as a QA user first"}
+        assert c.get("/status").json()["pending"] is None
         assert c.post("/approve", json={"by": "Anyone"}).json() == {"error": "Log in as a QA user first"}
         assert c.post("/teach", json={"capture": True}).json() == {"error": "Log in as a QA user first"}
     assert c.get("/status").json()["checklist_version"] == 1 and len(list((p / "good").glob("*.jpg"))) == 6
@@ -134,7 +138,9 @@ def test_status_survives_corrupt_log_line(tmp_path):
 
 
 def test_describe_multipart_without_audio_returns_error(tmp_path):
-    c = TestClient(app_mod.create_app(tmp_path, None, client=FakeClient()))
+    Users(tmp_path / "users.json").add("qa1", "qa", "pw-qa")
+    c = TestClient(app_mod.create_app(tmp_path / "p", None, client=FakeClient()))
+    login(c, "qa1", "pw-qa")
     r = c.post("/describe", files={"other": ("a.txt", b"x")})
     assert r.status_code == 200 and "audio" in r.json()["error"]
 
@@ -940,7 +946,9 @@ def test_status_gives_the_screens_their_data(tmp_path):
 
 
 def test_status_shows_the_pending_sentence(tmp_path):
-    c = TestClient(app_mod.create_app(tmp_path, None, client=FakeClient()))
+    Users(tmp_path / "users.json").add("qa1", "qa", "pw-qa")
+    c = TestClient(app_mod.create_app(tmp_path / "p", None, client=FakeClient()))
+    login(c, "qa1", "pw-qa")
     c.post("/describe", json={"text": "ten tablets"})
     s = c.get("/status").json()
     assert s["pending_sentence"] == "ten tablets" and s["taught"] is False and s["totals"] is None
