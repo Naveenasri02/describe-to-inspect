@@ -5,6 +5,7 @@ import re
 from datetime import datetime
 from pathlib import Path
 
+from d2i.audit import json_line
 from d2i.meta_api import BudgetExceeded, MetaError
 from d2i.pockets import MIN_SCORE
 
@@ -76,7 +77,7 @@ class Batches:
     def _write(self, name, row):
         self.dir.mkdir(parents=True, exist_ok=True)
         with (self.dir / name).open("a", encoding="utf-8") as f:
-            f.write(json.dumps(row, ensure_ascii=False) + "\n")
+            f.write(json_line(row))
         return row
 
     def clearances(self) -> list[dict]:

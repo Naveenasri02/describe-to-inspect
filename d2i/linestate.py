@@ -5,6 +5,7 @@ import threading
 from datetime import datetime
 from pathlib import Path
 
+from d2i.audit import json_line
 from d2i.ipqc import BLOCK_CHALLENGE, BLOCK_PRINT, BLOCK_SELFTEST, BLOCK_SPECIMEN
 
 IDLE, STARTING, RUNNING, HELD, SUSPENDED, STOPPED, COMPLETE = WORDS = (
@@ -108,7 +109,7 @@ def record_change(path, now: float, to: str, why) -> dict | None:
                "from": prev and prev["to"], "to": to, "cause": cause, "by": by, "rule": rule, "strip": strip}
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(row, ensure_ascii=False) + "\n")
+            f.write(json_line(row))
         return row
 
 

@@ -1334,3 +1334,42 @@ def test_sign_refused_while_the_reconciliation_is_outside_without_a_reason(tmp_p
     end["totals"]["investigated"] = {"by": "qa1", "reason": "recounted the reject box"}
     (p / "batches.jsonl").write_text("".join(x + "\n" for x in rows + [json.dumps(end)]), encoding="utf-8")
     assert _sign(c)["signed_by"] == "qa1"
+
+
+# --- Final fix 2 ---
+@pytest.mark.parametrize("ch", [" ", " ", "\x85"])
+def test_line_separators_in_typed_text_never_split_a_record_row(tmp_path, ch):
+    """Review: json.dumps(ensure_ascii=False) wrote U+2028 / U+2029 / U+0085 raw and every reader splits on
+    str.splitlines(), so one pasted character broke the audit chain, batches.jsonl or checklists.jsonl for good."""
+    c, p = bench(tmp_path, client=FakeClient())
+    c.post("/inspect", files=up(make_strip(seed=15)))
+    login(c, "qa1", "pw-qa")
+    assert c.post("/hold", json={"reason": f"foil{ch}jam"}).json() == {"held": True}
+    assert c.post("/resume", json={"password": "pw-qa", "reason": f"jam{ch}cleared"}).json()["resumed"] is True
+    assert c.post("/leak", data={"result": "pass", "note": f"no{ch}bubbles"}).json()["note"] == f"no{ch}bubbles"
+    end = c.post("/batch/end", data=dict(END_OK, received="1", good_tray="0", password="pw-qa",
+                                          reason=f"strip under{ch}the tray")).json()
+    assert end["totals"]["investigated"]["reason"] == f"strip under{ch}the tray" and Batches(p).open is None
+    assert c.post("/describe", json={"text": f"ten tablets{ch}two rows of five"}).json()["checklist"]
+    assert c.post("/approve").json()["checklist"]["sentence"] == f"ten tablets{ch}two rows of five"
+    a = AuditLog(p / "audit.jsonl")
+    assert a.verify() == (True, None)
+    assert [e["reason"] for e in a.entries() if e["action"] in ("hold_line", "resume_line")][-2:] == [
+        f"foil{ch}jam", f"jam{ch}cleared"]
+    assert Batches(p).rows[-1]["totals"]["investigated"]["reason"] == f"strip under{ch}the tray"
+    for f in p.glob("*.jsonl"):
+        assert ch not in f.read_text(encoding="utf-8"), f.name
+    again = TestClient(app_mod.create_app(p, None))  # Station.__init__ reads checklists.jsonl
+    assert again.get("/status").json()["checklist"]["sentence"] == f"ten tablets{ch}two rows of five"
+
+
+def test_resume_writes_its_audit_row_before_the_hold_is_lifted(tmp_path):
+    """Review: resume_line cleared hold.json first, so a damaged audit log left the line running with no resume row."""
+    c, p = bench(tmp_path)
+    login(c, "qa1", "pw-qa")
+    c.post("/hold", json={"reason": "foil jam"})
+    with (p / "audit.jsonl").open("a", encoding="utf-8") as f:
+        f.write("not json\n")
+    assert "damaged" in c.post("/resume", json={"password": "pw-qa", "reason": "jam cleared"}).json()["error"]
+    assert c.get("/status").json()["held"] is True
+

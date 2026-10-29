@@ -9,6 +9,13 @@ from pathlib import Path
 ROLES = {"operator", "qa"}
 GENESIS = "0" * 64
 _APPEND = threading.Lock()  # one writer at a time in this process: verify, read and write as one step
+_SEPARATORS = {0x2028: "\\u2028", 0x2029: "\\u2029", 0x85: "\\u0085"}
+
+
+def json_line(row) -> str:
+    """One JSONL row. Every reader splits on str.splitlines(), which also breaks at U+2028, U+2029 and U+0085, and
+    json.dumps(ensure_ascii=False) leaves those raw: they are written escaped (the value reads back the same)."""
+    return json.dumps(row, ensure_ascii=False).translate(_SEPARATORS) + "\n"
 
 
 def _hash(entry: dict) -> str:
@@ -45,7 +52,7 @@ class AuditLog:
             entry["hash"] = _hash(entry)
             self.path.parent.mkdir(parents=True, exist_ok=True)
             with self.path.open("a", encoding="utf-8") as f:
-                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+                f.write(json_line(entry))
             return entry
 
     def verify(self) -> tuple[bool, int | None]:

@@ -3,6 +3,8 @@ import json
 from datetime import datetime
 from pathlib import Path
 
+from d2i.audit import json_line
+
 CHECKS = ["empty_pocket", "broken_tablet", "double_tablet", "wrong_tablet", "tablet_spot", "foil_damage", "strip_cut"]
 
 RULE_TEXT = {
@@ -76,7 +78,7 @@ def approve(cl: dict, by: str, path: Path) -> dict:
     path.parent.mkdir(parents=True, exist_ok=True)
     out = dict(cl, version=len(_lines(path)) + 1, approved_by=by, approved_at=datetime.now().isoformat(timespec="seconds"))
     with path.open("a", encoding="utf-8") as f:
-        f.write(json.dumps(out, ensure_ascii=False) + "\n")
+        f.write(json_line(out))
     return out
 
 

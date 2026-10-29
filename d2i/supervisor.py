@@ -98,10 +98,11 @@ def hold_state(product_dir) -> tuple[bool, str]:
         return True, ""
 
 
-def set_hold(product_dir, plc, on: bool, by: str):
-    """PLC hold coil plus hold.json, so a restart keeps the line held."""
+def set_hold(product_dir, plc, on: bool, by: str, at: str | None = None):
+    """PLC hold coil plus hold.json, so a restart keeps the line held. `at`: the time of the audit row written just
+    before (a resume), so the line board finds that row at or after hold.json."""
     plc.set_hold(on)
-    at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    at = at or datetime.now(timezone.utc).isoformat(timespec="seconds")
     (Path(product_dir) / "hold.json").write_text(json.dumps({"held": on, "at": at, "by": by}), encoding="utf-8")
 
 
@@ -119,8 +120,8 @@ def resume_line(station, plc, audit, users, name: str, password: str, reason: st
         raise ValueError("a reason is required")
     if station.locked:
         return {"resumed": False, "message": f"Station locked: {station.lock_reason}"}
-    set_hold(station.dir, plc, False, name)
-    audit.append("resume_line", name, {"hold": False}, reason)
+    row = audit.append("resume_line", name, {"hold": False}, reason)  # first: no resume without its row
+    set_hold(station.dir, plc, False, name, at=row["at"])
     return {"resumed": True, "message": "Line resumed"}
 
 
@@ -317,8 +318,7 @@ class Supervisor:
                     st.teach([im for im in photos if im is not None])
                     message = "Re-taught; the station stays locked until a self-test passes"
                 elif kind == "resume":
-                    self._set_hold(False, name)
-                    message = "Line resumed"
+                    message = "Line resumed"  # hold.json is cleared after the audit row below
                 elif kind == "recheck":  # re-checks run on a held line, so production strips are never taken for them
                     w = recheck.open_window(st.dir, self.audit, req["reason"], name)
                     if w and not hold_state(st.dir)[0]:
@@ -328,9 +328,11 @@ class Supervisor:
                     release_quarantine(st.dir, self.audit, users, name, password, req["reason"])
                     message = "Quarantine released"
                 out = {"approved": True, "message": message}
+            out = {"id": request_id, "kind": kind, "approved_by": name, **out}
+            row = self.audit.append("agent_approve", name, out, req["reason"])
+            if kind == "resume" and out["approved"]:  # after its row: no resume without one
+                set_hold(st.dir, self.plc, False, name, at=row["at"])
         except BaseException:
             self.pending[request_id] = req
             raise
-        out = {"id": request_id, "kind": kind, "approved_by": name, **out}
-        self.audit.append("agent_approve", name, out, req["reason"])
         return out

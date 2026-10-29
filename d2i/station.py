@@ -13,6 +13,7 @@ import torch
 import torch.nn.functional as F
 
 from d2i import trace
+from d2i.audit import json_line
 from d2i.checklist import SEVERITY, current, rule_number
 from d2i.defects import paint
 from d2i.judge import Judge
@@ -63,7 +64,7 @@ def _thumb(image):
 
 def _append(path: Path, row: dict):
     with path.open("a", encoding="utf-8") as f:
-        f.write(json.dumps(row, ensure_ascii=False) + "\n")
+        f.write(json_line(row))
 
 
 class Station:
