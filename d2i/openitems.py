@@ -60,10 +60,15 @@ def last_started(product_dir: Path) -> str | None:
     return next((r["batch"] for r in reversed(Batches(product_dir).rows) if r["event"] == "start"), None)
 
 
+def signed(e: dict, batch: str) -> bool:
+    """A signature on that batch's record."""
+    return e.get("action") == "sign" and isinstance(e.get("details"), dict) and e["details"].get("batch") == batch
+
+
 def record_unsigned(batch_rows: list[dict], audit_rows: list[dict]) -> dict | None:
-    """The end row of the last batch when it ended and no record was signed since; else None."""
+    """The end row of the last batch when it ended and its record was not signed since; else None."""
     end = batch_rows[-1] if batch_rows and batch_rows[-1]["event"] == "end" else None
-    if end and not any(e.get("action") == "sign" and _t(e["at"]) >= int(end["time"]) for e in audit_rows):
+    if end and not any(signed(e, end["batch"]) and _t(e["at"]) >= int(end["time"]) for e in audit_rows):
         return end
     return None
 

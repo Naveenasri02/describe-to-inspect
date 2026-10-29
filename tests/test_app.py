@@ -1509,3 +1509,23 @@ def test_end_batch_and_an_inspection_never_overlap(tmp_path, monkeypatch):
     t.join()
     assert out["end"]["event"] == "end" and out["r"].status_code == 409 and out["r"].json() == {"error": "Start a batch first (QA)"}
     assert not [r for r in _lines(p / "log.jsonl") if r.get("batch") == "B2"]
+
+
+def test_signing_an_older_batch_leaves_the_last_batch_unsigned(tmp_path):
+    """Review: any signature after the last batch's end cleared its "Record unsigned", and the board footer named the
+    last signer of any batch: signing B1's record turned B2's board to "signed"."""
+    c, p = bench(tmp_path)
+    t = time.time() - 20
+    Batches(p)._write("batches.jsonl", {"event": "end", "batch": "B1", "by": "qa1", "time": t,
+                                        "at": datetime.fromtimestamp(t).isoformat(timespec="seconds"),
+                                        "totals": {"status": "within", "lines": []}})
+    open_batch(p, "B2")
+    login(c, "qa1", "pw-qa")
+    assert c.post("/batch/end", data=END_OK).json()["event"] == "end"
+    assert _sign_batch(c, "B1")["signed_by"] == "qa1"
+    j = c.get("/line").json()
+    assert [i["text"] for i in j["waiting"]][0].startswith("Record unsigned — batch B2")
+    assert (j["state"], j["footer"]["record"], j["footer"]["signed_by"]) == ("COMPLETE", "draft", None)
+    assert _sign_batch(c, "B2")["signed_by"] == "qa1"
+    j = c.get("/line").json()
+    assert (j["state"], j["footer"]["record"], j["footer"]["signed_by"]) == ("IDLE", "signed", "qa1")

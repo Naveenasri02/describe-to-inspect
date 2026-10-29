@@ -91,7 +91,9 @@ def test_reconciliation_outside_without_reason_and_record_unsigned(tmp_path):
            "totals": {"status": "outside", "lines": []}}
     put(tmp_path, "batches.jsonl", end)
     assert kinds(open_items(tmp_path, NOW)) == ["reconciliation", "record_unsigned"]
-    AuditLog(tmp_path / "audit.jsonl").append("sign", "qa1", {"record_sha256": "x"})
+    AuditLog(tmp_path / "audit.jsonl").append("sign", "qa1", {"record_sha256": "x", "batch": "B0"})  # another batch
+    assert kinds(open_items(tmp_path, NOW)) == ["reconciliation", "record_unsigned"]
+    AuditLog(tmp_path / "audit.jsonl").append("sign", "qa1", {"record_sha256": "x", "batch": "B1"})
     assert kinds(open_items(tmp_path, NOW)) == ["reconciliation"]
 
 

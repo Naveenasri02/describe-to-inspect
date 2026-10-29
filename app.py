@@ -30,7 +30,7 @@ from d2i.checklist import approve, make_checklist
 from d2i.llm import ToolChat
 from d2i.meta_api import Budget, MetaClient
 from d2i.ipqc import DRIFT_REJECTS, check_events, due, reconcile, reject_run, release_blockers
-from d2i.openitems import last_started, missed_checks, missed_text, open_items, window_id
+from d2i.openitems import last_started, missed_checks, missed_text, open_items, signed, window_id
 from d2i.printcheck import check_print, read_print, wrong_print
 from d2i.pockets import find_layout
 from d2i.station import FINDER_DOWN, NEED_TEACH, Station, Verdict
@@ -1185,7 +1185,7 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
                 lost[(g["state"], g["cause"])] = lost.get((g["state"], g["cause"]), 0) + g["seconds"]
         ok, bad = audit.verify()
         unsigned = any(i["kind"] == "record_unsigned" for i in items)
-        sign = next((e for e in reversed(audit.entries()) if e.get("action") == "sign"), None) \
+        sign = next((e for e in reversed(audit.entries()) if signed(e, cur["batch"])), None) \
             if cur and not s["batch"] and not unsigned else None
         cl = s["checklist"] or {}
         return {
