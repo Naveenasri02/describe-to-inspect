@@ -86,12 +86,13 @@ class Plc:
         with self._lock:
             self._locked = on
 
-    def set_verdict(self, v):
+    def set_verdict(self, v, count: bool = True):
+        """count=False: a re-checked strip, already counted once; its coils, reject pulse and rule still go out."""
         with self._lock:
             self._locked = v.status == "LOCKED"
             self._hold = v.status == "HOLD"
             slot = {"PASS": 0, "REJECT": 1, "HOLD": 2}.get(v.status)
-            if slot is not None:
+            if slot is not None and count:
                 self.regs[slot] = (self.regs[slot] + 1) & 0xFFFF
             if v.status == "REJECT":
                 self._reject_until = time.monotonic() + PULSE_S

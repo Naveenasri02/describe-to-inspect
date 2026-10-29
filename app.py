@@ -162,11 +162,11 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
                 locked = True
             plc.set_locked(locked)
 
-    def publish(verdicts):
-        """Each verdict to the PLC in order; the last one is shown on the screen."""
+    def publish(verdicts, count=True):
+        """Each verdict to the PLC in order; the last one is shown on the screen. count=False: re-checked strips."""
         for v in verdicts:
             if plc:
-                plc.set_verdict(v)
+                plc.set_verdict(v, count=count)
         with meta:
             state["last"] = asdict(verdicts[-1])
         return state["last"]
@@ -410,12 +410,12 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
                 except Exception:  # logged and held, never a 500 that leaves the PLC on the previous verdict
                     v = Verdict("HOLD", [{"rule": None, "check": "inspection_error", "pocket": None,
                                           "text": INSPECT_ERROR}], at=st._now())
-                    out = publish([v])  # the hold reaches the PLC even if the log cannot be written either
+                    out = publish([v], count=not rc)  # the hold reaches the PLC even if the log cannot be written either
                     st.log(v, batch=no, image=im, user=user, extra=mark)
                     if rc:
                         recheck.count(product_dir, rc, v.status)
                     return out
-                out = publish([v])
+                out = publish([v], count=not rc)  # a re-checked strip was counted the first time
                 if rc:
                     recheck.count(product_dir, rc, v.status)
                 after_verdicts([v], no, rechecked=bool(rc))

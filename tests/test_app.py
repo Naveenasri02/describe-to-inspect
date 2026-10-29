@@ -1529,3 +1529,17 @@ def test_signing_an_older_batch_leaves_the_last_batch_unsigned(tmp_path):
     assert _sign_batch(c, "B2")["signed_by"] == "qa1"
     j = c.get("/line").json()
     assert (j["state"], j["footer"]["record"], j["footer"]["signed_by"]) == ("IDLE", "signed", "qa1")
+
+
+def test_a_rechecked_strip_moves_no_plc_counter(tmp_path):
+    """Review: re-checked strips went through publish, so the machine's PASS / REJECT counters counted them twice."""
+    plc = Plc(host="127.0.0.1", port=0)
+    c, p = bench(tmp_path, plc=plc)
+    assert c.post("/inspect", files=up(make_strip(seed=15))).json()["status"] == "PASS"
+    _fake_judge(c, "wrong_tablet")
+    c.post("/inspect", files=up(make_strip(seed=15)))  # critical: held, the passed strip goes into a re-check
+    assert c.get("/recheck").json()["open"] is True
+    before = list(plc.regs)
+    assert c.post("/inspect", files=up(make_strip(seed=15))).json()["status"] == "REJECT"  # the re-checked strip
+    assert _lines(p / "log.jsonl")[-1]["recheck"] is True
+    assert plc.regs[:3] == before[:3] and plc.coils[0] is True  # no counter moved; the reject output still pulses

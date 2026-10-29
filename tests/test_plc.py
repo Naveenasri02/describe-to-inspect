@@ -96,3 +96,12 @@ def test_connected_follows_the_machine_link():
         assert plc.connected is False
     finally:
         plc.stop()
+
+
+def test_a_verdict_can_leave_the_counters_alone():
+    """A re-checked strip: its reject pulse and rule go out, the machine's counters do not move."""
+    plc = Plc(host="127.0.0.1", port=0)
+    plc.set_verdict(Verdict("REJECT", [{"rule": 5, "check": "x", "pocket": 1, "text": "t"}], []), count=False)
+    assert plc.regs == [0, 0, 0, 5] and plc.coils[0] is True
+    plc.set_verdict(Verdict("PASS", [], []), count=False)
+    assert plc.regs == [0, 0, 0, 5]
