@@ -14,7 +14,7 @@ READ_SCHEMA = {"type": "object", "additionalProperties": False,
                               "mrp": {"type": "string"}, "product": {"type": "string"},
                               "strength": {"type": "string"}, "readable": {"type": "boolean"}}}
 READ_SYSTEM = ("You read the printed text on the foil side of a tablet blister strip. Copy exactly what is printed for: "
-               "batch number (B.No., Batch, Lot), manufacturing date (MFG, Mfd), expiry date (EXP, Exp), MRP (price), product name (the medicine name) and strength (number and unit). "
+               "batch number (B.No., Batch, Lot), manufacturing date (MFG, Mfd), expiry date (EXP, Exp), MRP (price), product name (the brand name printed largest on the strip, not the ingredient or generic name line) and strength (number and unit). "
                "Use an empty string for anything not printed or not readable. Never guess or complete partial text. "
                "Set readable to false if the photo is too blurred to read.")
 _LABELS = ("BATCHNO", "BNO", "BATCH", "LOT")
@@ -38,6 +38,12 @@ def _name_printed(read: str, typed: str) -> bool:
     """Every typed word is printed, in order: "Paracetamol" matches "Paracetamol Tablets IP"."""
     printed, want = iter(_words(read)), _words(typed)
     return bool(want) and all(w in printed for w in want)  # `in` moves the iterator on: words in order
+
+
+def _cut_off(read: str, typed: str) -> bool:
+    """The read is only the start of the typed name ("Rapeed-" of "Rapeed-20"): cut off by the strip edge, not a different name."""
+    r, t = "".join(_words(read)), "".join(_words(typed))
+    return bool(r) and len(r) < len(t) and t.startswith(r)
 
 
 def _month(s):
@@ -93,7 +99,9 @@ def check_print(read: dict, batch: dict, today: date) -> dict:
         except ValueError:
             unreadable("MRP")
     if vals.get("Product name"):
-        if not _name_printed(vals["Product name"], batch["product"]):
+        if _cut_off(vals["Product name"], batch["product"]):
+            unreadable("Product name")
+        elif not _name_printed(vals["Product name"], batch["product"]):
             differ("Product name", vals["Product name"], batch["product"])
     if vals.get("Strength"):
         try:

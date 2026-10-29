@@ -162,6 +162,21 @@ def test_strength_forms():
         assert ok(u, u.upper()) == "PRINT_OK", u
 
 
+def test_prompt_asks_for_the_brand_printed_largest():
+    """Real foils: wa7 gave the ingredient line as the product once, 2645 the generic name instead of ZIVAST 10."""
+    assert "brand name printed largest" in READ_SYSTEM and "not the ingredient or generic name line" in READ_SYSTEM
+
+
+def test_name_cut_off_by_the_strip_edge_is_unreadable_not_wrong():
+    """Real wa4: the strip edge cut the name to "Rapeed-"; against "Rapeed-20" it was a critical wrong print."""
+    for typed in ("Rapeed-20", "Rapeed-D", "RAPEED DSR"):
+        r = check_print(dict(PG, product="Rapeed-"), dict(PB, product=typed), TODAY)
+        assert r["reasons"] == ["Product name not readable — check by hand"], (typed, r)
+        assert differs(r["reasons"]) is None
+    r = check_print(dict(PG, product="Hovglo"), dict(PB, product="Havglo"), TODAY)  # wa7: a misread, not a cut
+    assert differs(r["reasons"]) == "Product name on strip is Hovglo, batch record says Havglo"
+
+
 def test_prompt_separates_exp_and_mrp():
     assert "(EXP, Exp), MRP" in READ_SYSTEM
 
