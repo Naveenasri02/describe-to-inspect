@@ -177,9 +177,6 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
         if reason.startswith("Critical"):  # wrong tablet / wrong print, held line or not: re-check since the last good check
             recheck.open_window(product_dir, audit, reason, "station")
 
-    def last_resume():  # Unix time of the latest QA "Resume line" (audit log, UTC), 0 if none
-        return next((datetime.fromisoformat(e["at"]).timestamp() for e in reversed(audit._rows()) if e["action"] == "resume_line"), 0.0)
-
     def log_rows():  # log.jsonl verdict rows; an unreadable line is skipped, so it never errors /status or /inspect
         rows = []
         try:
@@ -200,7 +197,7 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
             return station_hold("Critical: " + crit)
         if held_now():  # already held: the first hold stays open, no second one
             return
-        rows, since = log_rows(), last_resume()
+        rows, since = log_rows(), recheck.resumed_at(audit)  # Resume line or an approved agent resume
         if any(reject_run(rows[:n], no, since) >= DRIFT_REJECTS for n in range(len(rows) - len(vs) + 1, len(rows) + 1)):
             station_hold("3 rejects in a row — check the machine")  # checked after each new verdict: a later pass cannot hide it
 
@@ -1209,7 +1206,7 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
             "challenge_set": (product_dir / challenge.SET).exists(),
             "counts": reconcile(mine, cur["batch"]) if cur else None,
             "reconciliation": s["reconciliation"],
-            "reject_run": {"n": reject_run(rows, s["batch"]["batch"], last_resume()) if s["batch"] else 0,
+            "reject_run": {"n": reject_run(rows, s["batch"]["batch"], recheck.resumed_at(audit)) if s["batch"] else 0,
                            "of": DRIFT_REJECTS},
             "rejects_by_rule": [{"rule": k, "text": names.get(k, ""), "batch": nb[k], "hour": nh[k]}
                                 for k in sorted(set(nb) | set(nh), key=lambda k: (-nb[k], -nh[k], k))],

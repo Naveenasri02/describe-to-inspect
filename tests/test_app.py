@@ -1438,3 +1438,22 @@ def test_supervisor_requests_survive_a_teach_and_a_restart(tmp_path):
     assert "Shift Supervisor asks QA to approve: reteach" in _sign(again)["error"]
     assert again.post("/approve-request", json={"id": req["id"], "password": "pw-qa"}).json()["approved"] is True
     assert again.get("/investigation").json()["pending"] == []
+
+
+def test_drift_restarts_after_an_approved_agent_resume(tmp_path):
+    """Review: only "Resume line" restarted the 3-rejects count, so after an approved agent resume the very next reject
+    held the line again and the board showed "4 of 3"."""
+    chat = ScriptChat(call("request_resume", {"reason": "machine checked"}), {"content": "Machine checked."})
+    c, p = bench(tmp_path, chat)
+    _fake_judge(c, "empty_pocket")
+    for _ in range(3):
+        c.post("/inspect", files=up(make_strip(seed=15)))
+    assert len(_holds(p)) == 1
+    c.post("/investigate", json={"trigger": "3 rejects in a row"})
+    req = wait_done(c)["pending"][0]
+    login(c, "qa1", "pw-qa")
+    assert c.post("/approve-request", json={"id": req["id"], "password": "pw-qa"}).json()["approved"] is True
+    time.sleep(1.1)  # verdict and audit times have one-second resolution
+    c.post("/inspect", files=up(make_strip(seed=15)))
+    assert c.get("/status").json()["held"] is False and len(_holds(p)) == 1
+    assert c.get("/line").json()["reject_run"] == {"n": 1, "of": 3}
