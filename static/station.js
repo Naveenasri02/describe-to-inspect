@@ -299,6 +299,8 @@ async function chalRefresh(){
 async function chalRegister(){const f=new FormData();f.append("label",$("cl").value);f.append("kind",$("ck").value);f.append("rule",$("cr").value);
   const r=await (await fetch("/challenge/register",{method:"POST",body:f})).json();show(r.error?r:"Challenge set: "+r.strips.map(x=>x.label).join(", ")+"."+(r.message?"\n"+r.message:""))}
 const chalInspect=()=>busy(async m=>{const r=await (await fetch("/challenge/inspect",{method:"POST"})).json();show(r.error?r:r.message,m)});
+async function chalClose(){const r=await j("/challenge/close",{password:$("ccp").value,reason:$("ccr").value});$("ccp").value="";
+  show(r.error?r:"Failed challenge closed with a QA note.")}
 async function chalEject(){const r=await j("/challenge/eject",{ejected:$("chej").checked});$("chej").checked=false;
   show(r.error?r:r.next?r.next:"Challenge run "+(r.run.passed?"passed.":"failed: station locked, quarantine open."))}
 // Re-check window after a critical hold: each Inspect re-checks one strip; Resume needs it done or a waiver reason

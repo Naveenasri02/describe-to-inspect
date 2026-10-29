@@ -29,7 +29,8 @@ from d2i.checklist import approve, make_checklist
 from d2i.llm import ToolChat
 from d2i.meta_api import Budget, MetaClient
 from d2i.ipqc import DRIFT_REJECTS, check_events, due, reconcile, reject_run, release_blockers
-from d2i.openitems import last_started, missed_checks, missed_text, open_items, signed, window_id
+from d2i.openitems import (challenge_failure, last_started, missed_checks, missed_text, open_items, signed,
+                           window_id)
 from d2i.printcheck import check_print, read_print, wrong_print
 from d2i.pockets import find_layout
 from d2i.station import FINDER_DOWN, NEED_TEACH, Station, Verdict
@@ -1032,6 +1033,23 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
                                                       "passed": res["passed"]})  # a run stops at its first miss
                 chal["run"] = None
                 return {"result": res, "run": row}
+        return paid(run)
+
+    @app.post("/challenge/close")
+    def challenge_close(body: dict, request: Request):
+        def run():  # an ended batch's failed run: QA closes it with a note (the open batch closes its own by a passing run)
+            name = qa(request)
+            _require_qa(users, name, str(body.get("password", "")))  # re-typed password, as Resume line
+            why = " ".join(str(body.get("reason", "")).split())
+            if not why:
+                raise ValueError("Write the reason")
+            with lock:
+                f, b = challenge_failure(product_dir, audit.entries()), batches.open
+                if f is None:
+                    return {"error": "No failed challenge run waits for a note"}
+                if b and f["since"] >= b["time"]:
+                    return {"error": "This batch is open: a passing run closes its failed challenge"}
+                return audit.append("challenge_closed", name, {"failure": f["text"], "failed_at": f["since"]}, why)
         return paid(run)
 
     @app.get("/challenge/photo/{label}")

@@ -60,6 +60,26 @@ def last_started(product_dir: Path) -> str | None:
     return next((r["batch"] for r in reversed(Batches(product_dir).rows) if r["event"] == "start"), None)
 
 
+def challenge_failure(product_dir: Path, audit_rows: list[dict]) -> dict | None:
+    """The physical challenge failure still waiting for QA: {text, since, evidence}; None when the last run passed or a
+    QA close note (an ended batch's failure) came at or after it."""
+    p = Path(product_dir)
+    runs = _rows(p / "challenge_runs.jsonl")
+    miss = next((t for t in reversed(_rows(p / "selftests.jsonl")) if t.get("challenge")), None)
+    if miss and not miss.get("passed") and (not runs or miss["time"] > runs[-1]["time"]):
+        # a miss locks at once; its run row is written only when the Ejected tick is recorded
+        f = {"text": "Physical challenge failed: " + "; ".join(miss.get("failed") or [miss["challenge"]]),
+             "since": miss["time"], "evidence": "record: Self-tests"}
+    elif runs and runs[-1].get("passed") is False:
+        bad = [f"{r['label']} (expected Rule {r['expected_rule']})" for r in runs[-1].get("results", []) if not r.get("passed")]
+        f = {"text": "Physical challenge failed" + (": " + ", ".join(bad) if bad else ""), "since": runs[-1]["time"],
+             "evidence": "record: Physical challenge"}
+    else:
+        return None
+    closed = any(e.get("action") == "challenge_closed" and _t(e["at"]) >= int(f["since"]) for e in audit_rows)
+    return None if closed else f
+
+
 def signed(e: dict, batch: str) -> bool:
     """A signature on that batch's record."""
     return e.get("action") == "sign" and isinstance(e.get("details"), dict) and e["details"].get("batch") == batch
@@ -128,16 +148,9 @@ def open_items(product_dir: Path, now: float) -> list[dict]:
             add("missed_check", missed_text(m), m["end"], evidence="record: In-process checks")
 
     def challenge_failed():
-        runs = _rows(p / "challenge_runs.jsonl")
-        miss = next((t for t in reversed(_rows(p / "selftests.jsonl")) if t.get("challenge")), None)
-        if miss and not miss.get("passed") and (not runs or miss["time"] > runs[-1]["time"]):
-            # a miss locks at once; its run row is written only when the Ejected tick is recorded
-            add("challenge_failed", "Physical challenge failed: " + "; ".join(miss.get("failed") or [miss["challenge"]]),
-                miss["time"], evidence="record: Self-tests")
-        elif runs and runs[-1].get("passed") is False:
-            bad = [f"{r['label']} (expected Rule {r['expected_rule']})" for r in runs[-1].get("results", []) if not r.get("passed")]
-            add("challenge_failed", "Physical challenge failed" + (": " + ", ".join(bad) if bad else ""), runs[-1]["time"],
-                evidence="record: Physical challenge")
+        f = challenge_failure(p, audit.entries())
+        if f:
+            add("challenge_failed", f["text"], f["since"], evidence=f["evidence"])
 
     def unsigned():
         end = record_unsigned(Batches(p).rows, audit.entries())

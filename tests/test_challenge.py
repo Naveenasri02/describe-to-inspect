@@ -284,3 +284,25 @@ def test_no_production_strip_while_a_challenge_strip_waits_for_its_ejected_tick(
     assert not (p / "log.jsonl").exists() and c.get("/status").json()["held"] is False
     assert c.post("/challenge/eject", json={"ejected": True}).json()["run"]["passed"] is True
     assert c.post("/inspect", files=up(make_strip(seed=15))).json()["status"] == "REJECT"
+
+
+def test_qa_closes_a_failed_challenge_of_an_ended_batch_with_a_note(tmp_path):
+    """Review: a failed run blocked signing until a passing run, and a run needs an open batch, so a batch ended after
+    a failed run could be signed only after starting the next batch and passing a run there."""
+    from tests.test_app import END_OK, _sign
+    c, p = _set_bench(tmp_path, ("C1", "empty_pocket"), verdicts=[("PASS", [])])
+    c.post("/challenge/inspect", files=up(make_strip(seed=15)))  # missed
+    assert c.post("/challenge/eject", json={"ejected": True}).json()["run"]["passed"] is False
+    body = {"password": "pw-qa", "reason": "C1 re-run by hand, caught; reject chute fixed"}
+    assert c.post("/challenge/close", json=body).json() == {"error": "Log in as a QA user first"}
+    login(c, "qa1", "pw-qa")
+    assert "passing run" in c.post("/challenge/close", json=body).json()["error"]  # the open batch can still run it
+    assert c.post("/batch/end", data=END_OK).json()["event"] == "end"
+    assert "Physical challenge failed" in _sign(c)["error"]
+    assert c.post("/challenge/close", json=dict(body, password="wrong")).json() == {"error": "QA login required"}
+    assert "reason" in c.post("/challenge/close", json=dict(body, reason=" ")).json()["error"]
+    e = c.post("/challenge/close", json=body).json()
+    assert (e["action"], e["user"], e["reason"]) == ("challenge_closed", "qa1", body["reason"])
+    assert "error" in c.post("/challenge/close", json=body).json()  # nothing left to close
+    assert not any(i["kind"] == "challenge_failed" for i in c.get("/line").json()["waiting"])
+    assert _sign(c).get("signed_by") == "qa1"
