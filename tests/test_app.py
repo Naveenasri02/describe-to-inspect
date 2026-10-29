@@ -14,7 +14,7 @@ import d2i.meta_api as meta_api
 from datetime import datetime
 
 from d2i.audit import AuditLog, Users
-from d2i.batch import Batches
+from d2i.batch import CLEARANCE_PROMPTS, Batches
 from d2i.checklist import CHECKS, approve
 from d2i.meta_api import SamTrackPoint
 from d2i.pockets import Layout
@@ -542,7 +542,7 @@ def test_selftest_needs_qa_and_challenge_needs_login(tmp_path):
 
 class ClearClient(FakeClient):
     def sam_image(self, image, prompt):
-        if prompt in ("blister pack", "pill", "capsule") and getattr(self, "cleared", False):
+        if prompt in CLEARANCE_PROMPTS and getattr(self, "cleared", False):
             return []  # nothing left on the table
         raise meta_api.MetaError("offline")  # pockets: the checklist grid
 

@@ -7,10 +7,12 @@ from pathlib import Path
 
 from d2i.audit import json_line
 from d2i.meta_api import BudgetExceeded, MetaError
-from d2i.pockets import MIN_SCORE
+from d2i.pockets import MIN_SCORE, POCKET_PROMPTS, SAM_POOL, STRIP_PROMPTS
 
 CLEARANCE_MAX_AGE_S = 1800
-CLEARANCE_PROMPTS = ("blister pack", "pill", "capsule")
+# the whole strip chain and every tablet prompt, asked together: with three prompts a strip in view read CLEAR on 18/33
+# real photos; foil-up strips no prompt finds still do (8/33)
+CLEARANCE_PROMPTS = STRIP_PROMPTS + POCKET_PROMPTS + ("capsule",)
 NEED_SAM = "Line clearance needs SAM 3.1 (Meta API) — it cannot be skipped"
 NO_BATCH = "No batch is open — start one first"
 MONTHS = ("JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC")
@@ -48,13 +50,14 @@ def parse_strength(s) -> tuple:
 
 
 def line_clearance(image, client) -> dict:
-    """Not clear when SAM finds any blister pack, pill or capsule on the table."""
+    """Not clear when SAM finds any strip, pill or capsule on the table."""
     if client is None:
         raise ValueError(NEED_SAM)
     found = []
     try:
-        for prompt in CLEARANCE_PROMPTS:
-            n = sum(1 for o in client.sam_image(image, prompt) if o.score is None or o.score >= MIN_SCORE)  # unscored counts: unknown is not clear
+        asked = [SAM_POOL.submit(client.sam_image, image, p) for p in CLEARANCE_PROMPTS]
+        for prompt, answer in zip(CLEARANCE_PROMPTS, asked):
+            n = sum(1 for o in answer.result() if o.score is None or o.score >= MIN_SCORE)  # unscored counts: unknown is not clear
             if n:
                 found.append({"prompt": prompt, "count": n})
     except (MetaError, BudgetExceeded):
