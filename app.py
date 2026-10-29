@@ -398,11 +398,11 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
                 return {"status": "NO_CHECKLIST", "reasons": [{"text": NO_CHECKLIST}]}
             if im is None:
                 return {"error": "No image."}
-            no, refused = need_batch()
-            refused = refused or not_released(batches.open)
-            if refused:
-                return refused
-            with lock:  # inspect and publish together so verdicts land in order
+            with lock:  # inspect and publish together so verdicts land in order; the open batch read under it too
+                no, refused = need_batch()
+                refused = refused or not_released(batches.open)
+                if refused:
+                    return refused
                 rc = recheck.current(product_dir) if held_now() else None  # a re-check runs on a held line only
                 mark = {"recheck": True, "window_id": rc["window_id"]} if rc else None
                 try:  # a re-checked strip keeps its real verdict while the line is held; camera: not an upload
@@ -456,13 +456,13 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
             s = src.source if src else ""
             if not s or Path(s).is_dir() or Path(s).suffix.lower() in (".jpg", ".jpeg", ".png"):
                 return {"error": "tray clip needs a camera or video source"}
-            no, refused = need_batch()
-            refused = refused or not_released(batches.open)
-            if refused:
-                return refused
-            if recheck.current(product_dir):  # each re-checked strip is counted one at a time
-                return {"error": "Re-check open: inspect the strips one at a time with Inspect strip"}
-            with lock:  # one slow station operation at a time; verdicts land in order
+            with lock:  # one slow station operation at a time; verdicts land in order; the open batch read under it too
+                no, refused = need_batch()
+                refused = refused or not_released(batches.open)
+                if refused:
+                    return refused
+                if recheck.current(product_dir):  # each re-checked strip is counted one at a time
+                    return {"error": "Re-check open: inspect the strips one at a time with Inspect strip"}
                 if st.locked:  # no paid SAM video call for a locked station
                     v = st.log(Verdict("LOCKED", [{"rule": None, "check": "locked", "pocket": None, "text": st.lock_reason}]), batch=no, user=user)
                     publish([v])
@@ -608,7 +608,7 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
                 counts[k] = int(counts[k])
             if str(f.get("cleared", "")).lower() not in ("true", "1", "on"):
                 return {"error": "Tick the after-batch line clearance: line cleared, leftover printed foil returned or destroyed"}
-            with meta:
+            with lock, meta:  # the station lock: a strip being inspected lands before the totals, or is refused after
                 cur = batches.open
                 if not cur:
                     return JSONResponse({"error": NO_BATCH}, status_code=409)

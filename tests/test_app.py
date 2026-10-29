@@ -1457,3 +1457,55 @@ def test_drift_restarts_after_an_approved_agent_resume(tmp_path):
     c.post("/inspect", files=up(make_strip(seed=15)))
     assert c.get("/status").json()["held"] is False and len(_holds(p)) == 1
     assert c.get("/line").json()["reject_run"] == {"n": 1, "of": 3}
+
+
+def test_end_batch_and_an_inspection_never_overlap(tmp_path, monkeypatch):
+    """Review: End batch did not take the station lock and /inspect read the open batch before taking it, so a strip
+    inspected during End batch landed in the ended batch, after its totals were written."""
+    c, p = bench(tmp_path)
+    qa_c = TestClient(c.app)
+    login(qa_c, "qa1", "pw-qa")
+    st, entered, gate, out = c.app.state.station, threading.Event(), threading.Event(), {}
+    real = st._judge
+
+    def slow(*a, **k):  # an inspection in flight
+        entered.set()
+        assert gate.wait(10)
+        return real(*a, **k)
+
+    st._judge = slow
+    t = threading.Thread(target=lambda: out.update(v=c.post("/inspect", files=up(make_strip(seed=15))).json()))
+    t.start()
+    assert entered.wait(10)
+    e = threading.Thread(target=lambda: out.update(end=qa_c.post("/batch/end", data=dict(END_OK, received="1", good_tray="1")).json()))
+    e.start()
+    time.sleep(0.5)
+    gate.set()
+    t.join()
+    e.join()
+    assert out["v"]["status"] == "PASS" and out["end"]["totals"]["inspected"] == 1, out  # End batch waited for it
+    open_batch(p, "B2")
+    release_batch(p, "B2")
+    real_reconcile, armed = app_mod.reconcile, threading.Event()
+
+    def slow_reconcile(*a, **k):  # an End batch in flight
+        if len(a) > 2 and armed.is_set():
+            armed.clear()
+            entered.set()
+            assert gate.wait(10)
+        return real_reconcile(*a, **k)
+
+    monkeypatch.setattr(app_mod, "reconcile", slow_reconcile)
+    st._judge, entered, gate = real, threading.Event(), threading.Event()
+    armed.set()
+    e = threading.Thread(target=lambda: out.update(end=qa_c.post("/batch/end", data=END_OK).json()))
+    e.start()
+    assert entered.wait(10)
+    t = threading.Thread(target=lambda: out.update(r=c.post("/inspect", files=up(make_strip(seed=15)))))
+    t.start()
+    time.sleep(0.5)
+    gate.set()
+    e.join()
+    t.join()
+    assert out["end"]["event"] == "end" and out["r"].status_code == 409 and out["r"].json() == {"error": "Start a batch first (QA)"}
+    assert not [r for r in _lines(p / "log.jsonl") if r.get("batch") == "B2"]
