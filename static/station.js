@@ -80,6 +80,7 @@ async function sign(){const r=await j("/sign",{password:$("sp").value,record_id:
 async function investigate(){const r=await j("/investigate",{trigger:$("trig").value});if(r.error)show(r);invRefresh()}
 async function answer(){const r=await j("/ask-operator-answer",{id:qId,answer:$("ans").value});$("ans").value="";show(r.error?r:"Answer sent.")}
 async function approveReq(id,pw){show(await j("/approve-request",{id:id,password:pw.value}));pw.value=""}
+async function declineReq(id,pw,why){show(await j("/decline-request",{id:id,password:pw.value,reason:why.value}));pw.value=""}
 async function resumeLine(){show(await j("/resume",{password:$("rsp").value,reason:$("rsr").value,waiver:$("rsw").value}));$("rsp").value=""}
 
 async function refresh(){
@@ -234,7 +235,9 @@ async function invRefresh(){
   const r=$("reqs"),sig=JSON.stringify(i.pending)+note;if(sig===reqSig)return;reqSig=sig;r.replaceChildren();  // keep a typed password while polling
   i.pending.forEach(q=>{const d=mk("div","","req");d.append(mk("b",q.kind)," — "+q.reason,mk("div",note,"model"));
     const f=mk("div","","field"),pw=document.createElement("input");pw.type="password";pw.placeholder="QA password";pw.setAttribute("aria-label","QA password");
-    const b=mk("button","Approve (QA)","btn");b.onclick=()=>approveReq(q.id,pw);f.append(pw,b);d.append(f);r.appendChild(d)});
+    const b=mk("button","Approve (QA)","btn");b.onclick=()=>approveReq(q.id,pw);
+    const why=document.createElement("input");why.placeholder="Reason to decline";why.setAttribute("aria-label","Reason to decline");
+    const x=mk("button","Decline (QA)","btn");x.onclick=()=>declineReq(q.id,pw,why);f.append(pw,b,why,x);d.append(f);r.appendChild(d)});
 }
 // Speak rule: mono audio, downsampled to 16 kHz 16-bit PCM WAV
 let ctx,proc,chunks=[],recording=false,recMode="rule";

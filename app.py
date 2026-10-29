@@ -34,7 +34,7 @@ from d2i.openitems import last_started, missed_checks, missed_text, open_items, 
 from d2i.printcheck import check_print, read_print, wrong_print
 from d2i.pockets import find_layout
 from d2i.station import FINDER_DOWN, NEED_TEACH, Station, Verdict
-from d2i.supervisor import Supervisor, baseline_from, hold_line, hold_state, resume_line
+from d2i.supervisor import Supervisor, baseline_from, hold_line, hold_state, pending_requests, resume_line
 from d2i.tray import inspect_clip, record_clip
 
 STATIC = Path(__file__).parent / "static"
@@ -369,7 +369,7 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
                 audit.append("teach", name, {"photos": len(imgs), "taught_by": name})
             with sup_lock:
                 if not inv["running"]:
-                    inv["sup"] = None  # rebuilt from the new good photos at the next use
+                    inv["sup"] = None  # rebuilt from the new good photos at the next use; requests.json keeps its requests
             return out
         return paid(run)
 
@@ -671,10 +671,8 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
             meaning = str(body.get("meaning", ""))
             check_signer(users, name, str(body.get("password", "")), meaning)  # the slow hash, before the lock
             with lock:  # holds, quarantine, challenge results and requests are written under it: none lands in between
-                with sup_lock:  # a copy: the agent's thread adds requests
-                    pending = list(inv["sup"].pending.values()) if inv["sup"] else []
                 now, batch = clock(), rec[2]
-                left = [i["text"] for i in open_items(product_dir, now, requests=pending) if i["kind"] != "record_unsigned"]
+                left = [i["text"] for i in open_items(product_dir, now) if i["kind"] != "record_unsigned"]
                 if batch and batch != last_started(product_dir):  # an older batch: its own missed checks too
                     left += [f"Batch {batch}: " + missed_text(m) for m in missed_checks(product_dir, now, batch=batch)]
                 if left:  # the board's "waiting for a person" list: each one is closed first
@@ -768,7 +766,7 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
     def investigation():
         sup = inv["sup"]
         return {"running": inv["running"], "steps": sup.steps if sup else [], "question": inv["question"],
-                "pending": list(sup.pending.values()) if sup else [], "result": inv["result"]}
+                "pending": list((sup.pending if sup else pending_requests(product_dir)).values()), "result": inv["result"]}
 
     @app.post("/ask-operator-answer")
     def operator_answer(body: dict):
@@ -788,6 +786,15 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
                     return get_sup().approve(str(body.get("id", "")), users, qa(request), str(body.get("password", "")))
                 finally:
                     sync_lock()  # a re-teach locks the station until a self-test passes
+        return paid(run)
+
+    @app.post("/decline-request")
+    def decline_request(body: dict, request: Request):
+        def run():
+            name = qa(request)
+            with lock:  # requests are written under the station lock, as approve
+                return get_sup().decline(str(body.get("id", "")), users, name, str(body.get("password", "")),
+                                         str(body.get("reason", "")))
         return paid(run)
 
     @app.post("/hold")
@@ -1069,11 +1076,11 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
         hold = next((e for e in reversed(rows) if mine(e, "hold_line")), None)
         reason = ("Shift Supervisor investigating" if held_by == "supervisor" else (hold or {}).get("reason") or "Line held") \
             if held else ""
-        with sup_lock:  # a copy: the agent's thread adds steps and requests
+        with sup_lock:  # a copy: the agent's thread adds steps
             sup = inv["sup"]
-            agent = {"running": inv["running"], "tools": [x["tool"] for x in sup.steps] if sup else [],
-                     "pending": list(sup.pending.values()) if sup else []}
-        items = open_items(product_dir, now, requests=agent["pending"])
+            agent = {"running": inv["running"], "tools": [x["tool"] for x in sup.steps] if sup else []}
+        items = open_items(product_dir, now)
+        agent["pending"] = [i for i in items if i["kind"] == "request"]
         try:
             suspended = finder_down(batch_rows(s["batch"]), st._selftests())
         except Exception:  # an unreadable self-test log already locks the station: STOPPED says so

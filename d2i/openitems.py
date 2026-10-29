@@ -1,6 +1,6 @@
 """What waits for a person, oldest first: the line board's "Waiting for a person" zone, and the sign gate.
-Reads the product's files only (plus the live supervisor requests the app passes in); a missing file means nothing
-of that kind is waiting, an unreadable one is shown as an item (never hidden)."""
+Reads the product's files only; a missing file means nothing of that kind is waiting, an unreadable one is shown as an
+item (never hidden)."""
 import json
 from datetime import datetime
 from pathlib import Path
@@ -9,7 +9,7 @@ from d2i.audit import AuditLog, quarantine_list
 from d2i.batch import Batches, batch_no
 from d2i.ipqc import check_events, missed_windows, window_id  # noqa: F401 (window_id: the reviews.jsonl key, used here)
 from d2i.linestate import holder
-from d2i.supervisor import hold_state
+from d2i.supervisor import hold_state, pending_requests
 
 KINDS = ("line_held", "quarantine", "request", "recheck", "reconciliation", "missed_check", "challenge_failed",
          "record_unsigned")
@@ -68,9 +68,8 @@ def record_unsigned(batch_rows: list[dict], audit_rows: list[dict]) -> dict | No
     return None
 
 
-def open_items(product_dir: Path, now: float, requests=()) -> list[dict]:
-    """Each item: {kind, text, since, who ("QA" | "Operator"), evidence}. `requests`: the Shift Supervisor's pending
-    requests ({id, kind, reason}) — they live in the app, not in a file, so a caller that has none passes nothing."""
+def open_items(product_dir: Path, now: float) -> list[dict]:
+    """Each item: {kind, text, since, who ("QA" | "Operator"), evidence}."""
     p = Path(product_dir)
     audit = AuditLog(p / "audit.jsonl")
     items = []
@@ -99,7 +98,7 @@ def open_items(product_dir: Path, now: float, requests=()) -> list[dict]:
 
     def request():
         steps = [e for e in audit.entries() if e.get("action") == "agent_step"]
-        for r in requests:
+        for r in pending_requests(p).values():  # the Shift Supervisor's requests waiting for QA
             row = next((e for e in reversed(steps) if r["id"] in str((e.get("details") or {}).get("result_summary"))), None)
             add("request", f"Shift Supervisor asks QA to approve: {r['kind'].replace('_', ' ')} — "
                 + str(r.get("reason", "")).removeprefix("Agent request: "),

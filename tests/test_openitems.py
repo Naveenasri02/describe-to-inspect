@@ -56,9 +56,14 @@ def test_pending_supervisor_request(tmp_path):
     req = {"id": "ab12cd34", "kind": "resume", "reason": "Agent request: lamp moved back"}
     AuditLog(tmp_path / "audit.jsonl").append("agent_step", "supervisor", {
         "tool": "request_resume", "args": {}, "result_summary": json.dumps({"id": "ab12cd34", "status": "waiting"})})
-    [i] = open_items(tmp_path, NOW, requests=[req])
+    (tmp_path / "requests.json").write_text(json.dumps({req["id"]: req}), encoding="utf-8")
+    [i] = open_items(tmp_path, NOW)
     assert (i["kind"], i["who"], i["evidence"]) == ("request", "QA", "audit #1") and "lamp moved back" in i["text"]
-    assert open_items(tmp_path, NOW) == []  # no live request: nothing waits
+    (tmp_path / "requests.json").write_text("{}", encoding="utf-8")
+    assert open_items(tmp_path, NOW) == []  # no request waits
+    (tmp_path / "requests.json").write_text("{", encoding="utf-8")
+    [i] = open_items(tmp_path, NOW)  # unknown is shown, never hidden
+    assert i["kind"] == "request" and i["text"].startswith("Cannot read")
 
 
 def test_recheck_open(tmp_path):

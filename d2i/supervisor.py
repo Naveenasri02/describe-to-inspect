@@ -4,6 +4,7 @@ The model never decides pass/fail and never changes a verdict or the checklist. 
 release are only requests until a QA person approves them with their password (`approve`).
 """
 import json
+import os
 import re
 import uuid
 from contextlib import nullcontext
@@ -34,6 +35,13 @@ GOOD_STRIP_FIRST = ('not run: first ask the operator (ask_operator) exactly "Is 
 # a plain yes, nothing else: "ok give me a minute" or "yes, but it is the rejected one" is not one
 PLAIN_YES = re.compile(r"(yes|y|ok|okay|done|placed)(,? (it is|placed|it is placed))?[.!]?")
 NOT_YES = {"but", "not", "no", "wait", "minute", "will", "later", "rejected", "bad"}
+REQUESTS = "requests.json"  # the requests waiting for QA: they outlive a restart and a re-teach
+
+
+def pending_requests(product_dir) -> dict:
+    """Request id -> request ({id, kind, reason}), oldest first; {} when none was ever made. Unreadable: raises."""
+    p = Path(product_dir) / REQUESTS
+    return json.loads(p.read_text(encoding="utf-8")) if p.exists() else {}
 
 
 def asks_for_good_strip(question) -> bool:
@@ -140,7 +148,7 @@ class Supervisor:
         self.ask, self.baseline, self.ref_box = ask_operator, baseline, ref_box
         self.get_frame, self.good_dir = get_frame, Path(good_dir)
         self.tool_lock = tool_lock  # any context manager; held around each tool call except ask_operator (it waits)
-        self.pending = {}  # request id -> request, until QA approves it
+        self.pending = pending_requests(station.dir)  # request id -> request, until QA approves or declines it
         self._trigger, self._steps, self._new = "", [], []
         if hold_state(self.station.dir)[0]:
             plc.set_hold(True)  # a restart keeps the line held
@@ -284,6 +292,7 @@ class Supervisor:
     def _request(self, kind, reason):
         req = {"id": uuid.uuid4().hex[:8], "kind": kind, "reason": f"Agent request: {reason}"}
         self.pending[req["id"]] = req
+        self._save()
         self._new.append(req)
         return {"id": req["id"], "status": "waiting for a QA person to approve"}
 
@@ -294,6 +303,12 @@ class Supervisor:
         path.write_text(f"# DRAFT — needs QA review\n\nTrigger: {self._trigger}\n\nSummary: {summary}\n\n"
                         f"## Steps\n\n{steps}\n\nBuilt with Muse Spark Open\n", encoding="utf-8")
         return {"path": str(path)}
+
+    def _save(self):
+        p = self.station.dir / REQUESTS
+        tmp = p.with_name(REQUESTS + ".tmp")
+        tmp.write_text(json.dumps(self.pending, ensure_ascii=False), encoding="utf-8")
+        os.replace(tmp, p)  # one object, rewritten whole
 
     def _stamped(self, folder, suffix) -> Path:
         d = self.station.dir / folder
@@ -332,7 +347,22 @@ class Supervisor:
             row = self.audit.append("agent_approve", name, out, req["reason"])
             if kind == "resume" and out["approved"]:  # after its row: no resume without one
                 set_hold(st.dir, self.plc, False, name, at=row["at"])
+            self._save()
         except BaseException:
             self.pending[request_id] = req
             raise
+        return out
+
+    def decline(self, request_id: str, users, name: str, password: str, reason: str) -> dict:
+        """QA only, with a reason: the request is closed and nothing it asked for is done."""
+        _require_qa(users, name, password)
+        if not reason.strip():
+            raise ValueError("a reason is required")
+        req = self.pending.get(request_id)
+        if req is None:
+            raise ValueError(f"no pending request {request_id}")
+        out = {"id": request_id, "kind": req["kind"], "declined_by": name, "request": req["reason"]}
+        self.audit.append("agent_decline", name, out, reason)  # first: no request leaves without its row
+        del self.pending[request_id]
+        self._save()
         return out

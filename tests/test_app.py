@@ -1397,3 +1397,44 @@ def test_an_older_batch_record_shows_that_batch_and_refuses_unknown_numbers(tmp_
     assert "X-Record-Id" not in r.headers and "No batch NOSUCH was started" in r.text
     assert not any(e["action"] == "sign" for e in _audit(p))
 
+
+def test_qa_declines_a_supervisor_request(tmp_path):
+    """Review: QA could only approve a Shift Supervisor request; one QA did not want blocked signing until a restart."""
+    chat = ScriptChat(call("request_resume", {"reason": "lamp moved back"}), {"content": "Lamp moved back."})
+    c, p = bench(tmp_path, chat)
+    c.post("/investigate", json={"trigger": "glare"})
+    req = wait_done(c)["pending"][0]
+    body = {"id": req["id"], "password": "pw-qa", "reason": "lamp not checked yet"}
+    assert c.post("/decline-request", json=body).json() == {"error": "Log in as a QA user first"}  # operator
+    login(c, "qa1", "pw-qa")
+    assert c.post("/decline-request", json=dict(body, password="wrong")).json() == {"error": "QA login required"}
+    assert "reason" in c.post("/decline-request", json=dict(body, reason=" ")).json()["error"]
+    assert c.get("/investigation").json()["pending"] == [req]
+    out = c.post("/decline-request", json=body).json()
+    assert (out["id"], out["kind"], out["declined_by"]) == (req["id"], "resume", "qa1")
+    e = _audit(p)[-1]
+    assert (e["action"], e["user"], e["reason"], e["details"]["request"]) == (
+        "agent_decline", "qa1", "lamp not checked yet", "Agent request: lamp moved back")
+    assert c.get("/investigation").json()["pending"] == [] and "error" in c.post("/decline-request", json=body).json()
+    assert not any(i["kind"] == "request" for i in c.get("/line").json()["waiting"])
+    assert c.get("/status").json()["held"] is True  # declining a resume request does not resume the line
+    assert c.post("/resume", json={"password": "pw-qa", "reason": "lamp checked"}).json()["resumed"] is True
+    assert _sign(c).get("signed_by") == "qa1"
+
+
+def test_supervisor_requests_survive_a_teach_and_a_restart(tmp_path):
+    """Review: requests lived in memory, so a teach or a restart dropped them from the sign gate with no QA decision."""
+    chat = ScriptChat(call("request_reteach", {"reason": "lamp moved"}), {"content": "Lamp moved."})
+    c, p = bench(tmp_path, chat)
+    c.post("/investigate", json={"trigger": "rejects rose"})
+    req = wait_done(c)["pending"][0]
+    login(c, "qa1", "pw-qa")
+    assert c.post("/teach", json={}).json().get("error") is None
+    assert c.get("/investigation").json()["pending"] == [req]
+    again = TestClient(app_mod.create_app(p, None, chat=ScriptChat()))
+    login(again, "qa1", "pw-qa")
+    assert again.get("/investigation").json()["pending"] == [req]
+    assert any(i["kind"] == "request" for i in again.get("/line").json()["waiting"])
+    assert "Shift Supervisor asks QA to approve: reteach" in _sign(again)["error"]
+    assert again.post("/approve-request", json={"id": req["id"], "password": "pw-qa"}).json()["approved"] is True
+    assert again.get("/investigation").json()["pending"] == []
