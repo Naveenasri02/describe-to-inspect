@@ -1543,3 +1543,13 @@ def test_a_rechecked_strip_moves_no_plc_counter(tmp_path):
     assert c.post("/inspect", files=up(make_strip(seed=15))).json()["status"] == "REJECT"  # the re-checked strip
     assert _lines(p / "log.jsonl")[-1]["recheck"] is True
     assert plc.regs[:3] == before[:3] and plc.coils[0] is True  # no counter moved; the reject output still pulses
+
+
+def test_batch_end_refuses_numbers_python_reads_but_people_do_not_type(tmp_path):
+    """Review: float() reads "1_0" as 10 (and "1e1" as 10); typed counts must be plain numbers."""
+    c, p = bench(tmp_path)
+    login(c, "qa1", "pw-qa")
+    for bad in ({"received": "1_0"}, {"good_tray": "1e1"}, {"foil_issued": "0_5"}, {"strips_limit": "1_0"}, {"samples": " 1 0 "}):
+        assert c.post("/batch/end", data=dict(END_OK, **bad)).json() == {"error": "Counts and limits must be numbers"}, bad
+    assert c.post("/batch/end", data=dict(END_OK, received="-1")).json() == {"error": "Counts and limits cannot be negative"}
+    assert Batches(p).open and c.post("/batch/end", data=dict(END_OK, foil_issued=".4", foil_used="0.4")).json()["event"] == "end"

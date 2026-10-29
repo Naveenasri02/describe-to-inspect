@@ -3,7 +3,6 @@ import argparse
 import html
 import hashlib
 import json
-import math
 import mimetypes
 import re
 import secrets
@@ -593,12 +592,16 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
             for k in ("received", "good_tray", "reject_box", "foil_issued"):
                 if not str(f.get(k, "")).strip():
                     return {"error": f"{k.replace('_', ' ').capitalize()} must be entered"}  # blank is never read as 0
+            def num(k, blank):  # a plain number: float() also reads "1_0", "1e1", "nan" and "inf"
+                s = str(f.get(k, "")).strip() or blank
+                if not re.fullmatch(r"-?(\d+(\.\d+)?|\.\d+)", s):
+                    raise ValueError(s)
+                return float(s)
+
             try:
-                counts = {k: float(f.get(k) or 0) for k in keys}
-                limits = {"strips": float(f.get("strips_limit") or 0), "foil": float(f.get("foil_limit") or 0.5)}
+                counts = {k: num(k, "0") for k in keys}
+                limits = {"strips": num("strips_limit", "0"), "foil": num("foil_limit", "0.5")}
             except ValueError:
-                return {"error": "Counts and limits must be numbers"}
-            if not all(map(math.isfinite, (*counts.values(), *limits.values()))):
                 return {"error": "Counts and limits must be numbers"}
             if min(*counts.values(), *limits.values()) < 0:
                 return {"error": "Counts and limits cannot be negative"}
