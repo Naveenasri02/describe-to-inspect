@@ -8,7 +8,8 @@ import numpy as np
 from d2i.meta_api import SAM_SIDE, BudgetExceeded, MetaError
 
 MIN_SCORE = 0.5
-STRIP_PROMPTS = ("blister strip", "blister pack", "pill pack")  # "blister strip" finds nothing on close-ups
+# "blister strip" finds nothing on close-ups; "blister" found 13/25 real photos alone (missed 4 tablet-side), so it is last
+STRIP_PROMPTS = ("blister strip", "blister pack", "pill pack", "blister")
 PAD = 0.08  # pill-outline strip: padding as a fraction of the pill bounds
 # shortcut: only white tablets measured (27 Oct); add colour words when a coloured product is taught
 POCKET_PROMPTS = ("pill", "white pill")  # "blister pocket" and "tablet" find nothing
@@ -180,17 +181,19 @@ def _from_template(strip, template):
 def find_layout(image: np.ndarray, cl: dict, client=None, template=None) -> Layout:
     if client is not None:
         try:
-            # asked together (one wait, not one per prompt), except the last strip prompt: it is asked only when the
-            # others found no strip (two whole-strip outlines in flight took 15 s each instead of 9)
-            first, last = STRIP_PROMPTS[:-1], STRIP_PROMPTS[-1]
+            # asked together (one wait, not one per prompt), except the later strip prompts: each is asked only when
+            # the ones before found no strip (two whole-strip outlines in flight took 15 s each instead of 9)
+            first, later = STRIP_PROMPTS[:2], STRIP_PROMPTS[2:]
             asked = {p: SAM_POOL.submit(client.sam_image, image, p) for p in first + pill_prompts(cl["item"])}
             wait(asked.values())  # no call outlives its layout
             # answers are read in the order they used to be asked; one that is not needed is not opened, nor its error
             found = lambda p: [o.box for o in asked[p].result() if o.score is None or o.score >= MIN_SCORE]
             boxes = next((f for f in map(found, first) if f), None)
-            if boxes is None:
-                asked[last] = SAM_POOL.submit(client.sam_image, image, last)
-                boxes = found(last) or None
+            for p in later:
+                if boxes is not None:
+                    break
+                asked[p] = SAM_POOL.submit(client.sam_image, image, p)
+                boxes = found(p) or None
             strip = tuple(max(boxes, key=lambda b: (b[2] - b[0]) * (b[3] - b[1]))) if boxes else None
             pills = next((f for f in map(found, pill_prompts(cl["item"])) if f), [])
             source = "sam"

@@ -5,8 +5,8 @@ from d2i.meta_api import MetaError, SamObject
 from d2i.pockets import POCKET_PROMPTS, STRIP_PROMPTS, Layout, find_layout, grid, pill_prompts, template_from
 from tests.conftest import STRIP_BOX, make_strip, pocket_box
 
-ASKED = sorted(STRIP_PROMPTS + POCKET_PROMPTS)  # every prompt; all but "pill pack" go out at once
-FIRST = sorted(STRIP_PROMPTS[:-1] + POCKET_PROMPTS)  # "pill pack" is asked only when no other strip prompt found one
+ASKED = sorted(STRIP_PROMPTS + POCKET_PROMPTS)  # every prompt; the first two strip prompts and the pill prompts at once
+FIRST = sorted(STRIP_PROMPTS[:2] + POCKET_PROMPTS)  # "pill pack", then "blister": asked only while no strip is found
 
 CL = {"rows": 2, "per_row": 5, "count": 10, "item": "tablet"}
 
@@ -130,6 +130,22 @@ def test_second_strip_prompt_used_when_first_empty():
     lay = find_layout(make_strip(), CL, sam)
     assert lay.ok and lay.strip_box == STRIP_BOX and lay.source == "sam"
     assert sorted(sam.prompts) == FIRST
+
+
+def test_blister_is_the_last_strip_fallback():
+    """Real photos (29 Oct): "blister" found strips the chain missed (wa0, wa3, wa7, 2626, 2640), but alone it missed
+    4/25 tablet-side photos, so it is asked last, and only when "pill pack" found nothing either."""
+    assert STRIP_PROMPTS[-1] == "blister" and STRIP_PROMPTS[:3] == ("blister strip", "blister pack", "pill pack")
+    sam = FakeSam([], _pills(range(10)))
+    sam.more["blister"] = [(STRIP_BOX, 0.6)]
+    lay = find_layout(make_strip(), CL, sam)
+    assert lay.ok and lay.strip_box == STRIP_BOX and lay.source == "sam"
+    assert sam.prompts[-2:] == ["pill pack", "blister"]
+    sam = FakeSam([], _pills(range(10)))
+    sam.more["pill pack"] = [(STRIP_BOX, 0.9)]
+    sam.more["blister"] = [((0, 0, 640, 360), 0.9)]  # not asked: "pill pack" found the strip
+    lay = find_layout(make_strip(), CL, sam)
+    assert lay.strip_box == STRIP_BOX and "blister" not in sam.prompts
 
 
 def test_pills_bound_the_strip_when_no_strip_prompt_works():
