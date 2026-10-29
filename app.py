@@ -490,9 +490,12 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
     @app.get("/record", response_class=HTMLResponse)
     def shift_record(batch: str = "", operator: str = "", hours: float = 8.0):
         try:
-            body, fp = make_record(batch, operator, hours)
+            shown = record.shown_batch(product_dir, batch)
+            if batch.strip() and not any(r["event"] == "start" and r["batch"] == shown for r in batches.rows):
+                raise ValueError(f"No batch {shown} was started")  # its record would show another batch's sections
+            body, fp = make_record(shown, operator, hours)
             sha, rid = hashlib.sha256(body.encode("utf-8")).hexdigest(), uuid.uuid4().hex[:8]
-            records[rid] = (body, sha, record.shown_batch(product_dir, batch), fp)
+            records[rid] = (body, sha, shown, fp)
             while len(records) > 20:
                 records.pop(next(iter(records)))
             note = f"<p>Record id: {rid} · SHA-256 of the record above: {sha}</p>"

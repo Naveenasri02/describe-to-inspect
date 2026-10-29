@@ -1319,7 +1319,8 @@ def test_an_older_batch_signs_only_after_its_own_missed_checks_have_notes(tmp_pa
         assert (row["window"], row["batch"], row["by"]) == (m["window"], "B1", "qa1")
     assert c.get("/missed", params={"batch": "B1"}).json()["missed"] == []
     assert _sign_batch(c, "B1")["signed_by"] == "qa1"
-    assert "tested on paper" in c.get("/record", params={"batch": "B1"}).text.split("<h2>In-process checks</h2>")[1]
+    checks = c.get("/record", params={"batch": "B1"}).text.split("<h2>In-process checks</h2>")[1].split("<h2>")[0]
+    assert "tested on paper" in checks  # in B1's own section, not only in the audit trail
 
 
 def test_sign_refused_while_the_reconciliation_is_outside_without_a_reason(tmp_path):
@@ -1372,4 +1373,27 @@ def test_resume_writes_its_audit_row_before_the_hold_is_lifted(tmp_path):
         f.write("not json\n")
     assert "damaged" in c.post("/resume", json={"password": "pw-qa", "reason": "jam cleared"}).json()["error"]
     assert c.get("/status").json()["held"] is True
+
+
+def test_an_older_batch_record_shows_that_batch_and_refuses_unknown_numbers(tmp_path):
+    """Review probe: /record?batch=B1 while B2 ran showed B2's Batch, Release and Reconciliation sections under a B1
+    header; a lowercase "b1" or an unknown number skipped the older batch's own sign gate."""
+    c, p = bench(tmp_path)
+    _backdate_batch(p, 3700)  # B1: one whole hour with no leak test and no print check
+    now = time.time() - 5
+    Batches(p)._write("batches.jsonl", {"event": "end", "batch": "B1", "by": "qa1", "time": now,
+                                        "at": datetime.fromtimestamp(now).isoformat(timespec="seconds"),
+                                        "totals": {"status": "within", "lines": []}})
+    open_batch(p, "B2")  # open, not released
+    login(c, "qa1", "pw-qa")
+    r = c.get("/record", params={"batch": " b1 "})
+    batch = r.text.split("<h2>Batch</h2>")[1].split("<h2>")[0]
+    release = r.text.split("<h2>Release</h2>")[1].split("<h2>")[0]
+    assert "<dd>B1</dd>" in batch and "B2" not in batch and "Not done" not in release
+    assert "Not done" in c.get("/record").text.split("<h2>Release</h2>")[1].split("<h2>")[0]  # B2's own
+    out = _sign_batch(c, "b1")["error"]
+    assert out.startswith("Sign refused — still waiting: Batch B1: Leak test missed")
+    r = c.get("/record", params={"batch": "NOSUCH"})
+    assert "X-Record-Id" not in r.headers and "No batch NOSUCH was started" in r.text
+    assert not any(e["action"] == "sign" for e in _audit(p))
 

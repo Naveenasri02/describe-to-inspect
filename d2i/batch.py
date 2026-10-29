@@ -62,6 +62,11 @@ def line_clearance(image, client) -> dict:
     return {"clear": not found, "found": found}
 
 
+def batch_no(s) -> str:
+    """A batch number as the batch file keeps it: "b 1" = "B1"."""
+    return re.sub(r"\s+", "", str(s)).upper()
+
+
 def _iso(t: float) -> str:
     return datetime.fromtimestamp(t).isoformat(timespec="seconds")
 
@@ -102,7 +107,7 @@ class Batches:
                                                 "clear": bool(result["clear"]), "found": result["found"]})
 
     def start(self, batch, mfg, exp, mrp, by, now, product=None, strength=None) -> dict:
-        no = re.sub(r"\s+", "", str(batch)).upper()
+        no = batch_no(batch)
         if not re.fullmatch(r"[A-Z0-9/-]{1,20}", no):
             raise ValueError("Batch number: 1 to 20 letters, digits, / or -")
         extra = {}

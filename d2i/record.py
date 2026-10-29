@@ -9,7 +9,7 @@ from html import escape as e
 from pathlib import Path
 
 from d2i.audit import AuditLog, config_hashes, quarantine_list
-from d2i.batch import Batches
+from d2i.batch import Batches, batch_no
 from d2i.challenge import NO_SET, RUNS, SET, load_set, runs as challenge_runs
 from d2i.checklist import current
 from d2i.ipqc import check_events, missed_windows, strip_counts, window_id
@@ -307,7 +307,8 @@ def _signed_at(r: dict) -> str:
 
 
 def shown_batch(product_dir: Path, batch: str = "") -> str:
-    return batch or next((r["batch"] for r in reversed(Batches(product_dir).rows) if r["event"] == "start"), "")
+    """The typed batch number as the batch file keeps it ("b 1" = "B1"), else the last started batch."""
+    return batch_no(batch) or next((r["batch"] for r in reversed(Batches(product_dir).rows) if r["event"] == "start"), "")
 
 
 def _quarantine_section(product_dir: Path, audit: AuditLog | None = None) -> str:
@@ -379,10 +380,10 @@ def _challenge_section(product_dir: Path, since: float, until: float) -> str:
             + _table(["Time", "By", "Batch", "Frame from", "Each strip", "Run"], rows))
 
 
-def _batch_section(product_dir: Path, audit: AuditLog | None = None, until: float = 0.0) -> str:
-    """The open batch, else the last one: fields, clearance, leak results, verdict counts by status and rule."""
+def _batch_section(product_dir: Path, audit: AuditLog | None = None, until: float = 0.0, batch: str = "") -> str:
+    """That batch (default: the last started one): fields, clearance, leak results, verdict counts by status and rule."""
     rows = Batches(product_dir).rows
-    start = next((r for r in reversed(rows) if r["event"] == "start"), None)
+    start = next((r for r in reversed(rows) if r["event"] == "start" and r["batch"] == (batch or r["batch"])), None)
     if start is None:
         return "<h2>Batch</h2><p>No batch has been started</p>"
     mine = [r for r in rows if r.get("batch") == start["batch"] and r["at"] >= start["at"]]
@@ -480,7 +481,7 @@ def shift_record(product_dir: Path, since: float, until: float, batch: str, oper
     parts = [
         "<header><div class='title'><h1>Shift record</h1>" + badge + "</div>"
         "<dl class='meta'>" + "".join(f"<div><dt>{k}</dt><dd{c}>{e(str(v or '–'))}</dd></div>" for k, v, c in meta) + "</dl></header>",
-        _batch_section(product_dir, audit, until),
+        _batch_section(product_dir, audit, until, shown),
         _checklist_section(cl), _selftest_section(tests), _challenge_section(product_dir, since, until),
         _totals_section(verdicts),
         _rejects_section(verdicts), _held_section(verdicts), _recheck_section(product_dir, audit, since, until),

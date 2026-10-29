@@ -6,7 +6,7 @@ from datetime import datetime
 from pathlib import Path
 
 from d2i.audit import AuditLog, quarantine_list
-from d2i.batch import Batches
+from d2i.batch import Batches, batch_no
 from d2i.ipqc import check_events, missed_windows, window_id  # noqa: F401 (window_id: the reviews.jsonl key, used here)
 from d2i.linestate import holder
 from d2i.supervisor import hold_state
@@ -36,9 +36,9 @@ def _rows(path: Path) -> list[dict]:
 def missed_checks(product_dir: Path, now: float, batch: str | None = None) -> list[dict]:
     """A batch's missed hourly windows with no QA review note yet (default: the last started batch):
     {kind ("leak" | "print"), text, start, end, window (the reviews.jsonl key), batch}, oldest first."""
-    p = Path(product_dir)
+    p, batch = Path(product_dir), batch and batch_no(batch)
     rows = Batches(p).rows
-    start = next((r for r in reversed(rows) if r["event"] == "start" and (batch is None or r["batch"] == batch)), None)
+    start = next((r for r in reversed(rows) if r["event"] == "start" and (not batch or r["batch"] == batch)), None)
     if not start:
         return []
     end = next((r for r in rows if r["event"] == "end" and r["batch"] == start["batch"] and r["time"] >= start["time"]), None)
