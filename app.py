@@ -4,6 +4,7 @@ import html
 import hashlib
 import json
 import mimetypes
+import os
 import re
 import secrets
 import threading
@@ -76,7 +77,12 @@ class FrameSource:
                 i += 1
                 self.stop.wait(2)
             return
-        cap = cv2.VideoCapture(int(self.source) if self.source.isdigit() else self.source)
+        if self.source.isdigit():  # a camera: DirectShow on Windows (the default MSMF driver gives no frames on some webcams)
+            cap = cv2.VideoCapture(int(self.source), cv2.CAP_DSHOW if os.name == "nt" else cv2.CAP_ANY)
+            cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1920)
+            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 1080)
+        else:
+            cap = cv2.VideoCapture(self.source)
         while not self.stop.is_set():
             ok, f = cap.read()
             if not ok:
