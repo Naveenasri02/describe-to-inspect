@@ -150,7 +150,7 @@ function setupTab(s){
   const now=done.indexOf(false)+1;
   if(now!==stepWas)stepWas=stepShown=now;  // follow the work, unless QA picked another step since
   document.querySelectorAll("#steps button").forEach((b,i)=>{b.className=done[i]?"done":i+1===now?"now":"";
-    if(i+1===stepShown&&i+1!==now)b.classList.add("shown");b.querySelector("i").textContent=done[i]?"✓":i+1;
+    if(i+1===stepShown&&i+1!==now)b.classList.add("shown");
     b.setAttribute("aria-current",i+1===now?"step":"false")});
   document.querySelectorAll("[data-panel]").forEach(p=>p.hidden=+p.dataset.panel!==stepShown);
   const ol=$("rules");ol.replaceChildren();
