@@ -128,7 +128,7 @@ main{flex:1;min-height:0;display:flex;flex-direction:column}
 .heard:empty{display:none}
 .rail .brand{margin-top:auto;font-size:11.5px;color:var(--text2);text-align:right}
 /* Run: physical challenge run, under the camera */
-.chal{flex:none;padding:10px 16px;display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+.card.chal{flex:none;padding:10px 16px;display:flex;gap:12px;align-items:center;flex-wrap:wrap}
 .chal>b{font-size:15px}
 .chal #chnext{font-size:16px;font-weight:600}
 .chal img{height:52px;border-radius:4px;border:1px solid var(--rule)}
@@ -174,41 +174,114 @@ main{flex:1;min-height:0;display:flex;flex-direction:column}
 .approved b{color:var(--pass);font-weight:600}
 .approved.wait{color:#8a5f00;font-weight:600}
 
-/* QA */
-.qa{flex:1;display:grid;grid-template-columns:1fr 1fr 1fr;gap:18px;padding:18px 20px;align-items:start}
-.qa h2{font-size:20px;margin:0 0 12px}
-.check{list-style:none;margin:0;padding:0}
-.check li{display:grid;grid-template-columns:30px 1fr;gap:6px;padding:11px 0;border-top:1px solid var(--rule);font-size:15px}
-.check li span{width:24px;height:24px;border-radius:50%;display:grid;place-items:center;font-size:14px;color:#fff;background:var(--pass)}
-.check li.todo span{background:transparent;border:2px solid var(--hold);color:var(--hold)}
-.check li.bad span{background:var(--reject)}
-.check li.off{color:var(--steel)} .check li.off span{background:transparent;border:2px solid var(--rule);color:var(--steel)}
-.check small{display:block;color:var(--steel);font-size:13px}
-.field{display:flex;gap:8px;margin-top:10px;align-items:center;flex-wrap:wrap}
-.field input:not([type=checkbox]){flex:1;min-width:0;font-size:15px;padding:10px 12px;border:1px solid #aab2bb;border-radius:6px;background:#fff}
-.field input.narrow{flex:0 0 110px}
+/* forms: every input has a visible label above it */
+.field{display:flex;gap:10px;margin-top:10px;align-items:flex-end;flex-wrap:wrap}
+.fl{display:flex;flex-direction:column;gap:4px;font-size:12px;font-weight:500;color:var(--text2);min-width:0}
+.fl.grow{flex:1 1 180px}
+main input:not([type=checkbox]),main select{height:36px;border:1px solid var(--field);border-radius:4px;padding:0 10px;font-size:14px;background:#fff;color:var(--ink);min-width:0}
+.fl input,.fl select{width:170px} .fl.grow input,.fl.grow select{width:100%}
+.fl input.narrow{width:110px}
+.field .btn,.work .btn{height:36px;font-size:14px;padding:0 14px}
+.btn.ok{background:var(--pass);border-color:var(--pass);color:#fff}
+.btn.ok:hover{background:#0B6538}
+.tickbox{display:flex;gap:8px;align-items:center;font-size:14px;color:var(--ink)}
+.tickbox input{width:16px;height:16px;margin:0;accent-color:var(--violet)}
+.grid3,.grid4{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
+.grid4{grid-template-columns:repeat(4,minmax(0,1fr))}
+.grid3 .fl input,.grid4 .fl input{width:100%}
+.card h3{margin:16px 0 4px;font-size:14px;font-weight:600}
+.card .note{font-size:12.5px;color:var(--text2);margin:12px 0 0}
+
+/* QA: batch release as a numbered sequence; the line, totals and challenge set on the right */
+.qa{flex:none;display:grid;grid-template-columns:minmax(0,1fr) 470px;gap:16px;padding:16px;align-items:start}
+.qa .card{padding:18px 22px}
+.qa h2{margin:0;font-size:18px;font-weight:600}
+.sub{margin:3px 0 0;font-size:13.5px;color:var(--text2)}
+.release>.msg{position:sticky;top:8px;z-index:2;margin:12px 0 0;background:var(--panel);border:1px solid var(--rule);border-left:4px solid var(--violet);
+  border-radius:4px;padding:8px 12px;box-shadow:0 4px 12px rgba(24,33,43,.08)}
+.release>.msg.err{border-left-color:var(--reject)}
+.seq{list-style:none;margin:16px 0 0;padding:0}
+.seq>li{display:grid;grid-template-columns:30px minmax(0,1fr) auto;column-gap:14px;position:relative;padding-bottom:16px}
+.seq>li:last-child{padding-bottom:0}
+.seq>li:not(:last-child)::before{content:"";position:absolute;left:14px;top:30px;bottom:0;width:2px;background:#DCE1E6}
+.seq>li.done:not(:last-child)::before{background:var(--pass)}
+.seq .n{width:30px;height:30px;border-radius:50%;display:grid;place-items:center;font-size:14px;font-weight:600;border:2px solid #B9C1CA;
+  color:var(--text2);background:#fff;position:relative;z-index:1}
+.seq .n svg{display:none;fill:none;stroke:#fff;stroke-width:2.4;stroke-linecap:round;stroke-linejoin:round}
+.seq .done .n{background:var(--pass);border-color:var(--pass)}
+.seq .done .n svg{display:block} .seq .done .n b{display:none}
+.seq .now .n{border-color:var(--violet);color:var(--violet)}
+.seq .t{font-size:15.5px;font-weight:600;padding-top:4px}
+.seq .now .t{color:var(--violet)}
+.seq .d{font-size:13px;color:var(--text2);margin-top:2px}
+.seq .when{font-size:12.5px;color:var(--text2);padding-top:6px;text-align:right;white-space:nowrap}
+.seq .work{grid-column:2/4;margin-top:10px;border:1px solid #DCE1E6;border-radius:6px;padding:12px 14px;background:#FAFBFC}
+.seq .work>.field:first-child,.seq .work.field,.seq .work>h3:first-child{margin-top:0}
+.seq .work.field{display:flex}
+.seq .work+.work{margin-top:8px}
+#eyebox{margin-top:12px;padding-top:10px;border-top:1px solid var(--rule2)}
+#eyebox h3{margin-top:0}
+.dueline{background:var(--holdbg);color:var(--holdtext);border-radius:4px;padding:6px 10px;font-size:13.5px;font-weight:500;margin-bottom:10px}
 .field .end{margin-left:auto}
-.field label{font-size:14px;color:var(--steel);display:flex;gap:4px;align-items:center}
-.grid4{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px}
-.grid4 input{font-size:15px;padding:10px 12px;border:1px solid #aab2bb;border-radius:6px;background:#fff;min-width:0}
-.held{border-left:5px solid var(--hold);background:#fff8e8;padding:12px 14px;border-radius:0 4px 4px 0;font-size:15px}
-.held b{display:block;font-size:17px;margin-bottom:2px}
-.held.crit{border-left-color:var(--reject);background:#fdf0f0}
-.running{color:var(--steel);font-size:15px}
-.agent{margin-top:12px;font-size:14px}
-.agent ol{margin:6px 0 0;padding-left:20px;color:var(--steel);overflow-wrap:anywhere}
-.agent ol li{padding:2px 0}
-.model{font-size:12px;color:#7a4a00;font-style:italic;margin-top:6px}
-.req{margin-top:12px;background:#fff;border:1px solid var(--rule);border-radius:4px;padding:12px 14px;font-size:15px}
-.recon{width:100%;border-collapse:collapse;font-size:15px;margin-top:4px}
-.recon td{padding:7px 0;border-top:1px solid var(--rule)}
-.recon td:last-child{text-align:right;font-weight:600}
-.recon tr.sum td{border-top:2px solid var(--ink)}
-.bal{color:var(--pass);font-weight:600;font-size:14px;margin-top:8px}
+
+/* lists with a mark: done (tick), failed (cross), waiting (!), not applicable */
+.check{list-style:none;margin:8px 0 0;padding:0}
+.check li{display:grid;grid-template-columns:22px minmax(0,1fr);column-gap:10px;row-gap:8px;padding:8px 0;border-top:1px solid var(--rule2);font-size:14px;align-items:center}
+.check li:first-child{border-top:0}
+.check li>:not(:first-child){grid-column:2}
+.check li>span:first-child{width:22px;height:22px;border-radius:50%;display:grid;place-items:center;background:var(--pass);color:#fff;font-size:0}
+.check li>span:first-child::after{content:"";width:5px;height:10px;border:solid #fff;border-width:0 2px 2px 0;transform:translateY(-1px) rotate(45deg)}
+.check li.bad>span:first-child{background:var(--reject)}
+.check li.bad>span:first-child::after{content:"\00D7";width:auto;height:auto;border:0;transform:none;font-size:17px;font-weight:600;line-height:1}
+.check li.todo>span:first-child,.check li.off>span:first-child{background:#fff;border:2px solid var(--hold);color:var(--holdtext);font-size:12px;font-weight:700}
+.check li.off>span:first-child{border-color:var(--rule);color:var(--text2)}
+.check li.todo>span:first-child::after,.check li.off>span:first-child::after{content:none}
+.check li.off{color:var(--text2)}
+.check li.todo{grid-template-columns:22px minmax(0,1fr) auto}
+.check li.todo>:nth-child(2){grid-column:2/4;font-weight:500}
+.check li.todo>input{grid-column:2}
+.check li.todo>button{grid-column:3;height:36px;font-size:13.5px}
+.check small{display:block;color:var(--text2);font-size:12.5px}
+
+/* the line panel: running (green) or held (amber), the Shift Supervisor's investigation and QA's decisions */
+.qside{display:flex;flex-direction:column;gap:14px;min-width:0}
+.qa .line{padding:0;overflow:hidden;border:2px solid var(--pass)}
+.qa .line.held{border-color:var(--hold)}
+.line .lhead{background:var(--pass);color:#fff;padding:12px 20px 10px}
+.line.held .lhead{background:var(--hold);color:var(--ink)}
+.line .lhead h2{font:700 30px/1 var(--cond);text-transform:uppercase;letter-spacing:.01em}
+.line .lbody{padding:14px 20px 16px}
+.line .held b{display:block;font-size:15.5px;font-weight:600;line-height:1.3}
+.line .held span{display:block;font-size:13.5px;color:var(--text2);margin-top:2px}
+.line .held span:empty{display:none}
+.line .held.crit span{color:var(--reject);font-weight:600}
+.running{color:var(--text2);font-size:14px}
+.agent{margin-top:12px;padding-top:12px;border-top:1px solid var(--rule2);font-size:13.5px}
+.agent .ah b{font-weight:600}
+#checked{margin-top:10px;font-size:12px;font-weight:600;color:var(--text2)}
+#steplist{list-style:none;counter-reset:s;margin:6px 0 0;padding:0}
+#steplist li{display:grid;grid-template-columns:22px minmax(0,1fr);gap:8px;padding:6px 0;border-top:1px solid #EEF0F3;font-size:13.5px;font-weight:400;
+  color:var(--ink);line-height:1.35;overflow-wrap:anywhere}
+#steplist li::before{counter-increment:s;content:counter(s);font-size:12px;font-weight:600;color:var(--text2);padding-top:1px}
+#steplist b{font-weight:600}
+#concl:not(:empty){margin-top:10px;padding:10px 12px;background:#F4F1FF;border-radius:4px;line-height:1.4}
+.model{font-size:12px;color:var(--holdtext);font-style:italic;margin-top:6px}
+.req{margin-top:12px;border:1px solid #D9D2F7;background:#F8F6FF;border-radius:6px;padding:12px 14px;font-size:14px;line-height:1.4}
+.req .field{display:grid;grid-template-columns:minmax(0,1fr) 140px;gap:8px 10px;align-items:end}
+.req .field .btn{width:100%}
+#invstate:not(:empty){margin-top:6px}
+#resumebox{margin-top:14px;padding-top:12px;border-top:1px solid var(--rule2)}
+#resumebox h3{margin-top:0}
+.line .msg{margin-top:12px}
+.recon{width:100%;border-collapse:collapse;margin-top:10px;display:grid;grid-template-columns:repeat(5,minmax(0,1fr));border:1px solid var(--rule2);border-radius:6px}
+.recon tr{display:flex;flex-direction:column-reverse;justify-content:flex-end;padding:8px 10px;border-right:1px solid var(--rule2)}
+.recon tr:last-child{border-right:0}
+.recon td{padding:0;border:0;font-size:12px;color:var(--text2);line-height:1.25}
+.recon td:last-child{font:700 26px/1.1 var(--cond);color:var(--ink)}
+.recon:empty{display:none}
+.bal{color:var(--text2);font-weight:500;font-size:13.5px;margin-top:10px}
 .bal.bad{color:var(--reject)}
-.dueline{background:#fdf0d5;color:#6b4a00;border-radius:4px;padding:8px 12px;font-size:14px;margin-top:12px}
-.note{font-size:13px;color:var(--steel);margin:12px 0 0}
-.qlist{margin:6px 0 0;padding-left:18px;font-size:13px;color:var(--steel)}
+.qlist{margin:6px 0 0;padding-left:18px;font-size:13px;color:var(--text2)}
 
 /* Record + System */
 .wide{flex:1;display:grid;grid-template-columns:420px 1fr;gap:18px;padding:18px 20px;min-height:0}

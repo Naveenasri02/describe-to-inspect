@@ -178,25 +178,39 @@ function setupTab(s){
   $("uncovered").textContent=uncovered(s);
 }
 function qaTab(s){
-  const b=s.batch,unreadable=s.blockers.some(x=>!REL.includes(x)&&x!==CHAL),ul=$("rel");ul.replaceChildren();
-  const item=(ok,text,small)=>{const li=mk("li","",ok?"":b?"todo":"off");li.append(mk("span",ok?"✓":"!"));
-    const d=mk("div",text);d.append(mk("small",small));li.append(d);ul.append(li)};
-  item(!!b,"Line clearance",b?"Clear at "+hhmm(b.clearance_at)+", before batch "+b.batch:$("clr").textContent||"Run it before the batch starts");
-  REL.forEach((x,k)=>{const ok=b&&!unreadable&&!s.blockers.includes(x);item(ok,x,ok?"Done":b?(k===1&&s.print_by_eye?"Waiting: Check the print by eye, below":WAIT[k]):"After the batch starts");
-    if(k===0&&C.set){const c=b&&!unreadable&&!s.blockers.includes(CHAL);item(c,CHAL,c?"Done":b?"Waiting: Challenge run, on the Run screen":"After the batch starts")}});
-  $("spw").parentNode.hidden=!(b&&s.blockers.includes(REL[2]));
+  const b=s.batch,unreadable=s.blockers.some(x=>!REL.includes(x)&&x!==CHAL),clr=$("clr").textContent==="Clear";
+  const ok=x=>!!b&&!unreadable&&!s.blockers.includes(x),wait=(x,k)=>ok(x)?"Done":b?WAIT[k]:"After the batch starts";
+  const at=t=>t?new Date(t*1000).toTimeString().slice(0,5):"";
+  // the release sequence: [step, done, what it says, when]; the first step not done is the current one
+  const steps=[["q-clear",!!b||clr,b?"Clear at "+hhmm(b.clearance_at)+", before batch "+b.batch:clr?"Clear":"Run it before the batch starts",b&&hhmm(b.clearance_at)],
+    ["q-batch",!!b,b?b.batch+", MFG "+b.mfg+", EXP "+b.exp+", MRP ₹ "+b.mrp:"Batch no., MFG, EXP, MRP, and the product as printed",b&&at(b.time)],
+    ["q-self",ok(REL[0]),wait(REL[0],0),ok(REL[0])&&s.selftest&&hhmm(s.selftest.at)],
+    ["q-chal",ok(CHAL),ok(CHAL)?"Done":b?"Waiting: Challenge run, on the Run screen":"After the batch starts"],
+    ["q-print",ok(REL[1]),b&&!ok(REL[1])&&s.print_by_eye?"Waiting: Check the print by eye, below":wait(REL[1],1)],
+    ["q-spec",ok(REL[2]),wait(REL[2],2)],
+    ["q-ipqc",false,b?"Leak test and print check every hour; a missed one needs a QA review note":"After the batch starts"],
+    ["q-end",false,b?"Type the counts at the bench, then End batch":"After the batch starts"]];
+  $("q-chal").hidden=!C.set;
+  let now=false,n=0;
+  steps.forEach(([id,done,d,when])=>{const li=$(id);if(li.hidden)return;const cur=!done&&!now;now=now||cur;
+    li.className=done?"done":cur?"now":"";li.setAttribute("aria-current",cur?"step":"false");
+    li.querySelector(".n b").textContent=++n;li.querySelector(".d").textContent=d;li.querySelector(".when").textContent=when||""});
+  $("spw").closest(".field").hidden=!(b&&s.blockers.includes(REL[2]));
   $("eyebox").hidden=!(b&&s.print_by_eye);$("eyewhy").textContent=(s.print_by_eye||[]).join("; ");
-  $("nobatch").hidden=!!b;$("inbatch").hidden=!b;
+  $("nobatch").hidden=!!b;$("inbatch").hidden=!b;$("w-clear").hidden=!!b;$("endbox").hidden=!b;
+  // the print check sits in the start-up step until it is done, then with the hourly checks
+  const startup=!!b&&s.blockers.includes(REL[1]),home=startup?$("w-print"):$("inbatch");$("w-print").hidden=!startup;
+  if($("printbox").parentNode!==home)home.prepend($("printbox"));
   $("due").hidden=!s.due.length;$("due").textContent=s.due.join(". ")+".";
-  $("heldh").textContent=s.held?"Line held":"Line running";
+  $("heldh").textContent=s.held?"Line held":"Line running";$("linecard").className="card line "+(s.held?"held":"running");
   $("heldbox").hidden=$("resumebox").hidden=!s.held;$("runningnote").hidden=s.held;
   $("heldby").textContent=s.text;$("heldwhy").textContent=s.hold_reason;$("heldbox").classList.toggle("crit",/^Critical/.test(s.hold_reason));
   const t=s.totals,tb=$("recon");tb.replaceChildren();
   if(t)[["Passed",t.passed],["Rejected",t.rejected],["Held for QA",t.held],["No strip found",t.no_strip],["Inspected",t.inspected,"sum"]]
     .forEach(([k,n,c])=>{const tr=mk("tr","",c);tr.append(mk("td",k),mk("td",n));tb.append(tr)});
   $("bal").className="bal";$("bal").textContent=t?"Reconciled when the batch ends":"No batch open";
-  // the one main action on this screen: the next thing QA has to do
-  const main=s.held?"go-resume":!b?"go-start":s.blockers.includes(REL[1])?"go-print":s.blockers.includes(REL[2])?"go-spec":"";
+  // the one main action on this screen: the next thing QA has to do (a supervisor request waiting for QA comes first)
+  const main=reqN?"":s.held?"go-resume":!b?(clr?"go-start":"go-clear"):s.blockers.includes(REL[1])?"go-print":s.blockers.includes(REL[2])?"go-spec":"";
   document.querySelectorAll("#qa .go").forEach(x=>x.classList.toggle("primary",x.id===main));
   missedRefresh();
 }
@@ -208,12 +222,13 @@ async function missedRefresh(){
   const ms=r.missed||[],key=bt+"|"+JSON.stringify(ms.map(m=>m.window));
   if(key===missedKey)return;missedKey=key;  // the same windows: keep the notes being typed
   const ul=$("missed"),old=missedNotes;ul.replaceChildren();missedNotes={};
-  if(!ms.length){const li=mk("li","","off");li.append(mk("span","✓"),mk("div","No missed hourly check waits for a note"));ul.append(li)}
-  ms.forEach(m=>{const li=mk("li","","todo"),at=t=>new Date(t*1000).toTimeString().slice(0,5);
-    const note=mk("input");note.placeholder="Review note";note.setAttribute("aria-label","Review note: "+m.text+" "+at(m.start));
+  if(!ms.length){const li=mk("li","");li.append(mk("span","✓"),mk("div","No missed hourly check waits for a note"));ul.append(li)}
+  ms.forEach((m,k)=>{const li=mk("li","","todo"),at=t=>new Date(t*1000).toTimeString().slice(0,5);
+    const note=mk("input");note.id="missed-note-"+k;note.placeholder="Review note";note.setAttribute("aria-label","Review note: "+m.text+" "+at(m.start));
     note.value=old[m.window]?old[m.window].value:"";missedNotes[m.window]=note;
     const btn=mk("button","Add review note (QA)","btn");btn.onclick=()=>reviewMissed(m,note);
-    li.append(mk("span","!"),mk("div","Batch "+m.batch+": "+m.text+" "+at(m.start)+"–"+at(m.end)),note,btn);ul.append(li)})}
+    const lab=mk("label","Batch "+m.batch+": "+m.text+" "+at(m.start)+"–"+at(m.end));lab.htmlFor=note.id;  // the visible label of the note
+    li.append(mk("span","!"),lab,note,btn);ul.append(li)})}
 async function reviewMissed(m,note){const r=await j("/review-missed",{batch:m.batch,window:m.window,kind:m.kind,note:note.value,password:$("mpw").value});  // QA action: sent at once
   $("mpw").value="";if(!r.error){missedKey="";note.value=""}show(r.error?r:"Review note saved: "+m.text+".")}
 async function quarantine(n,err){
@@ -230,7 +245,10 @@ async function traceRows(){
   rows.slice(-12).reverse().forEach(e=>{const tr=document.createElement("tr");
     [e.model+" — "+e.platform,e.job+(e.ok?"":" (failed)"),e.ms,(e.usd||0).toFixed(4)].forEach(x=>tr.appendChild(mk("td",x)));tb.appendChild(tr)});
 }
-let reqSig="",qId="";
+let reqSig="",qId="",reqN=0;  // reqN: supervisor requests waiting for QA
+// a tool result in words: "brightness 184.2, drift false"
+const said=o=>o&&typeof o==="object"&&!Array.isArray(o)?Object.entries(o).map(([k,v])=>k.replace(/_/g," ")+" "+(v&&typeof v==="object"?JSON.stringify(v):v)).join(", "):JSON.stringify(o);
+const labelled=(text,input)=>{const l=mk("label","","fl grow");l.append(mk("span",text),input);return l};
 async function invRefresh(){
   const i=await (await fetch("/investigation")).json(),plat=i.result&&i.result.platform;
   $("invstate").textContent=i.running?"Investigating...":(i.result?(i.result.error||"Done"):"");
@@ -239,15 +257,17 @@ async function invRefresh(){
   const note="Written by "+(plat==="Meta API"?"Muse Spark 1.3":"Muse Spark Open")+". Check before acting.";
   $("supnote").textContent=note;
   const ol=$("steplist");ol.replaceChildren();$("checked").hidden=!i.steps.length;$("supnote").hidden=!i.steps.length&&!(i.result&&i.result.conclusion);
-  i.steps.forEach(t=>ol.appendChild(mk("li",t.tool+" "+JSON.stringify(t.args)+" → "+JSON.stringify(t.result).slice(0,160))));
+  i.steps.forEach(t=>{const li=mk("li",""),sp=mk("span","");sp.append(mk("b",cap(t.tool.replace(/_/g," "))+": "),
+    (Object.keys(t.args||{}).length?"("+said(t.args)+") ":"")+said(t.result).slice(0,160));li.append(sp);ol.appendChild(li)});
   $("askbox").hidden=!i.question;if(i.question){qId=i.question.id;$("askq").textContent=i.question.text}
-  const c=$("concl");c.replaceChildren();if(i.result&&i.result.conclusion)c.appendChild(mk("div",i.result.conclusion));
+  const c=$("concl");c.replaceChildren();if(i.result&&i.result.conclusion)c.append(mk("b","Conclusion: "),i.result.conclusion);
+  reqN=i.pending.length;
   const r=$("reqs"),sig=JSON.stringify(i.pending)+note;if(sig===reqSig)return;reqSig=sig;r.replaceChildren();  // keep a typed password while polling
-  i.pending.forEach(q=>{const d=mk("div","","req");d.append(mk("b",q.kind)," — "+q.reason,mk("div",note,"model"));
-    const f=mk("div","","field"),pw=document.createElement("input");pw.type="password";pw.placeholder="QA password";pw.setAttribute("aria-label","QA password");
-    const b=mk("button","Approve (QA)","btn");b.onclick=()=>approveReq(q.id,pw);
-    const why=document.createElement("input");why.placeholder="Reason to decline";why.setAttribute("aria-label","Reason to decline");
-    const x=mk("button","Decline (QA)","btn");x.onclick=()=>declineReq(q.id,pw,why);f.append(pw,b,why,x);d.append(f);r.appendChild(d)});
+  i.pending.forEach(q=>{const d=mk("div","","req");d.append(mk("b",cap(q.kind.replace(/_/g," "))+": "),q.reason,mk("div",note,"model"));
+    const f=mk("div","","field"),pw=document.createElement("input");pw.type="password";pw.setAttribute("aria-label","QA password");
+    const b=mk("button","Approve (QA)","btn primary");b.onclick=()=>approveReq(q.id,pw);
+    const why=document.createElement("input");why.setAttribute("aria-label","Reason to decline");
+    const x=mk("button","Decline (QA)","btn");x.onclick=()=>declineReq(q.id,pw,why);f.append(labelled("QA password",pw),b,labelled("Reason to decline",why),x);d.append(f);r.appendChild(d)});
 }
 // Speak rule: mono audio, downsampled to 16 kHz 16-bit PCM WAV
 let ctx,proc,chunks=[],recording=false,recMode="rule";
