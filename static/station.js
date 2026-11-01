@@ -97,22 +97,24 @@ async function refresh(){
   quarantine(s.quarantine_count,s.quarantine_error);invRefresh();chalRefresh();recheckRefresh();
 }
 function roles(u){
-  const w=$("who");w.replaceChildren();if(u)w.append(u.role==="qa"?"QA ":"Operator ",mk("b",u.name));
+  const w=$("who");w.replaceChildren();if(u)w.append("Signed in as ",mk("b",u.name),u.role==="qa"?" (QA)":" (Operator)");
   $("loginbox").hidden=!!u;$("logoutbtn").hidden=!u;
   document.querySelectorAll("nav button[data-role]").forEach(b=>b.hidden=!(u&&(b.dataset.role==="user"||u.role==="qa")));
   if(document.querySelector('nav button[data-tab="'+tab+'"]').hidden)go("run");  // a hidden tab is not security: the server checks QA
 }
 function batchBar(s){
-  const b=s.batch,cl=s.checklist;
-  $("b-product").textContent=cl?cap(cl.product)+", strip of "+cl.count:"–";
-  $("b-batch").textContent=b?b.batch:"No batch open";
-  $("b-mfg").textContent=b?b.mfg:"–";$("b-exp").textContent=b?b.exp:"–";$("b-mrp").textContent=b?"₹ "+b.mrp:"–";
+  const b=s.batch,cl=s.checklist,cell=(id,v,none)=>{$(id).textContent=v||none;$(id).parentNode.classList.toggle("none",!v)};
+  cell("b-product",cl&&cap(cl.product)+", strip of "+cl.count,"No checklist yet");
+  cell("b-batch",b&&b.batch,"No batch open");
+  cell("b-mfg",b&&b.mfg,"Not set");cell("b-exp",b&&b.exp,"Not set");cell("b-mrp",b&&"₹ "+b.mrp,"Not set");
   $("b-shift").textContent=shift();
-  $("b-ver").textContent=s.checklist_version?"Version "+s.checklist_version:"Not approved";
+  cell("b-ver",s.checklist_version&&"Version "+s.checklist_version,"Not approved");
 }
+// a stack light under the camera: lamp colour (ok / due / bad / none), small label, bold value
+const light=(id,cls,label,value)=>{const e=$(id);e.className=cls;e.replaceChildren(mk("i",""),mk("small",label),mk("b",value))};
 function runTab(s){
   const v=s.last_verdict,[word,cls]=BAND[s.state]||[s.state,"grey"];
-  $("label").className="label "+cls;$("band").textContent=word;
+  $("label").className="label "+cls;$("band").textContent=word;$("band").classList.toggle("long",word.length>8);
   const own=v&&!s.held&&["PASS","REJECT","HOLD","NO STRIP"].includes(s.state),r=own&&v.reasons[0];
   let why=s.text,tag="",crit=false;
   if(s.held&&s.hold_reason){why=cap(s.hold_reason);crit=/^Critical/.test(why)}
@@ -127,16 +129,18 @@ function runTab(s){
   if(s.held&&s.hold_reason)notes.push(s.text);
   if(s.print_by_eye)notes.push("Print check: QA checks the print by eye");
   $("skipped").textContent=notes.join("\n");
-  $("stripno").textContent=v?(v.strip_id!=null?"Tray strip "+v.strip_id:s.totals?"No. "+s.totals.inspected:"–"):"–";
-  $("vtime").textContent=v?String(v.at).slice(11,19):"–";
-  $("sent").textContent=s.machine_link==null?"No machine link":s.held?"Hold signal":v?SENT[v.status]||"–":"–";
-  const t=s.totals;[["c-pass","passed"],["c-rej","rejected"],["c-held","held"],["c-all","inspected"]].forEach(([id,k])=>$(id).textContent=t?t[k]:"–");
-  const st=$("st-self");st.className=s.locked?"bad":"ok";st.textContent=s.locked?"Station locked":"Self-test passed "+hhmm(s.selftest&&s.selftest.at);
-  st.title=uncovered(s);
-  const c=$("st-clear");c.className=s.batch?"ok":"";c.textContent=s.batch?"Line clearance "+hhmm(s.batch.clearance_at):"No batch open";
-  const d=$("st-due");d.hidden=!s.due.length;d.className="due";d.textContent=s.due.join(" · ");
-  const l=$("st-link");l.className=s.machine_link?"ok":s.machine_link===false?"due":"";
-  l.textContent=s.machine_link?"Machine link connected":s.machine_link===false?"No machine connected":"No machine link";
+  $("vfacts").hidden=!v&&!s.held;  // nothing judged yet: no empty Strip / Time cells
+  $("stripno").textContent=v?(v.strip_id!=null?"Tray strip "+v.strip_id:s.totals?"No. "+s.totals.inspected:"No batch"):"None yet";
+  $("vtime").textContent=v?String(v.at).slice(11,19):"None yet";
+  $("sent").textContent=s.machine_link==null?"No machine link":s.held?"Hold signal":v?SENT[v.status]||"Nothing sent":"Nothing sent";
+  const t=s.totals;[["c-pass","passed"],["c-rej","rejected"],["c-held","held"],["c-all","inspected"]].forEach(([id,k])=>$(id).textContent=t?t[k]:0);
+  light("st-self",s.locked?"bad":"ok","Self-test",s.locked?"Station locked":"Passed "+hhmm(s.selftest&&s.selftest.at));
+  $("st-self").title=uncovered(s);
+  light("st-clear",s.batch?"ok":"","Line clearance",s.batch?"Clear "+hhmm(s.batch.clearance_at):"No batch open");
+  $("st-due").hidden=!s.due.length;light("st-due","due","Hourly checks",s.due.join(" · "));
+  light("st-link",s.machine_link?"ok":s.machine_link===false?"due":"","Machine link",
+    s.machine_link?"Connected":s.machine_link===false?"No machine connected":"No machine link");
+  const cam=$("cam");$("camres").textContent=cam.naturalWidth?cam.naturalWidth+" × "+cam.naturalHeight:"";
 }
 
 let stepWas=0,stepShown=0,slotsN=-1;

@@ -38,7 +38,7 @@ def test_banner_colours():
     assert 'PASS:"#118a3a"' in lamp and '"NO STRIP":"#888"' in lamp
     js, css = (STATIC / "station.js").read_text(encoding="utf-8"), (STATIC / "station.css").read_text(encoding="utf-8")
     assert 'PASS:["PASSED","pass"]' in js and '"NO STRIP":["NO STRIP","grey"]' in js and 'READY:["READY","ink"]' in js
-    assert "--pass:#10804A" in css and "--reject:#C22A2A" in css and "--hold:#D4940A" in css
+    assert "--pass:#0E7A43" in css and "--reject:#C22B2B" in css and "--hold:#E3A522" in css  # redesign v2 tokens
 
 
 def test_tabs_present():
