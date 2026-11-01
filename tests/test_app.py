@@ -19,7 +19,7 @@ from d2i.checklist import CHECKS, approve
 from d2i.meta_api import SamTrackPoint
 from d2i.pockets import Layout
 from d2i.record import _lines
-from d2i.station import Verdict
+from d2i.station import FINDER_DOWN, Verdict
 from d2i.supervisor import set_hold
 from d2i.plc import Plc
 from tests.conftest import make_strip, pocket_box
@@ -1721,3 +1721,27 @@ def test_overlay_good_pockets_thin_green_failing_pocket_red_with_its_label_above
     f = np.zeros((720, 1280, 3), np.uint8)
     app_mod.draw_pockets(f, [(600, 5, 680, 85)], {1: "tablet_spot"})  # at the frame top: the label goes below
     assert (f[90:160] == app_mod.RED).all(axis=2).any()
+    assert tuple(f[7, 603]) == app_mod.RED  # the failing pocket's number tab
+    f = np.zeros((720, 1280, 3), np.uint8)
+    app_mod.draw_pockets(f, [(400, 300, 480, 380)], {})
+    assert tuple(f[305, 403]) == app_mod.TAB  # a good pocket's number on dark green
+
+
+def test_status_run_view_last_strips_rule_fails_yield_and_reject_photos(tmp_path):
+    """Task 43 (SCADA Run screen): /status adds the open batch's last 20 strips, the strips that failed each rule of
+    the current checklist, the yield (good / judged) and the last 8 reject photos; the existing keys stay."""
+    p = tmp_path / "p"
+    approve(CHECKLIST, "Priya", p / "checklists.jsonl")
+    open_batch(p)
+    bad = lambda rule, **k: {"status": "REJECT", "reasons": [{"rule": rule, "check": "x", "text": f"Rule {rule} failed"}],
+                             "checklist_version": 1, "batch": "B1", "at": "2026-11-01T07:12:05", **k}
+    rows = ([{"status": "PASS", "reasons": [], "checklist_version": 1, "batch": "B1", "at": "t"}] * 22
+            + [bad(2, photo="20261101-071205-1.jpg"), bad(2), bad(3), {"status": "LOCKED", "reasons": [], "batch": "B1"},
+               dict(bad(2), batch="B0"), dict(bad(4), checklist_version=0),
+               {"status": "HOLD", "reasons": [dict(FINDER_DOWN)], "checklist_version": 1, "batch": "B1", "at": "t"}])
+    (p / "log.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+    s = TestClient(app_mod.create_app(p, None)).get("/status").json()
+    assert [x["status"] for x in s["last20"]] == ["PASS"] * 15 + ["REJECT"] * 3 + ["REJECT", "HOLD"]  # no LOCKED, no B0
+    assert s["per_rule"] == {"2": 2, "3": 1}  # the old checklist's rule 4 and the finder hold are not counted
+    assert s["yield"] == round(100 * 22 / 27, 1) and s["totals"]["passed"] == 22
+    assert s["last_rejects"] == [{"photo": "20261101-071205-1.jpg", "at": "2026-11-01T07:12:05", "text": "Rule 2 failed"}]

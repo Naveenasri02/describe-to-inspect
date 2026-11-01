@@ -108,20 +108,31 @@ class _NoPlc:  # no PLC attached (tests): the hold still lives in hold.json
 
 
 RED, BLUE, GREEN = (42, 42, 194), (200, 120, 30), (125, 212, 43)  # BGR: screen reject red, strip blue, a green that reads on foil
+TAB = (30, 60, 10)  # BGR dark green behind a good pocket's number
 DEFECT = {"empty_pocket": "empty", "broken_tablet": "broken tablet", "double_tablet": "two tablets",
           "wrong_tablet": "different tablet", "tablet_spot": "spot on tablet", "unlisted_anomaly": "looks unusual"}
 
 
+def _pocket_no(f, n, x0, y0, colour, s, font):  # the pocket number in a small filled tab at the box's top-left corner
+    th, pad = max(1, round(s)), max(2, round(3 * s))
+    (tw, tht), base = cv2.getTextSize(str(n), font, 0.5 * s, th)
+    cv2.rectangle(f, (x0, y0), (x0 + tw + 2 * pad, y0 + tht + base + 2 * pad), colour, -1)
+    cv2.putText(f, str(n), (x0 + pad, y0 + pad + tht), font, 0.5 * s, (255, 255, 255), th, cv2.LINE_AA)
+
+
 def draw_pockets(f, boxes, bad):
     """Pocket boxes: good ones a thin green outline, failing ones a thick red one under a filled label "Pocket N: <defect>".
-    `bad` maps a failing pocket number to its check. Shared by /stream and the reject photo."""
+    Each box carries its number in a tab (dark green, red when failing). `bad` maps a failing pocket number to its check.
+    Shared by /stream and the reject photo."""
     s, font = f.shape[1] / 1280, cv2.FONT_HERSHEY_DUPLEX  # sizes follow the frame: the same on screen at any camera size
     for i, (x0, y0, x1, y1) in enumerate(boxes):
         if i + 1 not in bad:
             cv2.rectangle(f, (x0, y0), (x1, y1), GREEN, max(2, round(2 * s)))
+            _pocket_no(f, i + 1, x0, y0, TAB, s, font)
     for i, (x0, y0, x1, y1) in enumerate(boxes):  # failing pockets last, so their labels sit on top
         if i + 1 in bad:
             cv2.rectangle(f, (x0, y0), (x1, y1), RED, max(4, round(6 * s)))
+            _pocket_no(f, i + 1, x0, y0, RED, s, font)
             text = f"Pocket {i + 1}: {DEFECT.get(bad[i + 1], str(bad[i + 1]).replace('_', ' '))}"
             scale, th, pad = 0.8 * s, max(1, round(2 * s)), round(10 * s)
             (tw, tht), base = cv2.getTextSize(text, font, scale, th)
@@ -133,6 +144,22 @@ def draw_pockets(f, boxes, bad):
             cv2.line(f, (cx, ly + h if ly < y0 else ly), (cx, int(y0 if ly < y0 else y1)), RED, th)
             cv2.rectangle(f, (lx, ly), (lx + w, ly + h), RED, -1)
             cv2.putText(f, text, (lx + pad, ly + pad + tht), font, scale, (255, 255, 255), th, cv2.LINE_AA)
+
+
+def run_view(rows, batch, version, totals):
+    """Run screen extras from the log rows of the open batch (no batch: the latest rows): the last 20 strips, the last 8
+    reject photos, how many strips failed each rule this batch (current checklist only) and the yield, good / judged."""
+    mine = [r for r in rows if r["status"] != "LOCKED" and (batch is None or r.get("batch") == batch)]
+    per_rule = {}
+    for r in (mine if batch and version else []):
+        if r.get("checklist_version") == version:  # rule numbers belong to one checklist version
+            for n in {x.get("rule") for x in r.get("reasons", []) if x.get("rule") and x.get("check") != "finder"}:
+                per_rule[n] = per_rule.get(n, 0) + 1
+    judged = totals and totals["passed"] + totals["rejected"] + totals["held"]
+    return {"last20": [{"status": r["status"], "at": r.get("at", "")} for r in mine[-20:]], "per_rule": per_rule,
+            "yield": round(100 * totals["passed"] / judged, 1) if judged else None,
+            "last_rejects": [{"photo": r["photo"], "at": r.get("at", ""), "text": "; ".join(x.get("text", "") for x in r.get("reasons", []))}
+                             for r in mine if r.get("photo")][-8:]}
 
 
 def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time, chat=None,
@@ -319,7 +346,11 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
             banner, text = last["status"].replace("_", " "), ""  # NO STRIP is grey, never green
         else:  # unlocked (so taught and self-tested), not held, no strip judged yet this session
             banner, text = "READY", ""
-        return {"locked": locked, "lock_reason": reason if locked else "",
+        try:
+            view = run_view(rows, open_batch and open_batch["batch"], cl and cl["version"], totals)
+        except Exception:  # a malformed log row: no history on the Run screen, /status still answers
+            view = {}
+        return {**view, "locked": locked, "lock_reason": reason if locked else "",
                 "checklist_version": cl and cl["version"], "spent_usd": spent,
                 "counts": counts, "batch": open_batch, "blockers": blockers, "print_by_eye": eye, "due": overdue, "last_verdict": last, "selftest_skipped": uncovered, "state": banner, "text": text,
                 "rules": cl["rules"] if cl else [], "pending": pending["rules"] if pending else None,
