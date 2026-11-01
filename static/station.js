@@ -246,8 +246,9 @@ async function traceRows(){
     [e.model+" — "+e.platform,e.job+(e.ok?"":" (failed)"),e.ms,(e.usd||0).toFixed(4)].forEach(x=>tr.appendChild(mk("td",x)));tb.appendChild(tr)});
 }
 let reqSig="",qId="",reqN=0;  // reqN: supervisor requests waiting for QA
-// a tool result in words: "brightness 184.2, drift false"
-const said=o=>o&&typeof o==="object"&&!Array.isArray(o)?Object.entries(o).map(([k,v])=>k.replace(/_/g," ")+" "+(v&&typeof v==="object"?JSON.stringify(v):v)).join(", "):JSON.stringify(o);
+// a tool result in words: "brightness 184.2, drift no, status (REJECT: 3)"; no raw JSON on screen
+const word=v=>v===true?"yes":v===false?"no":Array.isArray(v)?v.map(word).join(", "):v&&typeof v==="object"?"("+Object.entries(v).map(([a,b])=>a.replace(/_/g," ")+": "+word(b)).join(", ")+")":String(v);
+const said=o=>o&&typeof o==="object"&&!Array.isArray(o)?Object.entries(o).map(([k,v])=>k.replace(/_/g," ")+" "+word(v)).join(", "):word(o);
 const labelled=(text,input)=>{const l=mk("label","","fl grow");l.append(mk("span",text),input);return l};
 async function invRefresh(){
   const i=await (await fetch("/investigation")).json(),plat=i.result&&i.result.platform;
