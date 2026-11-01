@@ -107,15 +107,32 @@ class _NoPlc:  # no PLC attached (tests): the hold still lives in hold.json
         pass
 
 
-RED, BLUE, GREEN = (42, 42, 194), (200, 120, 30), (74, 128, 16)  # BGR: screen reject red, strip blue, pass green
+RED, BLUE, GREEN = (42, 42, 194), (200, 120, 30), (125, 212, 43)  # BGR: screen reject red, strip blue, a green that reads on foil
+DEFECT = {"empty_pocket": "empty", "broken_tablet": "broken tablet", "double_tablet": "two tablets",
+          "wrong_tablet": "different tablet", "tablet_spot": "spot on tablet", "unlisted_anomaly": "looks unusual"}
 
 
-def draw_pockets(f, boxes, bad, rules=None):
-    """Pocket boxes: failing ones red (with their rule number when `rules` is given), the rest green. Shared by /stream and the reject photo."""
+def draw_pockets(f, boxes, bad):
+    """Pocket boxes: good ones a thin green outline, failing ones a thick red one under a filled label "Pocket N: <defect>".
+    `bad` maps a failing pocket number to its check. Shared by /stream and the reject photo."""
+    s, font = f.shape[1] / 1280, cv2.FONT_HERSHEY_DUPLEX  # sizes follow the frame: the same on screen at any camera size
     for i, (x0, y0, x1, y1) in enumerate(boxes):
-        cv2.rectangle(f, (x0, y0), (x1, y1), RED if i + 1 in bad else GREEN, 3)
-        if rules and i + 1 in rules:
-            cv2.putText(f, f"R{rules[i + 1]}", (x0 + 4, y0 + 22), cv2.FONT_HERSHEY_SIMPLEX, 0.7, RED, 2)
+        if i + 1 not in bad:
+            cv2.rectangle(f, (x0, y0), (x1, y1), GREEN, max(2, round(2 * s)))
+    for i, (x0, y0, x1, y1) in enumerate(boxes):  # failing pockets last, so their labels sit on top
+        if i + 1 in bad:
+            cv2.rectangle(f, (x0, y0), (x1, y1), RED, max(4, round(6 * s)))
+            text = f"Pocket {i + 1}: {DEFECT.get(bad[i + 1], str(bad[i + 1]).replace('_', ' '))}"
+            scale, th, pad = 0.8 * s, max(1, round(2 * s)), round(10 * s)
+            (tw, tht), base = cv2.getTextSize(text, font, scale, th)
+            w, h, cx = tw + 2 * pad, tht + base + 2 * pad, int((x0 + x1) // 2)
+            lx = int(min(max(0, cx - w // 2), f.shape[1] - w))
+            # above the strip with a leader line, so no pocket is covered; below it when the strip is at the frame top
+            top, low = min(b[1] for b in boxes), max(b[3] for b in boxes)
+            ly = int(top - h - 3 * pad if top - h - 3 * pad >= 0 else low + 3 * pad)
+            cv2.line(f, (cx, ly + h if ly < y0 else ly), (cx, int(y0 if ly < y0 else y1)), RED, th)
+            cv2.rectangle(f, (lx, ly), (lx + w, ly + h), RED, -1)
+            cv2.putText(f, text, (lx + pad, ly + pad + tht), font, scale, (255, 255, 255), th, cv2.LINE_AA)
 
 
 def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time, chat=None,
@@ -910,8 +927,8 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
         sb = tuple(int(v) for v in lay.strip_box) if lay and lay.strip_box else None
         if sb:
             cv2.rectangle(f, sb[:2], sb[2:], BLUE, 3)
-        bad = {r["pocket"]: r["rule"] for r in v.reasons if r.get("pocket") is not None}
-        draw_pockets(f, lay.pockets if lay else [], set(bad), bad)
+        bad = {r["pocket"]: r.get("check", "") for r in v.reasons if r.get("pocket") is not None}
+        draw_pockets(f, lay.pockets if lay else [], bad)
         if sb and any(r.get("pocket") is None for r in v.reasons):
             cv2.rectangle(f, sb[:2], sb[2:], RED, 5)  # a strip-level reason: the whole outline
         d = product_dir / "rejects"
@@ -951,10 +968,8 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
             f = src.get() if src else None
             if f is not None:
                 last = state["last"] or {}
-                bad = {r.get("pocket") for r in last.get("reasons", [])}
-                draw_pockets(f, overlay_boxes(f), bad)
-                if last:
-                    cv2.putText(f, last["status"], (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+                bad = {r["pocket"]: r.get("check", "") for r in last.get("reasons", []) if r.get("pocket") is not None}
+                draw_pockets(f, overlay_boxes(f), bad)  # no status word on the picture: the verdict tag shows it
                 ok, buf = cv2.imencode(".jpg", f)
                 if ok:
                     yield b"--f\r\nContent-Type: image/jpeg\r\n\r\n" + buf.tobytes() + b"\r\n"

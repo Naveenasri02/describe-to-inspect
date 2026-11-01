@@ -1709,3 +1709,15 @@ def test_board_strip_number_does_not_count_rechecked_strips(tmp_path):
     assert c.get("/line").json()["chip"]["strip"] == 2
     c.post("/inspect", files=up(make_strip(seed=15)))  # the re-check of strip 1
     assert _lines(p / "log.jsonl")[-1]["recheck"] is True and c.get("/line").json()["chip"]["strip"] == 2
+
+
+def test_overlay_good_pockets_thin_green_failing_pocket_red_with_its_label_above_the_strip():
+    """Station redesign: the stream marks a failing pocket thick red under "Pocket N: <defect>"; no status word."""
+    f = np.zeros((720, 1280, 3), np.uint8)
+    app_mod.draw_pockets(f, [(400, 300, 480, 380), (500, 300, 580, 380)], {2: "empty_pocket"})
+    assert tuple(f[300, 440]) == app_mod.GREEN and tuple(f[303, 440]) == (0, 0, 0)  # thin
+    assert tuple(f[303, 540]) == app_mod.RED  # thick
+    assert (f[200:295, 540] == app_mod.RED).all(axis=1).any()  # leader line and label above the strip
+    f = np.zeros((720, 1280, 3), np.uint8)
+    app_mod.draw_pockets(f, [(600, 5, 680, 85)], {1: "tablet_spot"})  # at the frame top: the label goes below
+    assert (f[90:160] == app_mod.RED).all(axis=2).any()
