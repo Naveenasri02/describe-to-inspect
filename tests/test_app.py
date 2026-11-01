@@ -76,7 +76,7 @@ def test_inspect_upload_returns_verdict(tmp_path):
     assert "pocket 1" in " ".join(r["text"] for r in v["reasons"])
     s = c.get("/status").json()
     assert s["counts"]["REJECT"] == 1 and s["state"] == "REJECT"
-    assert "Blister line QA station" in c.get("/").text
+    assert "Blister inspection station" in c.get("/").text
 
 
 class FakeClient:

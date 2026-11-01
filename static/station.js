@@ -95,9 +95,10 @@ async function refresh(){
   if(tab==="qa")qaTab(s);
   if(tab==="system"){$("spent").textContent=s.spent_usd==null?"?":s.spent_usd.toFixed(2);traceRows()}
   quarantine(s.quarantine_count,s.quarantine_error);invRefresh();chalRefresh();recheckRefresh();
+  linePill(s);alarmLine(s);
 }
 function roles(u){
-  const w=$("who");w.replaceChildren();if(u)w.append("Signed in as ",mk("b",u.name),u.role==="qa"?" (QA)":" (Operator)");
+  const w=$("who");w.replaceChildren();if(u)w.append("User ",mk("b",u.name),u.role==="qa"?", level QA":", level Operator");
   $("loginbox").hidden=!!u;$("logoutbtn").hidden=!u;
   document.querySelectorAll("nav button[data-role]").forEach(b=>b.hidden=!(u&&(b.dataset.role==="user"||u.role==="qa")));
   if(document.querySelector('nav button[data-tab="'+tab+'"]').hidden)go("run");  // a hidden tab is not security: the server checks QA
@@ -110,11 +111,15 @@ function batchBar(s){
   $("b-shift").textContent=shift();
   cell("b-ver",s.checklist_version&&"Version "+s.checklist_version,"Not approved");
 }
-// a stack light under the camera: lamp colour (ok / due / bad / none), small label, bold value
+// a stack light under the camera: lamp colour (ok / due / bad / none), label, value
 const light=(id,cls,label,value)=>{const e=$(id);e.className=cls;e.replaceChildren(mk("i",""),mk("small",label),mk("b",value))};
+const CHECK={empty_pocket:"Empty pocket",broken_tablet:"Broken or chipped",double_tablet:"Two in one pocket",wrong_tablet:"Different tablet",
+  tablet_spot:"Spots on tablet",foil_damage:"Foil damage",strip_cut:"Strip size and cut"};
+const LAST={PASS:"g",REJECT:"r",HOLD:"a"};  // last 20 strips: green, red, amber; grey otherwise
 function runTab(s){
-  const v=s.last_verdict,[word,cls]=BAND[s.state]||[s.state,"grey"];
+  const v=s.last_verdict,t=s.totals,[word,cls]=BAND[s.state]||[s.state,"grey"];
   $("label").className="label "+cls;$("band").textContent=word;$("band").classList.toggle("long",word.length>8);
+  $("frame").className="pic "+cls;  // the camera frame in the verdict colour
   const own=v&&!s.held&&["PASS","REJECT","HOLD","NO STRIP"].includes(s.state),r=own&&v.reasons[0];
   let why=s.text,tag="",crit=false;
   if(s.held&&s.hold_reason){why=cap(s.hold_reason);crit=/^Critical/.test(why)}
@@ -122,26 +127,82 @@ function runTab(s){
   else if(s.state==="PASS")why="Every checked rule passed.";
   else if(s.state==="NO STRIP")why="No strip in view.";
   else if(s.state==="READY")why="Ready for the next strip.";
-  const w=$("why");w.replaceChildren(why);if(tag)w.append(mk("span",tag,"sev "+(r.severity||"")));w.classList.toggle("crit",crit);
+  $("why").textContent=why;$("why").classList.toggle("crit",crit);
+  const rule=r&&r.rule&&(s.rules||[]).find(x=>x.startsWith("Rule "+r.rule+" ")||x.startsWith("Rule "+r.rule+":"));
+  $("vrule").textContent=tag+(rule?": "+rule.replace(/^Rule \d+(?: \(\w+\))?: /,""):"");
   const notes=[];
   if(own&&v.reasons.length>1)notes.push("Also: "+v.reasons.slice(1).map(x=>x.text).join("; "));
   if(own&&(v.skipped||[]).length)notes.push("Not checked: "+v.skipped.join(", "));
   if(s.held&&s.hold_reason)notes.push(s.text);
   if(s.print_by_eye)notes.push("Print check: QA checks the print by eye");
   $("skipped").textContent=notes.join("\n");
-  $("vfacts").hidden=!v&&!s.held;  // nothing judged yet: no empty Strip / Time cells
-  $("stripno").textContent=v?(v.strip_id!=null?"Tray strip "+v.strip_id:s.totals?"No. "+s.totals.inspected:"No batch"):"None yet";
+  $("vfacts").hidden=$("vhead").hidden=!v&&!s.held;  // nothing judged yet: no empty Strip / Time cells
+  const no=v?(v.strip_id!=null?"Tray strip "+v.strip_id:t?"Strip "+String(t.inspected).padStart(4,"0"):"No batch"):"None yet";
+  $("stripno").textContent=no;$("camstrip").textContent=v?no:"";
   $("vtime").textContent=v?String(v.at).slice(11,19):"None yet";
   $("sent").textContent=s.machine_link==null?"No machine link":s.held?"Hold signal":v?SENT[v.status]||"Nothing sent":"Nothing sent";
-  const t=s.totals;[["c-pass","passed"],["c-rej","rejected"],["c-held","held"],["c-all","inspected"]].forEach(([id,k])=>$(id).textContent=t?t[k]:0);
+  $("photo").textContent=v&&(s.last_rejects||[]).some(x=>x.at===v.at)?"Yes, record":"No";
+  [["c-pass","passed"],["c-rej","rejected"],["c-held","held"],["c-all","inspected"]].forEach(([id,k])=>$(id).textContent=t?t[k]:0);
+  $("cbatch").textContent=s.batch?"Batch "+s.batch.batch:"No batch open";
+  $("yield").textContent=s.yield==null?"None yet":s.yield.toFixed(1)+"%";$("ybar").style.width=(s.yield||0)+"%";
+  const l20=s.last20||[];
+  $("last20").replaceChildren(...l20.map(x=>{const i=mk("i","",LAST[x.status]||"");i.title=x.status.replace("_"," ")+" "+String(x.at).slice(11,19);return i}));
+  $("last20n").textContent=l20.length?l20.filter(x=>x.status==="PASS").length+" good, "+l20.filter(x=>x.status in LAST&&x.status!=="PASS").length+" bad":"No strips yet";
   light("st-self",s.locked?"bad":"ok","Self-test",s.locked?"Station locked":"Passed "+hhmm(s.selftest&&s.selftest.at));
   $("st-self").title=uncovered(s);
-  light("st-clear",s.batch?"ok":"","Line clearance",s.batch?"Clear "+hhmm(s.batch.clearance_at):"No batch open");
-  $("st-due").hidden=!s.due.length;light("st-due","due","Hourly checks",s.due.join(" · "));
-  light("st-link",s.machine_link?"ok":s.machine_link===false?"due":"","Machine link",
-    s.machine_link?"Connected":s.machine_link===false?"No machine connected":"No machine link");
+  light("st-clear",s.batch?"ok":"","Line clearance",s.batch?hhmm(s.batch.clearance_at):"No batch");
+  light("st-due",s.due.length?"due":s.batch?"ok":"",s.due.length?s.due.map(x=>x.replace(/ due$/,"")).join(", "):"Hourly checks",
+    s.due.length?"Due":s.batch?"None due":"No batch");
+  light("st-link",s.machine_link?"ok":s.machine_link===false?"due":"","Reject gate",
+    s.machine_link?"Connected":s.machine_link===false?"Not connected":"No link");
   const cam=$("cam");$("camres").textContent=cam.naturalWidth?cam.naturalWidth+" × "+cam.naturalHeight:"";
+  const n=v&&(v.pocket_scores||[]).length;
+  $("camcap").textContent=n?n+" pockets located by SAM 3.1, judged offline by DINOv2":"Live camera";
+  // checks on the last strip: Rule 1 is the pocket count, Rule k+2 the k-th check of the approved checklist
+  const cl=s.checklist,tb=$("chk"),ran=v&&["PASS","REJECT","HOLD"].includes(v.status)&&!v.reasons.some(x=>["finder","locked","line_held"].includes(x.check));
+  const failed=new Set(ran?v.reasons.map(x=>x.rule):[]);
+  $("chkstrip").textContent=v?no:"Last strip";tb.replaceChildren();
+  if(!cl){const tr=mk("tr","");tr.append(mk("td","No checklist yet"),mk("td",""),mk("td",""));tb.append(tr)}
+  else[["Pocket count ("+cl.count+")",1],...cl.reject_if.map((k,i)=>[CHECK[k]||cap(k.replace(/_/g," ")),i+2])].forEach(([name,k])=>{
+    const ng=failed.has(k),tr=mk("tr","",ng?"ng":""),chip=mk("td","");
+    if(v)chip.append(mk("span",ran?ng?"NG":"OK":"Not run","chip "+(ran?ng?"ng":"ok":"")));
+    tr.append(mk("td",name),chip,mk("td",(s.per_rule||{})[k]||0));tb.append(tr)});
 }
+// header: the line state from what the page already knows, and the station clock (this computer's)
+function linePill(s){const[t,c]=s.locked?["LOCKED","p-stop"]:s.held?["HELD","p-held"]:!s.batch?["NO BATCH",""]:s.blockers.length?["NOT RELEASED","p-held"]:["RUNNING","p-run"];
+  $("linepill").textContent=t;$("linepill").className="pill "+c}
+const tickClock=()=>{const d=new Date();$("clock").textContent=d.toLocaleDateString("en-GB",{day:"2-digit",month:"short",year:"numeric"})+"  "+d.toTimeString().slice(0,8)};
+tickClock();setInterval(tickClock,1000);
+// the alarm line: the most serious thing that needs a person; Acknowledge only hides it on this screen
+let acked=new Set(),seen={},alarmKey="";
+function alarmLine(s){
+  const v=s.last_verdict,now=new Date().toTimeString().slice(0,8),list=[];
+  const add=(sev,key,text,at)=>{seen[key]=seen[key]||at||now;list.push({sev,key,text,at:seen[key]})};
+  const vat=v&&String(v.at).slice(11,19);
+  if(s.state==="LOCKED")add("bad","L"+s.text,"Locked: "+s.text);
+  if(s.state==="REJECT"&&v)add("bad","V"+v.at,"Reject: "+$("why").textContent+($("vrule").textContent?" ("+$("vrule").textContent.split(":")[0]+")":"")+
+    (s.machine_link?". Reject signal sent to the machine.":""),vat);
+  if(s.state==="HOLD"&&s.held)add("warn","H"+s.text+s.hold_reason,s.text+(s.hold_reason?" "+cap(s.hold_reason):""));
+  else if(s.state==="HOLD"&&v)add("warn","V"+v.at,"Held: "+s.text,vat);
+  ["notrel","qbanner","rcbanner"].forEach(id=>{if(!$(id).hidden&&$(id).textContent)add("warn",id+$(id).textContent,$(id).textContent)});
+  if(!$("askbox").hidden)add("warn","A"+$("askq").textContent,"Shift Supervisor asks: "+$("askq").textContent);
+  if(s.due.length)add("warn","D"+s.due.join(),s.due.join(" · "));
+  const open=list.filter(a=>!acked.has(a.key)),a=open[0],el=$("alarm");
+  alarmKey=a?a.key:"";el.className="alarm "+(a?a.sev:"ok");
+  $("alarmn").hidden=!a;$("alarmn").textContent=open.length;$("alarmat").textContent=a?a.at:"";
+  $("alarmtext").textContent=a?a.text:list.length?"Alarms acknowledged":"No active alarms";$("ackbtn").hidden=!a;
+}
+function ack(){if(alarmKey)acked.add(alarmKey);alarmLine(S)}
+// F5 Last rejects: the last 8 reject photos of this batch, over the camera
+function lastRejects(){const b=$("rejbox"),l=$("rejlist");b.hidden=!b.hidden;if(b.hidden)return;l.replaceChildren();
+  const rs=(S.last_rejects||[]).slice().reverse();
+  if(!S.user)return l.append(mk("p","Log in to see the reject photos.","small"));
+  if(!rs.length)return l.append(mk("p","No reject photos yet.","small"));
+  rs.forEach(x=>{const f=mk("figure",""),im=document.createElement("img"),c=mk("figcaption","");im.src="/rejects/"+x.photo;im.alt="Reject photo "+x.at;
+    c.append(mk("b",String(x.at).slice(11,19)),x.text);f.append(im,c);l.append(f)})}
+// F1-F5 on the Run screen press the keys in the bottom bar
+document.addEventListener("keydown",e=>{const b=tab==="run"&&!e.repeat&&document.querySelector('#run .keys [data-key="'+e.key+'"]');
+  if(b){e.preventDefault();b.click()}});
 
 let stepWas=0,stepShown=0,slotsN=-1;
 document.querySelectorAll("#steps button").forEach(b=>b.onclick=()=>{stepShown=+b.dataset.step;setupTab(S)});

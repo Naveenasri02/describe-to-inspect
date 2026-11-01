@@ -4,7 +4,7 @@
 <link rel="stylesheet" href="/static/station.css">
 </head><body>
 <header class="top">
-  <div class="name">Blistrue<span>Blister line QA station</span></div>
+  <div class="name">Blistrue<span>Line 1 · Blister inspection station</span></div>
   <nav aria-label="Screens">
     <button data-tab="run" class="on">Run</button>
     <button data-tab="setup" data-role="qa" hidden>Setup</button>
@@ -12,11 +12,19 @@
     <button data-tab="record" data-role="user" hidden>Record</button>
     <button data-tab="system" data-role="qa" hidden>System</button>
   </nav>
-  <div class="who"><span id="who"></span>
+  <div class="who"><span class="pill" id="linepill">NO BATCH</span><span class="clock" id="clock"></span><span id="who"></span>
     <span id="loginbox"><label>Name <input id="ln" aria-label="Name"></label><label>Password <input id="lp" type="password" aria-label="Password"></label>
     <button onclick="login()">Log in</button></span>
     <button id="logoutbtn" onclick="logout()" hidden>Log out</button></div>
 </header>
+<div class="alarm ok" id="alarm" role="status"><b class="cnt" id="alarmn" hidden></b><span id="alarmat"></span><span class="t" id="alarmtext">No active alarms</span>
+  <button id="ackbtn" onclick="ack()" hidden>Acknowledge</button></div>
+<!-- the alarm line shows these three; #askbox stays visible for its answer field -->
+<div class="alert" id="notrel" role="status" hidden></div>
+<div class="alert" id="qbanner" role="status" hidden></div>
+<div class="alert" id="rcbanner" role="status" hidden></div>
+<div class="alert" id="askbox" hidden>Shift Supervisor asks: <b id="askq"></b>
+  <label>Your answer <input id="ans" aria-label="Your answer"></label><button onclick="answer()">Answer</button></div>
 <div class="bmr" id="bmr">
   <div class="none"><small>Product</small><strong id="b-product">No checklist yet</strong></div>
   <div class="none"><small>Batch no.</small><strong id="b-batch">No batch open</strong></div>
@@ -26,58 +34,66 @@
   <div><small>Shift</small><strong id="b-shift">A</strong></div>
   <div class="none"><small>Checklist</small><strong id="b-ver">Not approved</strong></div>
 </div>
-<div class="alert" id="notrel" role="status" hidden></div>
-<div class="alert" id="qbanner" role="status" hidden></div>
-<div class="alert" id="rcbanner" role="status" hidden></div>
-<div class="alert" id="askbox" hidden>Shift Supervisor asks: <b id="askq"></b>
-  <label>Your answer <input id="ans" aria-label="Your answer"></label><button onclick="answer()">Answer</button></div>
 <main>
 
 <section class="tab" id="run">
   <div class="run">
-    <div class="rail">
-      <div class="label ink" id="label" aria-live="polite">
-        <div class="band" id="band">READY</div>
-        <div class="body">
+    <div class="right">  <!-- first in the page, so its message box is the Run screen's own -->
+      <div class="pn">
+        <div class="pt">Last verdict<span id="vhead" hidden><span id="stripno"></span>, <span id="vtime"></span></span></div>
+        <div class="label ink" id="label" aria-live="polite">
+          <div class="band" id="band">READY</div>
           <div class="why" id="why"></div>
+          <div class="vrule" id="vrule"></div>
           <div class="note" id="skipped"></div>
-          <dl id="vfacts" hidden><div><dt>Strip</dt><dd id="stripno"></dd></div><div><dt>Time</dt><dd id="vtime"></dd></div>
-            <div><dt>Sent to machine</dt><dd id="sent"></dd></div></dl>
         </div>
-      </div>
-      <div class="counts">
-        <div class="p"><b id="c-pass">0</b><span>Passed</span></div>
-        <div class="r"><b id="c-rej">0</b><span>Rejected</span></div>
-        <div class="h"><b id="c-held">0</b><span>Held</span></div>
-        <div><b id="c-all">0</b><span>Inspected</span></div>
-      </div>
-      <div class="acts">
-        <button class="btn big primary" onclick="inspectNow()">Inspect strip</button>
-        <div class="row3">
-          <button class="btn big" title="Record a short clip of the tray; one verdict per strip" onclick="trayNow()">Tray clip</button>
-          <button class="btn big" onclick="post('/hold',{reason:'operator pressed Hold line'},'Line held. QA must resume it.')">Hold line</button>
-          <button class="btn big" id="vcmd" title="Say: self test, teach, inspect, hold, record" onclick="toggleRec('command')">Voice command</button>
-        </div>
-      </div>
-      <div class="msg"></div>
-      <div id="heard" class="small heard"></div>
-      <div class="brand">Built with Muse Spark Open</div>
-    </div>
-    <div class="left">
-      <div class="well">
-        <div class="pic"><img id="cam" src="/stream" alt="Live camera with the pocket outlines"></div>
-        <div class="cap"><span class="live"><i></i>Live camera</span><span>Pockets outlined: green good, red failing</span>
-          <span>Judge: DINOv2, runs offline</span><span class="r" id="camres"></span></div>
-      </div>
-      <div class="card chal" id="chal" hidden>
-        <b>Challenge run</b><img id="chphoto" alt="Registered photo of this challenge strip" hidden><span id="chnext"></span>
-        <button class="btn primary" id="chgo" onclick="chalInspect()">Inspect</button>
-        <label id="chejl"><input type="checkbox" id="chej"> Ejected</label><button class="btn" id="chrec" onclick="chalEject()">Record result</button>
-        <ul class="chres" id="chres"></ul>
+        <dl class="vmeta" id="vfacts" hidden><div><dt>Sent to machine</dt><dd id="sent"></dd></div><div><dt>Photo kept</dt><dd id="photo"></dd></div></dl>
         <div class="msg"></div>
+        <div id="heard" class="small heard"></div>
       </div>
-      <div class="lights" aria-label="Station checks"><span id="st-self"></span><span id="st-clear"></span><span id="st-due" hidden></span><span id="st-link"></span></div>
+      <div class="pn">
+        <div class="pt">Production counters<span id="cbatch">No batch open</span></div>
+        <div class="counts">
+          <div class="p"><b id="c-pass">0</b><span>Good</span></div>
+          <div class="r"><b id="c-rej">0</b><span>Rejected</span></div>
+          <div class="h"><b id="c-held">0</b><span>Held</span></div>
+          <div><b id="c-all">0</b><span>Total</span></div>
+        </div>
+        <div class="yield">Yield<b id="yield">None yet</b><span class="bar"><i id="ybar"></i></span></div>
+      </div>
+      <div class="pn checks">
+        <div class="pt">Checks on this strip<span>this strip / batch</span></div>
+        <table class="chk"><thead><tr><th>Check</th><th id="chkstrip">Last strip</th><th>Batch</th></tr></thead><tbody id="chk"></tbody></table>
+      </div>
     </div>
+    <div class="pn camp">
+      <div class="pt">Camera 1: top view<span id="camcap">Live camera</span></div>
+      <div class="cbody">
+        <div class="pic" id="frame"><img id="cam" src="/stream" alt="Live camera with the pocket outlines">
+          <span class="ov"><span id="camstrip"></span><span id="camres"></span>live</span></div>
+        <div class="card chal" id="chal" hidden>
+          <b>Challenge run</b><img id="chphoto" alt="Registered photo of this challenge strip" hidden><span id="chnext"></span>
+          <button class="btn primary" id="chgo" onclick="chalInspect()">Inspect</button>
+          <label id="chejl"><input type="checkbox" id="chej"> Ejected</label><button class="btn" id="chrec" onclick="chalEject()">Record result</button>
+          <ul class="chres" id="chres"></ul>
+          <div class="msg"></div>
+        </div>
+        <div class="hist"><span>Last 20 strips</span><span class="sq" id="last20"></span><span class="n" id="last20n"></span></div>
+        <div class="lights" aria-label="Station checks"><span id="st-self"></span><span id="st-clear"></span><span id="st-due"></span><span id="st-link"></span></div>
+      </div>
+    </div>
+    <div class="pn rejbox" id="rejbox" hidden>
+      <div class="pt">Last rejects<button onclick="lastRejects()">Close</button></div>
+      <div class="rejlist" id="rejlist"></div>
+    </div>
+  </div>
+  <div class="keys">
+    <button class="btn primary" data-key="F1" onclick="inspectNow()">Inspect strip</button>
+    <button class="btn" data-key="F2" title="Record a short clip of the tray; one verdict per strip" onclick="trayNow()">Tray clip</button>
+    <button class="btn" data-key="F3" onclick="post('/hold',{reason:'operator pressed Hold line'},'Line held. QA must resume it.')">Hold line</button>
+    <button class="btn" data-key="F4" id="vcmd" title="Say: self test, teach, inspect, hold, record" onclick="toggleRec('command')">Voice command</button>
+    <button class="btn" data-key="F5" title="The last 8 reject photos" onclick="lastRejects()">Last rejects</button>
+    <div class="brand">Built with Muse Spark Open</div>
   </div>
 </section>
 
