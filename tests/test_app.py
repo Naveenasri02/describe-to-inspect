@@ -1745,3 +1745,32 @@ def test_status_run_view_last_strips_rule_fails_yield_and_reject_photos(tmp_path
     assert s["per_rule"] == {"2": 2, "3": 1}  # the old checklist's rule 4 and the finder hold are not counted
     assert s["yield"] == round(100 * 22 / 27, 1) and s["totals"]["passed"] == 22
     assert s["last_rejects"] == [{"photo": "20261101-071205-1.jpg", "at": "2026-11-01T07:12:05", "text": "Rule 2 failed"}]
+
+
+def test_camera_reopens_after_all_black_frames(monkeypatch):
+    opens = []
+
+    class Cap:  # first opening gives only black frames, the reopened one a picture
+        def __init__(self, *a):
+            opens.append(1)
+            self.n = len(opens)
+
+        def set(self, *a):
+            pass
+
+        def read(self):
+            return True, np.zeros((4, 4, 3), np.uint8) if self.n == 1 else np.full((4, 4, 3), 9, np.uint8)
+
+        def release(self):
+            pass
+
+    monkeypatch.setattr(app_mod.cv2, "VideoCapture", Cap)
+    monkeypatch.setattr(app_mod.FrameSource, "BLACK_S", 0.05)
+    src = app_mod.FrameSource("0")
+    try:
+        deadline = time.time() + 3
+        while time.time() < deadline and (src.get() is None or not src.get().any()):
+            time.sleep(0.02)
+        assert len(opens) == 2 and src.get().any()
+    finally:
+        src.stop.set()

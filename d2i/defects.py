@@ -108,20 +108,29 @@ def paint(image, pocket_box, kind, strip_box, rng):
         foil = _foil_colour(image, pocket_box, strip_box)
         tablet = np.zeros(shape, np.uint8)
         cv2.ellipse(tablet, (cx, cy), (ax, ay), 0, 0, 360, 255, -1)
-        if kind == "double_tablet":  # a copy of the tablet, 35% of the pocket width to the right, kept on the strip:
-            # two tablets in one pocket overlap past a pocket box that hugs one (SAM's pill box), not cut off at it
-            move = np.float32([[1, 0, int((x1 - x0) * 0.35)], [0, 1, 0]])
+        if kind == "double_tablet":  # a copy of the tablet, 35% of the pocket width toward the strip's middle, kept on
+            # the strip: two tablets in one pocket overlap past a pocket box that hugs one (SAM's pill box), not cut off at
+            # it. Toward the middle, so an edge pocket's copy is not cut at the strip edge (bench 2 Nov: one odd tablet)
+            way = 1 if cx < (strip_box[0] + strip_box[2]) / 2 else -1
+            move = np.float32([[1, 0, way * int((x1 - x0) * 0.35)], [0, 1, 0]])
             copy, mask = (cv2.warpAffine(a, move, (shape[1], shape[0])) for a in (image, tablet))
             mask[:, :max(int(strip_box[0]), 0)] = 0
             mask[:, max(int(strip_box[2]), 0):] = 0
             out[mask > 0] = copy[mask > 0]
-        elif kind == "wrong_tablet":  # the same tablet at 65% size
-            patch = image[cy - ay:cy + ay + 1, cx - ax:cx + ax + 1]
-            sx, sy = max(2, int(ax * 0.65)), max(2, int(ay * 0.65))
+        elif kind == "wrong_tablet":  # the same tablet at 75% size, on foil where the whole tablet was: a 65% copy in
+            # an 85% hole left a ring of the real tablet that SAM read as an empty dome (bench 2 Nov)
+            hx, hy = max(2, (x1 - x0) // 2), max(2, (y1 - y0) // 2)
+            patch = image[cy - hy:cy + hy + 1, cx - hx:cx + hx + 1]
+            sx, sy = max(2, int(hx * 0.75)), max(2, int(hy * 0.75))
             small = cv2.resize(patch, (2 * sx + 1, 2 * sy + 1))
             mask = np.zeros(small.shape[:2], np.uint8)
             cv2.ellipse(mask, (sx, sy), (sx, sy), 0, 0, 360, 255, -1)
-            _fill(out, tablet > 0, foil, rng)
+            whole = np.zeros(shape, np.uint8)
+            cv2.ellipse(whole, (cx, cy), (hx, hy), 0, 0, 360, 255, -1)  # the whole pill box: SAM's hugs the tablet
+            inside = np.zeros(shape, np.uint8)
+            inside[y0:y1, x0:x1] = 1
+            whole *= inside
+            _fill(out, whole > 0, foil, rng)
             roi = out[cy - sy:cy + sy + 1, cx - sx:cx + sx + 1]
             roi[mask > 0] = small[mask > 0]
         else:  # a dark speck on the tablet

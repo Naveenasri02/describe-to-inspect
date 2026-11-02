@@ -52,6 +52,8 @@ TRAY_SECONDS = 4  # 60 frames at 15 fps: one SAM 3.1 video call
 class FrameSource:
     """Latest camera/video/photo-folder frame, read by a background thread."""
 
+    BLACK_S = 2.0  # seconds of all-black camera frames before the camera is reopened
+
     def __init__(self, source):
         self.frame, self.lock, self.stop = None, threading.Lock(), threading.Event()
         self.source = str(source)
@@ -77,12 +79,7 @@ class FrameSource:
                 i += 1
                 self.stop.wait(2)
             return
-        if self.source.isdigit():  # a camera: DirectShow on Windows (the default MSMF driver gives no frames on some webcams)
-            cap = cv2.VideoCapture(int(self.source), cv2.CAP_DSHOW if os.name == "nt" else cv2.CAP_ANY)
-            cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1920)
-            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 1080)
-        else:
-            cap = cv2.VideoCapture(self.source)
+        cap, black_since = self._open(), None
         while not self.stop.is_set():
             ok, f = cap.read()
             if not ok:
@@ -90,8 +87,24 @@ class FrameSource:
                     cap.set(cv2.CAP_PROP_POS_FRAMES, 0)  # video file: loop
                 self.stop.wait(1)
                 continue
-            self._set(f)
+            self._set(f)  # a black frame is shown as black, never replaced by an older strip
+            # a webcam can stall on all-black frames (Logi C615 on DirectShow, bench 2 Nov); reopening brings it back
+            if self.source.isdigit() and not f.any():
+                black_since = black_since or time.time()
+                if time.time() - black_since > self.BLACK_S:
+                    cap.release()
+                    cap, black_since = self._open(), None
+            else:
+                black_since = None
             self.stop.wait(0.03)
+
+    def _open(self):
+        if self.source.isdigit():  # a camera: DirectShow on Windows (the default MSMF driver gives no frames on some webcams)
+            cap = cv2.VideoCapture(int(self.source), cv2.CAP_DSHOW if os.name == "nt" else cv2.CAP_ANY)
+            cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1920)
+            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 1080)
+            return cap
+        return cv2.VideoCapture(self.source)
 
 
 def source_kind(source: str) -> str:
@@ -181,7 +194,7 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
     src = FrameSource(source) if source is not None else None
     lock = threading.RLock()  # one slow station operation at a time
     meta = threading.RLock()  # short: checklist / pending / last-verdict references
-    state = {"pending": None, "last": None, "client": client, "overlay": (0.0, [])}
+    state = {"pending": None, "last": None, "client": client}
     app.state.station, app.state.source = st, src
 
     def get_client():  # built lazily so a missing key is reported when a paid call is needed
@@ -981,18 +994,10 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
         return FileResponse(product_dir / "rejects" / name, media_type="image/jpeg")
 
     def overlay_boxes(frame):
-        """Pocket boxes for the stream, recomputed at most once a second, without paid calls."""
-        t, boxes = state["overlay"]
-        with meta:
-            cl, tpl = st.checklist, st._template
-        if cl and time.time() - t > 1:
-            try:
-                lay = find_layout(frame, cl, None, tpl)
-                boxes = lay.pockets if lay.ok else []
-            except Exception:
-                boxes = []
-            state["overlay"] = (time.time(), boxes)
-        return boxes
+        """Pocket boxes for the stream: the ones SAM 3.1 found on the last inspected strip, while the camera still shows
+        it (no paid call). The offline contour guess is not drawn: on low-contrast backgrounds it boxes the wrong area."""
+        lay = st.layout_for(frame)
+        return lay.pockets if lay else []
 
     def frames():
         while True:

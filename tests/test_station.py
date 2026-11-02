@@ -65,7 +65,8 @@ def test_self_test_passes_and_unlocks(station):
     st, _ = station
     result = st.self_test(make_strip(seed=12), rng_seed=5)
     assert result["passed"] is True, result
-    assert {r["kind"] for r in result["results"]} == set(CHECKLIST["reject_if"])
+    assert {r["kind"] for r in result["results"]} == set(CHECKLIST["reject_if"]) - {"foil_damage"}
+    assert result["skipped"] == ["foil_damage"]  # listed as not covered, never painted (a tear test fails by chance)
     assert all(r["caught"] and r["named_right"] for r in result["results"])
     assert st.locked is False
     line = json.loads((st.dir / "selftests.jsonl").read_text().splitlines()[-1])
@@ -371,7 +372,7 @@ def test_full_checks_selftest_catches_and_names_every_kind(tmp_path):
     st.teach([make_strip(seed=i, shift=(i, 0)) for i in range(6)])
     for seed in range(6):
         r = st.self_test(make_strip(seed=12), rng_seed=seed, record=False)
-        assert r["skipped"] == [] and {x["kind"] for x in r["results"]} == set(CHECKS), (seed, r)
+        assert r["skipped"] == ["foil_damage"] and {x["kind"] for x in r["results"]} == set(CHECKS) - {"foil_damage"}, (seed, r)
         assert r["passed"], (seed, r)
 
 

@@ -74,16 +74,19 @@ def test_paint_strip_cut_changes_end_only():
     assert abs(out[STRIP_BOX[1]:STRIP_BOX[3], int(cut) + 2:STRIP_BOX[2]].mean() - np.median(img[:20])) < 15
 
 
-@pytest.mark.parametrize("pocket", [2, 4])  # a middle pocket and one at the strip's end
+@pytest.mark.parametrize("pocket", [0, 2, 4])  # the strip's left end, its middle and its right end
 def test_double_tablet_shows_past_a_pocket_box_that_hugs_the_tablet(pocket):
     """Rehearsal p17 pocket 5: the pocket box is SAM's pill box, which hugs one tablet; the copy clipped to it was a
     tablet with a straight cut edge, SAM saw one normal pill and the station named it broken. Two tablets in one
-    pocket overlap past that box; the copy stays on the strip and in the pocket's rows."""
+    pocket overlap past that box; the copy stays on the strip and in the pocket's rows, toward the strip's middle
+    (bench 2 Nov: an end pocket's copy cut at the strip edge read as one odd tablet)."""
     img = make_strip()
     cx, cy = 128 + 96 * pocket, 125  # make_strip tablet centre, radius 30
     x0, y0, x1, y1 = box = (cx - 39, cy - 39, cx + 39, cy + 39)  # an ImageSam / SAM pill box
     out = paint(img, box, "double_tablet", STRIP_BOX, np.random.default_rng(1))
     diff = np.abs(out.astype(int) - img.astype(int)).max(axis=2)
-    assert (diff[y0:y1, x1:] > 20).sum() >= 300, "the second tablet shows past the box"
-    assert (diff[:, :x0] > 0).sum() == 0 and (diff[:y0] > 0).sum() == 0 and (diff[y1:] > 0).sum() == 0
-    assert (diff[:, STRIP_BOX[2]:] > 0).sum() == 0, "kept on the strip"
+    left = cx >= (STRIP_BOX[0] + STRIP_BOX[2]) / 2
+    past, other = (diff[y0:y1, :x0], diff[:, x1:]) if left else (diff[y0:y1, x1:], diff[:, :x0])
+    assert (past > 20).sum() >= 300, "the second tablet shows past the box"
+    assert (other > 0).sum() == 0 and (diff[:y0] > 0).sum() == 0 and (diff[y1:] > 0).sum() == 0
+    assert (diff[:, :STRIP_BOX[0]] > 0).sum() == 0 and (diff[:, STRIP_BOX[2]:] > 0).sum() == 0, "kept on the strip"
