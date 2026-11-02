@@ -93,9 +93,15 @@ async function refresh(){
   $("notrel").hidden=!(s.batch&&s.blockers.length);$("notrel").textContent="Batch not released: "+s.blockers.join(", ");
   if(tab==="setup")setupTab(s);
   if(tab==="qa")qaTab(s);
-  if(tab==="system"){$("spent").textContent=s.spent_usd==null?"?":s.spent_usd.toFixed(2);traceRows()}
+  if(tab==="system"){creditCard(s);traceRows()}
   quarantine(s.quarantine_count,s.quarantine_error);invRefresh();chalRefresh();recheckRefresh();
   linePill(s);alarmLine(s);
+}
+function creditCard(s){  // unreadable spend file: "?" everywhere, paid calls are refused anyway
+  const sp=s.spent_usd,lim=s.limit_usd,known=sp!=null&&lim!=null;
+  $("spent").textContent=sp==null?"?":sp.toFixed(2);$("limit").textContent=lim==null?"?":lim.toFixed(2);
+  $("left").textContent=known?Math.max(lim-sp,0).toFixed(2):"?";
+  $("creditbar").style.width=known?Math.min(sp/lim*100,100)+"%":"0";
 }
 function roles(u){
   const w=$("who");w.replaceChildren();if(u)w.append("User ",mk("b",u.name),u.role==="qa"?", level QA":", level Operator");

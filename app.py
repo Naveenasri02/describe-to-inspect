@@ -351,7 +351,7 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
         except Exception:  # a malformed log row: no history on the Run screen, /status still answers
             view = {}
         return {**view, "locked": locked, "lock_reason": reason if locked else "",
-                "checklist_version": cl and cl["version"], "spent_usd": spent,
+                "checklist_version": cl and cl["version"], "spent_usd": spent, "limit_usd": budget.limit,
                 "counts": counts, "batch": open_batch, "blockers": blockers, "print_by_eye": eye, "due": overdue, "last_verdict": last, "selftest_skipped": uncovered, "state": banner, "text": text,
                 "rules": cl["rules"] if cl else [], "pending": pending["rules"] if pending else None,
                 "held": held, "quarantine_count": qn, "quarantine_error": qerr,

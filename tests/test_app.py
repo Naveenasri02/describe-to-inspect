@@ -33,7 +33,7 @@ def jpg(img):
 def test_status_starts_locked(tmp_path):
     c = TestClient(app_mod.create_app(tmp_path, None))
     s = c.get("/status").json()
-    assert s["locked"] is True and s["spent_usd"] == 0 and s["checklist_version"] is None
+    assert s["locked"] is True and s["spent_usd"] == 0 and s["limit_usd"] == 50 and s["checklist_version"] is None
     assert s["counts"] == {} and s["last_verdict"] is None
     assert c.get("/").status_code == 200 and c.get("/lamp").status_code == 200
 
