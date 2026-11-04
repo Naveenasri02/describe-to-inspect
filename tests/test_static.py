@@ -44,7 +44,7 @@ def test_banner_colours():
 def test_tabs_present():
     html = (STATIC / "index.html").read_text(encoding="utf-8")
     nav = re.search(r"<nav[^>]*>(.*?)</nav>", html, re.S).group(1)
-    assert re.findall(r"<button[^>]*>\s*(\w+)\s*</button>", nav) == ["Run", "Setup", "QA", "Record", "System"]
+    assert re.findall(r"<button[^>]*>\s*([^<]+?)\s*</button>", nav) == ["Run", "Setup", "Quality (QA)", "Record", "System"]
 
 
 def test_no_external_fonts_or_scripts():
@@ -170,7 +170,7 @@ def test_hold_and_approvals_are_sent_at_once_even_during_a_long_action(tmp_path)
     assert json.loads(out[0]) == [["/teach", "/hold"], "Line held. QA must resume it."]
     html, js = ((STATIC / f).read_text(encoding="utf-8") for f in ("index.html", "station.js"))
     assert "onclick=\"post('/hold'" in html and "onclick=\"post('/approve'" in html
-    assert html.count("onclick=\"long('/teach'") == 2 and "onclick=\"long('/selftest'" in html
+    assert html.count("onclick=\"long('/teach'") == 1 and "onclick=\"long('/selftest'" in html
     voice = re.search(r"^const ACTIONS=.*?\};$", js, re.M | re.S).group(0)
     assert "hold:()=>post('/hold'" in voice  # a voice "hold" is never held back either
     for a in ("long('/selftest',{},selftestSaid,$(\"vcmd\"))", "long('/teach',{capture:true},taught,$(\"vcmd\"))",

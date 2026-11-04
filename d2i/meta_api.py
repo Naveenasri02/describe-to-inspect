@@ -39,6 +39,17 @@ SAM_SIDE = 1280
 RETRY_WAIT = 1.0  # seconds before the one retry of a busy (429, 5xx) or unreachable API
 
 
+_REPEAT = re.compile(r"\b(\w+(?:\s+\w+)?)[,.;]?\s+(\1)\b", re.IGNORECASE)  # "pocket, pocket" too
+
+
+def collapse_repeats(text: str) -> str:
+    """Muse Voice Transcribe now and then writes a word or a two-word phrase twice in a row ("reject Reject",
+    "on a on a"); keep one. Only exact back-to-back repeats are touched."""
+    while (new := _REPEAT.sub(r"\2", text)) != text:
+        text = new
+    return text
+
+
 def _traced(model):
     """Record one trace event per public call: real cost on success, zero when it raises."""
     def deco(fn):
@@ -49,7 +60,8 @@ def _traced(model):
             except BaseException:
                 trace.record(model, "Meta API", fn.__name__, (time.perf_counter() - t0) * 1000, 0.0, False)
                 raise
-            trace.record(model, "Meta API", fn.__name__, (time.perf_counter() - t0) * 1000, self.budget.mine - spent)
+            job = fn.__name__ + (f":{kw['name']}" if "name" in kw else "")  # spark_json:print, spark_json:checklist
+            trace.record(model, "Meta API", job, (time.perf_counter() - t0) * 1000, self.budget.mine - spent)
             return out
         wrapper.__name__ = fn.__name__
         return wrapper
@@ -292,7 +304,7 @@ class MetaClient:
             "request": (None, json.dumps(req), "application/json"),
             "audio": ("audio.wav", wav, "audio/wav")})
         self.budget.settle(cost, cost)
-        return body.get("transcript", "")
+        return collapse_repeats(body.get("transcript", ""))
 
 
 def _parse(fmt, text):

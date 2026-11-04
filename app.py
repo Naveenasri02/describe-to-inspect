@@ -14,6 +14,7 @@ from datetime import date, datetime
 from dataclasses import asdict
 from pathlib import Path
 
+import collections
 import cv2
 import numpy as np
 from fastapi import FastAPI, File, Form, Request, UploadFile
@@ -32,6 +33,7 @@ from d2i.meta_api import Budget, MetaClient
 from d2i.ipqc import DRIFT_REJECTS, check_events, due, reconcile, reject_run, release_blockers
 from d2i.openitems import (challenge_failure, last_started, missed_checks, missed_text, open_items, signed,
                            window_id, print_by_eye as by_eye_read)
+from d2i.draw import BLUE, DEFECT, GREEN, RED, TAB, draw_pockets  # GREEN, TAB: tests check the drawn colours
 from d2i.printcheck import PAST_EXPIRY, check_print, differs, read_print
 from d2i.pockets import find_layout
 from d2i.station import FINDER_DOWN, NEED_TEACH, Station, Verdict
@@ -47,6 +49,9 @@ LANGS = {"English", "Tamil", "Hindi"}  # "Auto" = omit
 ANSWER_WAIT = 120  # seconds the agent waits for the operator
 INSPECT_ERROR = "inspection error — check by hand"
 TRAY_SECONDS = 4  # 60 frames at 15 fps: one SAM 3.1 video call
+# Chrome cuts an MJPEG stream at any byte match of "--" + BOUNDARY, even inside a JPEG: the old "f" matched camera
+# frames every ~2 s and the camera pane went black (2 Nov bench). A long random one never occurs in image data.
+BOUNDARY = "blistrue-frame-5c1e9a7d3b"
 
 
 class FrameSource:
@@ -56,6 +61,7 @@ class FrameSource:
 
     def __init__(self, source):
         self.frame, self.lock, self.stop = None, threading.Lock(), threading.Event()
+        self.recent = collections.deque(maxlen=5)  # the last frames, for steady()
         self.source = str(source)
         threading.Thread(target=self._run, daemon=True).start()
 
@@ -66,6 +72,16 @@ class FrameSource:
     def _set(self, f):
         with self.lock:
             self.frame = f
+            self.recent.append(f)
+
+    def steady(self):
+        """Per-pixel median of the last 5 frames (about 0.2 s): a mains-lit lamp rolls dark bands across single frames
+        (bench 3 Nov: good tablets read as spotted), the median removes them. The latest frame if sizes differ."""
+        with self.lock:
+            fs = list(self.recent)
+        if len(fs) < 3 or any(f.shape != fs[-1].shape for f in fs):
+            return self.get()
+        return np.median(np.stack(fs), axis=0).astype(np.uint8)
 
     def _run(self):
         p = Path(self.source)
@@ -120,45 +136,6 @@ class _NoPlc:  # no PLC attached (tests): the hold still lives in hold.json
         pass
 
 
-RED, BLUE, GREEN = (42, 42, 194), (200, 120, 30), (125, 212, 43)  # BGR: screen reject red, strip blue, a green that reads on foil
-TAB = (30, 60, 10)  # BGR dark green behind a good pocket's number
-DEFECT = {"empty_pocket": "empty", "broken_tablet": "broken tablet", "double_tablet": "two tablets",
-          "wrong_tablet": "different tablet", "tablet_spot": "spot on tablet", "unlisted_anomaly": "looks unusual"}
-
-
-def _pocket_no(f, n, x0, y0, colour, s, font):  # the pocket number in a small filled tab at the box's top-left corner
-    th, pad = max(1, round(s)), max(2, round(3 * s))
-    (tw, tht), base = cv2.getTextSize(str(n), font, 0.5 * s, th)
-    cv2.rectangle(f, (x0, y0), (x0 + tw + 2 * pad, y0 + tht + base + 2 * pad), colour, -1)
-    cv2.putText(f, str(n), (x0 + pad, y0 + pad + tht), font, 0.5 * s, (255, 255, 255), th, cv2.LINE_AA)
-
-
-def draw_pockets(f, boxes, bad):
-    """Pocket boxes: good ones a thin green outline, failing ones a thick red one under a filled label "Pocket N: <defect>".
-    Each box carries its number in a tab (dark green, red when failing). `bad` maps a failing pocket number to its check.
-    Shared by /stream and the reject photo."""
-    s, font = f.shape[1] / 1280, cv2.FONT_HERSHEY_DUPLEX  # sizes follow the frame: the same on screen at any camera size
-    for i, (x0, y0, x1, y1) in enumerate(boxes):
-        if i + 1 not in bad:
-            cv2.rectangle(f, (x0, y0), (x1, y1), GREEN, max(2, round(2 * s)))
-            _pocket_no(f, i + 1, x0, y0, TAB, s, font)
-    for i, (x0, y0, x1, y1) in enumerate(boxes):  # failing pockets last, so their labels sit on top
-        if i + 1 in bad:
-            cv2.rectangle(f, (x0, y0), (x1, y1), RED, max(4, round(6 * s)))
-            _pocket_no(f, i + 1, x0, y0, RED, s, font)
-            text = f"Pocket {i + 1}: {DEFECT.get(bad[i + 1], str(bad[i + 1]).replace('_', ' '))}"
-            scale, th, pad = 0.8 * s, max(1, round(2 * s)), round(10 * s)
-            (tw, tht), base = cv2.getTextSize(text, font, scale, th)
-            w, h, cx = tw + 2 * pad, tht + base + 2 * pad, int((x0 + x1) // 2)
-            lx = int(min(max(0, cx - w // 2), f.shape[1] - w))
-            # above the strip with a leader line, so no pocket is covered; below it when the strip is at the frame top
-            top, low = min(b[1] for b in boxes), max(b[3] for b in boxes)
-            ly = int(top - h - 3 * pad if top - h - 3 * pad >= 0 else low + 3 * pad)
-            cv2.line(f, (cx, ly + h if ly < y0 else ly), (cx, int(y0 if ly < y0 else y1)), RED, th)
-            cv2.rectangle(f, (lx, ly), (lx + w, ly + h), RED, -1)
-            cv2.putText(f, text, (lx + pad, ly + pad + tht), font, scale, (255, 255, 255), th, cv2.LINE_AA)
-
-
 def run_view(rows, batch, version, totals):
     """Run screen extras from the log rows of the open batch (no batch: the latest rows): the last 20 strips, the last 8
     reject photos, how many strips failed each rule this batch (current checklist only) and the yield, good / judged."""
@@ -205,7 +182,7 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
     def image_from(upload: UploadFile | None):
         if upload is not None:
             return cv2.imdecode(np.frombuffer(upload.file.read(), np.uint8), cv2.IMREAD_COLOR)
-        return src.get() if src else None
+        return src.steady() if src else None
 
     def who(request: Request):
         return sessions.get(request.cookies.get("d2i_session"), ("operator", None))
@@ -427,6 +404,8 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
                 if f is None:
                     return {"error": "No camera frame to save."}
                 cv2.imwrite(str(good / f"{int(clock() * 1000)}.jpg"), f)
+                if st.checklist:
+                    st.show_layout(f)  # the camera shows the pockets found on this photo while the strip stays put
             files = sorted(good.glob("*.jpg"))
             if len(files) < NEED_GOOD:
                 return {"saved": len(files), "need": NEED_GOOD}
@@ -518,6 +497,7 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
             read = read_print(im, get_client())  # MetaError / BudgetExceeded reach paid(): plain text, nothing logged
             out = check_print(read, b, date.fromtimestamp(clock()))
             out["by_eye"] = out["status"] == "HOLD"  # the model only flags (a difference, a blank, a cut-off): QA decides at /print/eye
+            out["read"], out["record"] = read, {k: b.get(k, "") for k in ("batch", "mfg", "exp", "mrp", "product", "strength")}  # shown side by side
             with meta:
                 waiting = print_by_eye(b)  # read again before QA decided: that read is superseded, never decided
                 batches._write("prints.jsonl", {"at": datetime.fromtimestamp(clock()).isoformat(timespec="seconds"), "time": clock(),
@@ -993,27 +973,25 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
             return JSONResponse({"error": "No such photo"}, status_code=404)
         return FileResponse(product_dir / "rejects" / name, media_type="image/jpeg")
 
-    def overlay_boxes(frame):
-        """Pocket boxes for the stream: the ones SAM 3.1 found on the last inspected strip, while the camera still shows
-        it (no paid call). The offline contour guess is not drawn: on low-contrast backgrounds it boxes the wrong area."""
-        lay = st.layout_for(frame)
-        return lay.pockets if lay else []
-
     def frames():
         while True:
             f = src.get() if src else None
             if f is not None:
-                last = state["last"] or {}
-                bad = {r["pocket"]: r.get("check", "") for r in last.get("reasons", []) if r.get("pocket") is not None}
-                draw_pockets(f, overlay_boxes(f), bad)  # no status word on the picture: the verdict tag shows it
+                lay, cv = st.layout_for(f), state.get("chal_view")
+                # a challenge strip still in view shows its own failing pockets; otherwise the last production verdict's
+                reasons = cv[1] if cv and lay is not None and lay is cv[0] else (state["last"] or {}).get("reasons", [])
+                bad = {r["pocket"]: r.get("check", "") for r in reasons if r.get("pocket") is not None}
+                draw_pockets(f, lay.pockets if lay else [], bad)  # no status word on the picture: the verdict tag shows it
                 ok, buf = cv2.imencode(".jpg", f)
                 if ok:
-                    yield b"--f\r\nContent-Type: image/jpeg\r\n\r\n" + buf.tobytes() + b"\r\n"
+                    # Content-Length: recorders such as ffmpeg read the frame by size instead of hunting for the boundary
+                    yield (f"--{BOUNDARY}\r\nContent-Type: image/jpeg\r\nContent-Length: {buf.size}\r\n\r\n".encode()
+                           + buf.tobytes() + b"\r\n")
             time.sleep(0.1)
 
     @app.get("/stream")
     def stream():
-        return StreamingResponse(frames(), media_type="multipart/x-mixed-replace; boundary=f")
+        return StreamingResponse(frames(), media_type=f"multipart/x-mixed-replace; boundary={BOUNDARY}")
 
     # --- Physical challenge: QA registers known-bad strips; a logged-in user runs each one through the verdict path ---
     chal = {"run": None}  # the run in progress, in memory: a run lost to a restart never passed (the gate stays shut)
@@ -1044,16 +1022,36 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
     def challenge_register(request: Request, label: str = Form(""), kind: str = Form(""), rule: str = Form(""),
                            image: UploadFile | None = File(None)):
         def run():
+            nonlocal label, kind, rule  # filled in when the station detects the defect
             name = qa(request)
             if not st.checklist:
                 return {"error": NO_CHECKLIST}
             im = image_from(image)
             with lock:  # the run in progress is checked and changed under the same lock as /challenge/inspect
+                detected = None
+                if not kind.strip() and im is not None:  # detect: the strip is judged like any strip, its defect fills the form
+                    v = st._judge(im, None, None)
+                    kinds = st.checklist["reject_if"] + ["empty_pocket"]
+                    hit = next((x for x in v.reasons if x.get("check") in kinds), None)
+                    if hit is None:
+                        return {"error": "No defect found on this strip: choose the defect kind by hand"}
+                    kind, rule = hit["check"], str(hit["rule"])
+                    detected = (f"Detected: {DEFECT.get(kind, kind.replace('_', ' '))}"
+                                + (f", pocket {hit['pocket']}" if hit.get("pocket") else "") + f", Rule {hit['rule']}")
+                    if v.layout is not None:  # the live camera shows what was found
+                        st.keep_view(im, v.layout)
+                        state["chal_view"] = (v.layout, v.reasons)
+                if not label.strip():  # the next free label: C1, C2, ...
+                    used = {x["label"] for x in (challenge.load_set(product_dir) or {}).get("strips", [])}
+                    label = next(f"C{n}" for n in range(1, 100) if f"C{n}" not in used)
+                st.last_failing = None
                 out = challenge.register(product_dir, st.checklist, label, kind, rule, im, name, local_now(),
                                          learn=lambda: st.failing_pocket(im))  # a SAM 3.1 call when online
                 learned = out.pop("learned", None)
-                audit.append("challenge_register", name, {"strips": out["strips"], "learned": learned})
-                notes = [learned] if learned else []
+                if getattr(st, "last_failing", None):  # the live camera marks the registered defect
+                    state["chal_view"] = (st.last_failing[0], [{"pocket": st.last_failing[1], "check": kind}])
+                audit.append("challenge_register", name, {"strips": out["strips"], "learned": learned, "detected": detected})
+                notes = [x for x in (detected, learned) if x]
                 if live_run():  # the set changed: the new set is run in full
                     chal["run"] = None
                     notes.append("The challenge run in progress was stopped: run the new set in full")
@@ -1092,6 +1090,9 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
                 if FINDER_DOWN in v.reasons:  # like a self-test that could not run: nothing is recorded
                     return {"error": "Could not inspect: the pocket finder (SAM 3.1) did not answer — try again"}
                 res = challenge.judged(strip, v)
+                if getattr(v, "layout", None) is not None:  # the live camera marks the failing pocket, as for Inspect
+                    st.keep_view(im, v.layout)
+                    state["chal_view"] = (v.layout, v.reasons)
                 if r is None:
                     r = chal["run"] = {"by": name, "batch": b["batch"], "strips": s["strips"], "results": [],
                                        "pending": None, "source": source_kind(src.source) if src is not None else "upload"}

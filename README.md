@@ -1,6 +1,6 @@
 # Blistrue
 
-**Every strip, proven true.** By Fennixar.
+**Every strip, proven true.**
 
 A webcam + laptop packaging-line QA bench for tablet blister strips. One spoken or typed sentence sets up the rules ("describe to inspect"), the bench checks every pocket and names the rule that broke, runs an automatic self-test every shift, on top of the physical challenge strip, signals the machine and drafts the shift record (draft record — QA signs it).
 

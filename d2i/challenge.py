@@ -24,7 +24,8 @@ def runs(product_dir) -> list[dict]:
     return Batches(product_dir)._read(RUNS)
 
 
-LEARNED = ("empty_pocket", "broken_tablet")  # the kinds the judge names a failing pocket by
+LEARNED = ("empty_pocket", "broken_tablet", "wrong_tablet")  # the kinds the judge names a failing pocket by (a real
+# different tablet the judge cannot see by colour: bench 3 Nov, a yellow one matched its registered strip 0.91, broken 0.63)
 
 
 def register(product_dir, cl: dict, label: str, kind: str, rule: str, image, by: str, at: str, learn=None) -> dict:

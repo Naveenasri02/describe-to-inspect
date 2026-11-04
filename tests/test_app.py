@@ -1,3 +1,4 @@
+import collections
 import hashlib
 import json
 import re
@@ -717,7 +718,8 @@ def test_print_difference_holds_the_strip_for_a_check_by_eye_not_the_line(tmp_pa
     holds the print check for QA's check by eye; it no longer holds the line on the model's word."""
     c, p = _eye_bench(tmp_path)
     r = c.post("/print", files=up(make_strip(seed=1))).json()
-    assert r == {"status": "HOLD", "reasons": [WA7_DIFF], "by_eye": True}
+    assert {k: r[k] for k in ("status", "reasons", "by_eye")} == {"status": "HOLD", "reasons": [WA7_DIFF], "by_eye": True}
+    assert r["read"]["batch"] and r["record"]["batch"]  # shown side by side on the QA screen
     s = c.get("/status").json()
     assert s["held"] is False and not _holds(p) and s["print_by_eye"] == [WA7_DIFF]
     assert "Start-up print check" in s["blockers"] and _lines(p / "prints.jsonl")[-1]["by_eye"] is True
@@ -755,7 +757,9 @@ def test_unreadable_print_is_decided_by_eye_too(tmp_path):
     blank = "Batch no. not printed or not readable"
     for read, why in ((dict(WA7, batch=""), [blank]), (dict(WA7, readable=False), ["Print not readable — check by hand"])):
         c, p = _eye_bench(tmp_path / str(len(why[0])), read=read)
-        assert c.post("/print", files=up(make_strip(seed=1))).json() == {"status": "HOLD", "reasons": why, "by_eye": True}
+        r = c.post("/print", files=up(make_strip(seed=1))).json()
+        assert {k: r[k] for k in ("status", "reasons", "by_eye")} == {"status": "HOLD", "reasons": why, "by_eye": True}
+        assert r["read"] == read and r["record"]["batch"]
         assert c.get("/status").json()["print_by_eye"] == why
     assert _eye(c, "wrong")["status"] == "WRONG_PRINT" and _holds(p)[-1]["reason"] == "Critical: wrong print — " + why[0]
     c, p = _eye_bench(tmp_path / "ok", read=dict(WA7, batch=""))
@@ -1223,7 +1227,7 @@ def test_batch_start_needs_product_and_strength_and_audits_them(tmp_path):
     assert "Strength" in c.post("/batch/start", data=dict(base, product="Para", strength="x")).json()["error"]
     row = c.post("/batch/start", data=dict(base, product="Para", strength="500 mg")).json()
     assert (row["product"], row["strength"]) == ("Para", "500 mg")
-    assert '<input id="bst" maxlength="40" placeholder="Strength (blank if not printed)"' in c.get("/").text
+    assert '<input id="bst" maxlength="40" placeholder="blank if none" aria-label="Strength, blank if not printed"' in c.get("/").text
     last = [json.loads(x) for x in (p / "audit.jsonl").read_text(encoding="utf-8").splitlines()][-1]
     assert last["action"] == "batch_start" and last["details"]["strength"] == "500 mg"
 
@@ -1774,3 +1778,45 @@ def test_camera_reopens_after_all_black_frames(monkeypatch):
         assert len(opens) == 2 and src.get().any()
     finally:
         src.stop.set()
+
+
+def test_stream_boundary_never_inside_a_camera_jpeg():
+    # Chrome splits the MJPEG stream at the first boundary match; "--f" turned up inside camera JPEGs every ~2 s on the
+    # 2 Nov bench and the camera pane went black. A noisy full-HD frame is the worst case.
+    rng = np.random.default_rng(0)
+    jpg = cv2.imencode(".jpg", rng.integers(0, 256, (1080, 1920, 3), dtype=np.uint8))[1].tobytes()
+    assert ("--" + app_mod.BOUNDARY).encode() not in jpg
+    assert len(app_mod.BOUNDARY) >= 16
+
+
+def test_a_saved_teach_photo_shows_its_pockets_on_the_camera(tmp_path):
+    folder = tmp_path / "cam"
+    folder.mkdir()
+    cv2.imwrite(str(folder / "a.png"), make_strip(seed=15))
+    c, p = bench(tmp_path, source=str(folder), as_user=("qa1", "pw-qa"))
+    st, src = c.app.state.station, c.app.state.source
+    try:
+        for _ in range(100):
+            if src.get() is not None:
+                break
+            time.sleep(0.05)
+        st._last_view = None
+        assert c.post("/teach", json={"capture": True}).json().get("error") is None
+        assert st.layout_for(src.get()) is not None
+    finally:
+        src.stop.set()
+
+
+def test_steady_frame_removes_a_lamp_band_from_one_frame():
+    src = app_mod.FrameSource.__new__(app_mod.FrameSource)  # no camera thread
+    src.frame, src.lock = None, threading.Lock()
+    src.recent = collections.deque(maxlen=5)
+    good = np.full((4, 6, 3), 200, np.uint8)
+    banded = good.copy()
+    banded[:2] = 40  # a mains-lit lamp rolls a dark band over one frame
+    src._set(good)
+    src._set(banded)
+    assert (src.steady() == banded).all()  # under 3 frames: the latest frame as it is
+    for f in (good, good, good):
+        src._set(f)
+    assert (src.steady() == 200).all()

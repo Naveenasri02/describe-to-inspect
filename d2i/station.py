@@ -18,7 +18,7 @@ from d2i.challenge import load_set
 from d2i.checklist import SEVERITY, current, rule_number
 from d2i.defects import paint
 from d2i.judge import Judge
-from d2i.measure import empty_looking, features, pocket_check, strip_check, teach_profile, teach_strip
+from d2i.measure import _delta_e, empty_looking, features, pocket_check, strip_check, teach_profile, teach_strip
 from d2i.pockets import _from_template, _on_turned, find_layout, framed, template_from, turn_of
 
 MEASURED = ("double_tablet", "wrong_tablet", "tablet_spot")  # decided by measure.py on SAM pill boxes
@@ -105,6 +105,7 @@ class Station:
         self.dir, self.client, self.shift_hours, self.clock = Path(product_dir), client, shift_hours, clock
         self.snap = None  # set by the app: (image, verdict) -> file name of the saved reject photo
         self._last_view = None  # (layout, frame size, thumbnail) of the last whole camera frame inspected
+        self.last_failing = None  # (layout, pocket number) of the last registered challenge strip's defect
         self.step = ""  # what a long action is doing now, for the screen
         self.checklist = current(self.dir / "checklists.jsonl")
         model = self.dir / "model.pt"
@@ -240,9 +241,9 @@ class Station:
         empty dome of this product (a painted one named about 13 of 82 real empty pockets empty, a real one 77 of 82)."""
         out = dict(self.prototypes)
         for s in (load_set(self.dir) or {"strips": []})["strips"]:  # unreadable: raises (the gate is shut then too)
-            if s.get("prototype") and s["kind"] in out:
+            if s.get("prototype"):
                 v = torch.from_numpy(np.load(self.dir / s["prototype"])).float()
-                out[s["kind"]] = torch.vstack([out[s["kind"]].reshape(-1, len(v)), v])
+                out[s["kind"]] = torch.vstack([out[s["kind"]].reshape(-1, len(v)), v]) if s["kind"] in out else v[None]
         return out
 
     def failing_pocket(self, image) -> tuple:
@@ -258,7 +259,14 @@ class Station:
         scores = self.judge.score_pockets(image, lay)
         i = int(np.argmax(scores))  # shortcut: the worst pocket is taken as the defect; QA registers one defect a strip
         if scores[i] <= self.judge.pocket_threshold:
-            return None, "no pocket failed"
+            # the measurements may fail a pocket the judge passes (bench 3 Nov: a yellow tablet of the taught shape)
+            v = self._judge_one(image, lay, Verdict("PASS", at=self._now()))
+            hit = next((r["pocket"] for r in v.reasons if r.get("pocket")), None)
+            if hit is None:
+                return None, "no pocket failed"
+            i = hit - 1
+        self.keep_view(image, lay)  # the live camera shows the registered strip with its pockets
+        self.last_failing = (lay, i + 1)
         return self.judge.pocket_embeddings(image, lay)[i].cpu().numpy(), f"pocket {i + 1}"
 
     def _reason(self, check, pocket=None):
@@ -279,6 +287,18 @@ class Station:
             listed.append(self._reason(check, pocket))
         else:
             unlisted.append(self._unlisted(pocket))
+
+    def _name(self, image, lay, i, sims):
+        """The nearest kind; "different tablet" only when the tablet's colour differs from the taught one: a crushed
+        white tablet sat as near a learned yellow tablet as a broken one (bench 3 Nov, lamp: 0.67 vs 0.69)."""
+        kind = max(sims, key=sims.get)
+        mine = lay.in_pocket[i] if lay.pills and self.profile else []
+        if kind == "wrong_tablet" and len(mine) == 1 and len(sims) > 1:
+            f = features(image, lay.slots[i], mine[0])
+            if f and _delta_e(f["lab"], self.profile["lab_med"]) <= self.profile["colour_tol"]:
+                rest = {k: v for k, v in sims.items() if k != "wrong_tablet"}
+                kind = max(rest, key=rest.get)
+        return kind
 
     def _judge(self, image, strip_id, image_name) -> Verdict:
         v = Verdict("PASS", strip_id=strip_id, image_name=image_name, at=self._now())
@@ -309,7 +329,7 @@ class Station:
         if failing:
             embs, protos = self.judge.pocket_embeddings(image, lay).cpu(), self._prototypes()
             sims = {i: similarity(embs[i], protos) for i in failing}
-        named = {i: max(s, key=s.get) for i, s in sims.items()}  # the judge's name: the nearest one
+        named = {i: self._name(image, lay, i, s) for i, s in sims.items()}  # the judge's name: the nearest one
         if cut:
             # the taught pocket template no longer fits a mis-sized strip, so per-pocket findings would be false
             self._find("strip_cut", listed, unlisted)
@@ -323,7 +343,7 @@ class Station:
                 usable += len(mine) > 1 or (len(mine) == 1 and features(image, slot, mine[0]) is not None)
                 # the judge is sure it is empty: a measurement may not turn an outlined empty dome into a different tablet
                 sure = i in sims and sims[i]["empty_pocket"] - sims[i]["broken_tablet"] >= EMPTY_MARGIN
-                kind = pocket_check(image, slot, mine, self.profile, sure)
+                kind = pocket_check(image, slot, mine, self.profile, sure, i in failing)
                 if kind:
                     self._find(kind, listed, unlisted, i)
                     measured.add(i)
@@ -336,11 +356,31 @@ class Station:
         for i in failing:
             if i not in measured:
                 self._find(named[i], listed, unlisted, i)
+        if lay.pills and self.profile:
+            # fail-safe: SAM 3.1 saw no tablet in a pocket the judge passed (a same-shape tablet of another colour, bench
+            # 3 Nov: 14 pills of 15, judge 0.34 < 0.43) - never passed, held for a hand check
+            for i, mine in enumerate(lay.in_pocket):
+                if not mine and i not in failing and i not in measured:
+                    unlisted.append(dict(self._unlisted(i), text=f"Pocket {i + 1}: no tablet outlined — check by hand"))
         if self.judge.score_border(image, lay) > self.judge.border_threshold:
             self._find("foil_damage", listed, unlisted)
         v.reasons = listed + unlisted
         v.status = "REJECT" if listed else "HOLD" if unlisted else "PASS"
         return v
+
+    def show_layout(self, frame) -> int:
+        """Teaching: find the pockets on the photo just saved, so the live camera draws them while the strip stays
+        put. Display only (a paid SAM 3.1 call); a failure shows no boxes and never stops the save. Pockets found."""
+        try:
+            lay = self._layout(frame)
+        except Exception:
+            return 0
+        self.keep_view(frame, lay)
+        return len(lay.pockets)
+
+    def keep_view(self, frame, layout):
+        """The live camera draws this layout while it still shows this frame (teach photo, challenge strip)."""
+        self._last_view = (layout, frame.shape[:2], _thumb(frame))
 
     def layout_for(self, frame):
         """The layout of the last camera inspection while the camera still shows that view (same size, nearly the
@@ -403,7 +443,7 @@ class Station:
                     if i // per in (0, cl["rows"] - 1) or i % per in (0, per - 1)]
             measuring = bool(lay.pills and self.profile)
             for kind in cl["reject_if"] + ([] if "empty_pocket" in cl["reject_if"] else ["empty_pocket"]):  # Rule 1
-                if kind == "foil_damage":  # listed as not covered, never painted
+                if kind in ("foil_damage", "strip_cut", "double_tablet"):  # listed as not covered, never painted: a painted cut slices tablets, a painted copy merges with the tablet or lands between pockets (bench 3 Nov); real strips prove these
                     # shortcut: good strips' borders differ about as much as a painted tear (bench 2 Nov: tears up to
                     # 1.5 tablets deep caught 17 of 24), so a tear test fails by chance. Upgrade: a sharper border check.
                     skipped.append(kind)

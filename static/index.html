@@ -1,14 +1,14 @@
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Blistrue</title>
-<link rel="stylesheet" href="/static/station.css">
+<link rel="stylesheet" href="/static/station.css?v=20261103zn">
 </head><body>
 <header class="top">
   <div class="name">Blistrue<span>Line 1 · Blister inspection station</span></div>
   <nav aria-label="Screens">
     <button data-tab="run" class="on">Run</button>
     <button data-tab="setup" data-role="qa" hidden>Setup</button>
-    <button data-tab="qa" data-role="qa" hidden>QA</button>
+    <button data-tab="qa" data-role="qa" hidden>Quality (QA)</button>
     <button data-tab="record" data-role="user" hidden>Record</button>
     <button data-tab="system" data-role="qa" hidden>System</button>
   </nav>
@@ -52,7 +52,7 @@
         <div id="heard" class="small heard"></div>
       </div>
       <div class="pn">
-        <div class="pt">Production counters<span id="cbatch">No batch open</span></div>
+        <div class="pt">Strip counters<span id="cbatch">No batch open</span></div>
         <div class="counts">
           <div class="p"><b id="c-pass">0</b><span>Good</span></div>
           <div class="r"><b id="c-rej">0</b><span>Rejected</span></div>
@@ -60,6 +60,7 @@
           <div><b id="c-all">0</b><span>Total</span></div>
         </div>
         <div class="yield">Yield<b id="yield">None yet</b><span class="bar"><i id="ybar"></i></span></div>
+        <div class="note cnote" id="cnote"></div>
       </div>
       <div class="pn checks">
         <div class="pt">Checks on this strip<span>this strip / batch</span></div>
@@ -70,7 +71,7 @@
       <div class="pt">Camera 1: top view<span id="camcap">Live camera</span></div>
       <div class="cbody">
         <div class="pic" id="frame"><img id="cam" src="/stream" alt="Live camera with the pocket outlines">
-          <span class="ov"><span id="camstrip"></span><span id="camres"></span>live</span></div>
+          <span class="ov"><i class="rec"></i><b>CAM 1</b><span id="camstrip"></span><span id="camres"></span>LIVE</span><span class="ovr camclock"></span><i class="vf"></i></div>
         <div class="card chal" id="chal" hidden>
           <b>Challenge run</b><img id="chphoto" alt="Registered photo of this challenge strip" hidden><span id="chnext"></span>
           <button class="btn primary" id="chgo" onclick="chalInspect()">Inspect</button>
@@ -90,7 +91,7 @@
   <div class="keys">
     <button class="btn primary" data-key="F1" onclick="inspectNow()">Inspect strip</button>
     <button class="btn" data-key="F2" title="Record a short clip of the tray; one verdict per strip" onclick="trayNow()">Tray clip</button>
-    <button class="btn" data-key="F3" onclick="post('/hold',{reason:'operator pressed Hold line'},'Line held. QA must resume it.')">Hold line</button>
+    <button class="btn hold" data-key="F3" onclick="post('/hold',{reason:'operator pressed Hold line'},'Line held. QA must resume it.')">Hold line</button>
     <button class="btn" data-key="F4" id="vcmd" title="Say: self test, teach, inspect, hold, record" onclick="toggleRec('command')">Voice command</button>
     <button class="btn" data-key="F5" title="The last 8 reject photos" onclick="lastRejects()">Last rejects</button>
     <div class="brand">Built with Muse Spark Open</div>
@@ -106,6 +107,10 @@
     <li><button data-step="5"><i><svg class="tk" width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><path d="M2.5 7.5l3 3 6-7"/></svg><b>5</b></i>Run</button></li>
   </ol>
   <div class="setup">
+    <div class="pnl scam"><div class="pt">Camera 1: top view<span>Live camera</span></div>
+      <div class="cbody"><div class="pic"><img src="/stream" alt="Live camera: the strip in view">
+        <span class="ov"><i class="rec"></i><b>CAM 1</b><span class="camres"></span>LIVE</span><span class="ovr camclock"></span><i class="vf"></i></div></div></div>
+    <div class="sright">
     <div>
       <div class="card" data-panel="1">
         <h2>Describe the good strip</h2>
@@ -125,16 +130,15 @@
       </div>
       <div class="card" data-panel="3" hidden>
         <h2 id="teachh">Teach good strips</h2>
-        <p>Place a good strip under the camera and save it. Move or turn it a little each time, so the station learns what normal looks like.</p>
+        <p>Save 5 photos of a good strip, moving it a little each time.</p>
         <div class="slots" id="slots"></div>
-        <div class="actions"><button class="btn big primary" onclick="long('/teach',{capture:true},taught)">Save this strip</button>
-          <button class="btn big" onclick="long('/teach',{},taught)">Use saved photos</button></div>
+        <div class="actions"><button class="btn big primary" onclick="long('/teach',{capture:true},taught)">Save this strip</button></div>
         <div class="msg"></div>
       </div>
       <div class="card" data-panel="4" hidden>
         <h2>Self-test</h2>
-        <p>The station paints fake defects onto the good strip in view and checks that each one is caught and named, and that the real strip passes. A per-shift functional check — it runs on top of the physical challenge strip.</p>
-        <div class="actions"><button class="btn big primary" onclick="long('/selftest',{},selftestSaid)">Run self-test</button></div>
+        <p>Place a good strip. The station checks it passes, then hides known defects in a copy of its photo and must find every one before the shift starts.</p>
+        <div class="actions"><button class="btn big primary" onclick="long('/selftest',stFresh(),stShown)">Run self-test</button></div>
         <h3 id="sth" hidden></h3>
         <ul class="check" id="stresults"></ul>
         <div class="small" id="uncovered"></div>
@@ -148,9 +152,10 @@
     </div>
     <div class="card">
       <h2>Rules for a good strip</h2>
-      <div id="sentencebox" hidden><div class="spoken" id="sentence"></div><small>The sentence the rules were made from.</small></div>
+      <div id="sentencebox" hidden><div class="spoken" id="sentence"></div><small>What QA said (Muse Voice Transcribe) — the rules were made from it.</small></div>
       <ul class="rules" id="rules"></ul>
       <div class="approved" id="approved">No rules yet.</div>
+    </div>
     </div>
   </div>
 </section>
@@ -170,11 +175,11 @@
           <div class="work" id="nobatch">
             <div class="grid3">
               <label class="fl"><span>Batch no.</span><input id="bn" placeholder="e.g. B2611-01" aria-label="Batch no."></label>
-              <label class="fl"><span>MFG</span><input id="bm" placeholder="10/2026" aria-label="MFG"></label>
-              <label class="fl"><span>EXP</span><input id="be" placeholder="10/2028" aria-label="EXP"></label>
-              <label class="fl"><span>MRP (Rs.)</span><input id="bp" placeholder="32.50" aria-label="MRP"></label>
+              <label class="fl"><span>MFG</span><input id="bm" placeholder="e.g. 05/2026" aria-label="MFG"></label>
+              <label class="fl"><span>EXP</span><input id="be" placeholder="e.g. 04/2028" aria-label="EXP"></label>
+              <label class="fl"><span>MRP (Rs.)</span><input id="bp" placeholder="e.g. 32.50" aria-label="MRP"></label>
               <label class="fl"><span>Product name</span><input id="bpn" maxlength="80" placeholder="As printed on the foil" aria-label="Product name"></label>
-              <label class="fl"><span>Strength</span><input id="bst" maxlength="40" placeholder="Strength (blank if not printed)" aria-label="Strength, blank if not printed"></label>
+              <label class="fl"><span>Strength</span><input id="bst" maxlength="40" placeholder="blank if none" aria-label="Strength, blank if not printed"></label>
             </div>
             <div class="field"><button class="btn go" id="go-start" onclick="batchStart()">Start batch</button></div>
           </div></li>
@@ -209,15 +214,14 @@
               <label class="fl grow"><span>Leak test note</span><input id="bnote" aria-label="Leak test note"></label></div>
             <div class="field"><button class="btn" onclick="leak('pass')">Leak test pass</button><button class="btn" onclick="leak('fail')">Leak test fail</button></div>
           </div>
-          <div class="work" id="missedbox">
-            <h3>Missed hourly checks: QA review note</h3>
+          <details class="work" id="missedbox"><summary>Missed hourly checks: QA review note</summary>
             <ul class="check" id="missed"></ul>
             <div class="field"><label class="fl"><span>Batch (blank = current)</span><input id="mbatch" class="narrow" aria-label="Batch whose missed checks to list"></label>
               <label class="fl"><span>QA password</span><input id="mpw" type="password" aria-label="QA password for the review note"></label></div>
-          </div></li>
+          </details></li>
         <li id="q-end"><span class="n"><svg class="tk" width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><path d="M2.5 7.5l3 3 6-7"/></svg><b>7</b></span>
           <div><div class="t">End batch: counts at the bench</div><div class="d"></div></div><span class="when"></span>
-          <div class="work" id="endbox" hidden>
+          <details class="work" id="endbox" hidden><summary>Open the end-of-batch counts</summary>
             <div class="grid4">
               <label class="fl"><span>Strips received</span><input id="e-received" type="number" min="0" aria-label="Strips received at the bench"></label>
               <label class="fl"><span>Good tray</span><input id="e-good" type="number" min="0" aria-label="Strips in the good tray"></label>
@@ -235,7 +239,7 @@
             <div class="field"><label class="fl"><span>QA password, only if outside a limit</span><input id="e-pw" type="password" aria-label="QA password, only if outside a limit"></label>
               <label class="fl grow"><span>Investigation reason, only if outside a limit</span><input id="e-reason" aria-label="Investigation reason, only if outside a limit"></label></div>
             <div class="field"><button class="btn end" onclick="batchEnd()">End batch</button></div>
-          </div></li>
+          </details></li>
       </ol>
     </div>
     <div class="qside">
@@ -278,14 +282,15 @@
       <div class="card">
         <h2>Physical challenge set</h2>
         <ul class="check" id="chset"></ul>
-        <div class="field"><label class="fl"><span>Label</span><input id="cl" class="narrow" placeholder="C1" aria-label="Challenge strip label"></label>
+        <div class="field"><label class="fl"><span>Label</span><input id="cl" class="narrow" placeholder="auto" aria-label="Challenge strip label, blank for the next free one"></label>
           <label class="fl grow"><span>Defect kind</span><select id="ck" aria-label="Defect kind"></select></label>
-          <label class="fl"><span>Rule</span><input id="cr" type="number" min="1" class="narrow" aria-label="Expected rule number"></label></div>
+          <label class="fl"><span>Rule</span><input id="cr" type="number" min="1" class="narrow" placeholder="auto" aria-label="Expected rule number, blank when detected"></label></div>
         <div class="field"><button class="btn" onclick="chalRegister()">Register challenge strip (photo from the camera)</button></div>
-        <h3>Close a failed challenge</h3>
+        <details><summary>Close a failed challenge of an ended batch</summary>
         <div class="field"><label class="fl"><span>QA password</span><input id="ccp" type="password" aria-label="QA password to close a failed challenge"></label>
           <label class="fl grow"><span>Reason</span><input id="ccr" aria-label="Reason to close a failed challenge"></label></div>
         <div class="field"><button class="btn" title="A failed challenge run of a batch that has ended: close it with a QA note so its record can be signed" onclick="chalClose()">Close failed challenge of an ended batch (QA)</button></div>
+        </details>
         <p class="note">The self-test adds to the physical challenge test; it does not replace it.</p>
         <div class="msg"></div>
       </div>
@@ -317,23 +322,32 @@
 <section class="tab" id="system" hidden>
   <div class="wide">
     <div class="card credit">
-      <h2>Meta API credit</h2>
-      <div class="bignum">$<span id="left">50.00</span></div>
-      <p>Left before the station stops paid model calls at $<span id="limit">50.00</span>.</p>
-      <span class="bar"><i id="creditbar"></i></span>
-      <p>$<span id="spent">0.00</span> spent on paid model calls so far.</p>
+      <h2>Station screens</h2>
+      <div hidden><span id="left"></span><span id="limit"></span><i id="creditbar"></i><span id="spent"></span></div>  <!-- spend stays in the record and the README; not a screen for the line -->
       <h3>Stack light</h3>
       <p><a href="/lamp" target="_blank">Open the stack-light page</a> on a phone or a second screen.</p>
       <h3>Line board</h3>
       <p><a href="/board" target="_blank">Open the line board</a> (read-only) on a screen beside the line: the state, why, since when and who must act.</p>
     </div>
+    <div class="syscol">
+    <div class="card">
+      <h2>Meta models in this station</h2>
+      <table class="trace models"><thead><tr><th>Model</th><th>Where it runs</th><th>Its one job</th></tr></thead><tbody>
+        <tr><td>Muse Voice Transcribe</td><td>Meta Model API</td><td>Turns QA's spoken rule and voice commands into text</td></tr>
+        <tr><td>Muse Spark 1.3</td><td>Meta Model API</td><td>Writes the numbered rules, reads the foil print, drafts the shift record</td></tr>
+        <tr><td>SAM 3.1</td><td>Meta Model API</td><td>Finds the strip, every pocket and tablet; clears the line</td></tr>
+        <tr><td>DINOv2</td><td>On this laptop, offline</td><td>Judges every pocket pass or fail; no language model decides</td></tr>
+        <tr><td>Muse Spark Open</td><td>Open weights on Baseten</td><td>Shift Supervisor agent: investigates, can only request, QA approves</td></tr>
+      </tbody></table>
+    </div>
     <div class="card">
       <h2>What each model did</h2>
-      <p>The last twelve model calls, newest first.</p>
-      <table class="trace"><thead><tr><th>Model</th><th>Job</th><th>ms</th><th>USD</th></tr></thead><tbody id="trace"></tbody></table>
+      <p>The last eight model calls, newest first: live from this station.</p>
+      <table class="trace"><thead><tr><th>Model</th><th>Job</th><th>Time (ms)</th></tr></thead><tbody id="trace"></tbody></table>
+    </div>
     </div>
   </div>
 </section>
 </main>
-<script src="/static/station.js"></script>
+<script src="/static/station.js?v=20261103zn"></script>
 </body></html>

@@ -65,7 +65,7 @@ def _foil_lab(image, box):
     return _lab(np.uint8([[ring]]))[0, 0]
 
 
-def pocket_check(image, pocket, mine, profile, judge_empty: bool = False) -> str | None:
+def pocket_check(image, pocket, mine, profile, judge_empty: bool = False, judge_failed: bool = True) -> str | None:
     """empty_pocket, double_tablet, wrong_tablet or tablet_spot; None for no pill (the judge's job) or a normal one.
     pocket: the taught pocket box (the size scale); mine: the pills in this pocket, nearest first; judge_empty: the
     DINOv2 judge failed this pocket and is sure it is empty (station.EMPTY_MARGIN)."""
@@ -80,10 +80,19 @@ def pocket_check(image, pocket, mine, profile, judge_empty: bool = False) -> str
     # SAM outlined the pocket itself: the foil's colour through the dome, not a tablet's. A real dome also shows
     # reflections and the table (a median 17 dE from the foil ring, past colour_tol): then the judge's word decides.
     # Never colour alone: peach, orange and gold tablets read nearer their foil ring than a white taught tablet.
-    if foil < _delta_e(f["lab"], profile["lab_med"]) and (foil <= profile["colour_tol"] or judge_empty):
+    tab = _delta_e(f["lab"], profile["lab_med"])
+    # a tablet of the taught colour that the judge passed is a tablet, even when a lamp makes the foil ring look the
+    # same (bench 3 Nov, lamp: 4.8 from the tablet, 2.2 from the foil); real empty domes read 16-22 from the tablet
+    if foil < tab and (foil <= profile["colour_tol"] or judge_empty) and (judge_failed or tab > profile["colour_tol"]):
         return "empty_pocket"
     if f["area"] >= 1.7 * profile["area_med"]:
         return "double_tablet"
+    shape_ok = (abs(f["size"] - profile["size_med"]) <= profile["size_tol"]
+                and abs(f["aspect"] - profile["aspect_med"]) <= profile["aspect_tol"])
+    if judge_empty and shape_ok and _delta_e(f["lab"], profile["lab_med"]) > profile["colour_tol"]:
+        # the judge is sure it is an empty dome and only the colour differs: the table seen through the clear dome
+        # (a corner pocket on the bench, 3 Nov: 16 dE from the tablet, 25 from the foil) is not a different tablet
+        return "empty_pocket"
     if (abs(f["size"] - profile["size_med"]) > profile["size_tol"]
             or abs(f["aspect"] - profile["aspect_med"]) > profile["aspect_tol"]
             or _delta_e(f["lab"], profile["lab_med"]) > profile["colour_tol"]):

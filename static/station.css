@@ -369,3 +369,84 @@ main input:not([type=checkbox]),main select{height:32px;border:1px solid var(--e
   .top{gap:12px}
   .top .name span{display:none}
 }
+
+/* Setup preview: zoomed on the middle of the frame, so the strip being taught fills the box (the Run camera is never cropped) */
+.pic.preview{flex:none;margin:0 0 12px;overflow:hidden}
+.pic.preview img{object-fit:cover;transform:scale(1.3)}
+.ov .rec{width:8px;height:8px;border-radius:50%;background:#e5484d;align-self:center;animation:recblink 1.2s steps(2,start) infinite}
+@keyframes recblink{to{visibility:hidden}}
+.ov,.ovr{z-index:2;font-variant-numeric:tabular-nums;letter-spacing:.02em}
+.ovr{position:absolute;right:8px;top:8px;background:rgba(20,25,31,.78);color:#fff;font-size:11.5px;font-weight:500;padding:3px 7px}
+.ovr:empty{display:none}
+/* viewfinder corner marks */
+.vf{position:absolute;inset:44px 9% 22px;pointer-events:none;z-index:1;--m:rgba(255,255,255,.9);background:linear-gradient(var(--m),var(--m)) 0 0/24px 2px,linear-gradient(var(--m),var(--m)) 0 0/2px 24px,linear-gradient(var(--m),var(--m)) 100% 0/24px 2px,linear-gradient(var(--m),var(--m)) 100% 0/2px 24px,linear-gradient(var(--m),var(--m)) 0 100%/24px 2px,linear-gradient(var(--m),var(--m)) 0 100%/2px 24px,linear-gradient(var(--m),var(--m)) 100% 100%/24px 2px,linear-gradient(var(--m),var(--m)) 100% 100%/2px 24px;background-repeat:no-repeat}
+
+/* Setup: the same live camera as Run on the left, the step and the rules on the right */
+.setup{flex:1;min-height:0;grid-template-columns:minmax(0,61fr) minmax(0,39fr);grid-template-rows:minmax(0,1fr);align-items:stretch}
+.scam{display:flex;flex-direction:column;min-height:0}
+.sright{display:flex;flex-direction:column;gap:8px;min-height:0;overflow:auto}
+.sright .slots{grid-template-columns:repeat(5,minmax(0,1fr))}
+/* call-to-action buttons */
+.btn{border-radius:6px}
+.btn.primary{background:linear-gradient(135deg,#7458F0,#4B33C2);border-color:#3C2A99;box-shadow:0 2px 8px rgba(75,51,194,.35);font-weight:700;letter-spacing:.01em}
+.btn.primary:hover{background:linear-gradient(135deg,#8268F4,#5640D0);box-shadow:0 4px 14px rgba(75,51,194,.45)}
+.btn.big{height:46px;font-size:15.5px;padding:0 22px}
+.ptab{width:100%;margin-top:8px;border-collapse:collapse;font-size:13.5px;font-weight:500;background:rgba(255,255,255,.12)}
+.ptab th,.ptab td{text-align:left;padding:3px 8px;border-top:1px solid rgba(255,255,255,.3)}
+.ptab th{font-weight:600;font-size:12px}
+/* Setup right column: every rule in view next to the step (the sentence is already on the Describe / Approve steps) */
+.sright .rules li{padding:4px 8px;font-size:13px;line-height:1.3}
+.sright .rules em{font-size:11px;padding:0 6px}
+.sright .approved{margin-top:6px;padding-top:5px}
+.sright .card p{margin-top:0}
+.sright{gap:6px}
+.sright #sentencebox .spoken{font-size:12.5px;line-height:1.35;padding:5px 9px}
+.sright #sentencebox small{font-size:11.5px}
+.sright .slots{margin:2px 0 8px}
+.sright .slot{aspect-ratio:16/9}
+.sright .card p{font-size:13px}
+.setup{grid-template-columns:minmax(0,54fr) minmax(0,46fr)}
+.sright{gap:4px}
+.sright .rules li{padding:3px 8px}
+.sright #sentencebox .spoken{line-height:1.3}
+.sright .slot{aspect-ratio:2/1}
+.sright .slots{margin:2px 0 6px}
+.sright .btn.big{height:42px}
+.sright .approved{margin-top:4px;padding-top:4px}
+.sright{scrollbar-width:none}
+.line.idle .lhead{background:var(--bar);color:#fff}
+.qa .line.idle{border-color:var(--edge)}
+.models{margin-top:10px}
+.models td:first-child{font-weight:600;white-space:nowrap}
+/* Quality (QA): one screen, no scrolling */
+.seq{margin-top:8px}
+.seq>li{padding-bottom:7px}
+.seq>li>div:nth-child(2){display:flex;gap:10px;align-items:baseline;flex-wrap:wrap}
+.seq .n{width:24px;height:24px}
+.seq>li:not(:last-child)::before{left:11px;top:24px}
+.seq .work{margin-top:6px;padding:8px 10px}
+.release .grid3{grid-template-columns:repeat(6,minmax(0,1fr));gap:8px}
+details.work>summary,.qside details>summary{cursor:pointer;font-size:13px;font-weight:600;color:var(--text2)}
+details[open]>summary{margin-bottom:8px}
+.qside details{margin-top:10px}
+details:not([open])>*:not(summary){display:none!important}
+.qa{flex:1;min-height:0;align-items:stretch}
+.qa .release{overflow:auto;scrollbar-width:thin}
+.qside>.card:last-child{flex:1}
+.syscol{display:flex;flex-direction:column;gap:8px;min-width:0}
+.trace.models td,.trace.models th{text-align:left!important}
+/* Industrial control-panel buttons: flat keys with a hard bottom edge; blue = the next action, amber = hold, green = confirm */
+.btn{border-radius:4px;background:#E6E9ED;border:1px solid #87919C;border-bottom-width:3px;color:var(--ink);font-weight:600;box-shadow:none}
+.btn:hover{background:#F1F3F5}
+.btn:active{border-bottom-width:1px;margin-top:2px}
+.btn.primary{background:#0F5BA8;border-color:#0A3F75;color:#fff;box-shadow:none;letter-spacing:.01em}
+.btn.primary:hover{background:#1468BD;box-shadow:none}
+.btn.ok{background:#16803C;border-color:#0B5A2B;color:#fff}
+.btn.hold{background:#E9A61A;border-color:#8F6309;color:#17202A}
+.btn.hold:hover{background:#F2B331}
+.keys .btn.primary::before{color:#D6E6F7;border-color:#7FA9D6}
+.keys .btn.hold::before{color:#3A2A05;border-color:#8F6309}
+.sright>.card:last-child{flex:1}
+.card .note.cnote{font-size:14px;font-weight:600;color:var(--text);margin:8px 0 0}.card .note.cnote:empty{display:none}
+
+.counts em.ctest{display:block;font-style:normal;font-size:13px;font-weight:700;color:#B3261E;margin-top:2px}.counts em.ctest:empty{display:none}

@@ -312,3 +312,11 @@ def test_sam_image_sends_a_smaller_copy_and_maps_the_boxes_back(tmp_path):
     assert SAM_SIDE == 1280 and sent.shape[:2] == (1280, 470)
     assert all(abs(g - w) <= 1 for g, w in zip(o.box, (27, 54, 300, 327))), o.box  # x 1280/470, y 3487/1280
     assert o.mask.shape == (3487, 1280) and o.mask[200, 150] and not o.mask[10, 10]
+
+
+def test_transcript_repeats_are_collapsed():
+    from d2i.meta_api import collapse_repeats
+    got = collapse_repeats("per row. reject Reject an empty pocket, a spot on a on a tablet, five five pockets, or or a a wrong size")
+    assert got == "per row. Reject an empty pocket, a spot on a tablet, five pockets, or a wrong size"
+    assert collapse_repeats("three rows of five") == "three rows of five"
+    assert collapse_repeats("a double tablet in one pocket, pocket, a different tablet") == "a double tablet in one pocket, a different tablet"

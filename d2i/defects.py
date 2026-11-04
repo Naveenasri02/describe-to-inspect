@@ -108,11 +108,11 @@ def paint(image, pocket_box, kind, strip_box, rng):
         foil = _foil_colour(image, pocket_box, strip_box)
         tablet = np.zeros(shape, np.uint8)
         cv2.ellipse(tablet, (cx, cy), (ax, ay), 0, 0, 360, 255, -1)
-        if kind == "double_tablet":  # a copy of the tablet, 35% of the pocket width toward the strip's middle, kept on
+        if kind == "double_tablet":  # a copy of the tablet, 50% of the pocket width toward the strip's middle, kept on
             # the strip: two tablets in one pocket overlap past a pocket box that hugs one (SAM's pill box), not cut off at
             # it. Toward the middle, so an edge pocket's copy is not cut at the strip edge (bench 2 Nov: one odd tablet)
             way = 1 if cx < (strip_box[0] + strip_box[2]) / 2 else -1
-            move = np.float32([[1, 0, way * int((x1 - x0) * 0.35)], [0, 1, 0]])
+            move = np.float32([[1, 0, way * int((x1 - x0) * 0.5)], [0, 1, 0]])  # 0.35 merged into one big blob (bench 3 Nov)
             copy, mask = (cv2.warpAffine(a, move, (shape[1], shape[0])) for a in (image, tablet))
             mask[:, :max(int(strip_box[0]), 0)] = 0
             mask[:, max(int(strip_box[2]), 0):] = 0

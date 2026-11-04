@@ -213,3 +213,23 @@ def test_teach_photo_with_an_outlined_empty_dome_is_found():
     assert empty_looking(images, layouts) is None
     images[3] = foil()  # SAM outlined the bare dome where the tablet should be
     assert empty_looking(images, layouts) == (4, 1)
+
+
+def test_an_empty_dome_that_only_differs_in_colour_is_empty_when_the_judge_is_sure():
+    """Bench 3 Nov: a corner dome showed the table through the plastic, 16 dE from the tablet and 25 from the foil.
+    Same size and shape as a pocket, so with the judge sure it is empty, it is empty, not a different tablet."""
+    img = foil()
+    box = disc(img, 70, 70, 30, (205, 200, 225))  # pocket-sized, off the tablet's colour, far from the foil too
+    assert pocket_check(img, POCKET, [box], profile()) == "wrong_tablet"
+    assert pocket_check(img, POCKET, [box], profile(), judge_empty=True) == "empty_pocket"
+
+
+
+
+def test_a_tablet_coloured_like_the_foil_ring_is_not_empty_when_the_judge_passed_it():
+    # a lamp made the silver foil read nearer the tablet than the taught tablet does (bench 3 Nov: 2.2 vs 4.8 dE)
+    img = np.full((140, 140, 3), 222, np.uint8)  # foil, lit to near the tablet's colour
+    box = disc(img, 70, 70, 30, (224, 224, 224))  # the taught tablet is (235, 235, 235): about 4 dE away
+    p = profile()
+    assert pocket_check(img, POCKET, [box], p) == "empty_pocket"  # judge failed it too: an outlined dome, as before
+    assert pocket_check(img, POCKET, [box], p, judge_failed=False) is None  # the judge passed it: a tablet

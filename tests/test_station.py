@@ -65,8 +65,8 @@ def test_self_test_passes_and_unlocks(station):
     st, _ = station
     result = st.self_test(make_strip(seed=12), rng_seed=5)
     assert result["passed"] is True, result
-    assert {r["kind"] for r in result["results"]} == set(CHECKLIST["reject_if"]) - {"foil_damage"}
-    assert result["skipped"] == ["foil_damage"]  # listed as not covered, never painted (a tear test fails by chance)
+    assert {r["kind"] for r in result["results"]} == set(CHECKLIST["reject_if"]) - {"foil_damage", "strip_cut", "double_tablet"}
+    assert result["skipped"] == [k for k in CHECKLIST["reject_if"] if k in ("foil_damage", "strip_cut", "double_tablet")]  # never painted
     assert all(r["caught"] and r["named_right"] for r in result["results"])
     assert st.locked is False
     line = json.loads((st.dir / "selftests.jsonl").read_text().splitlines()[-1])
@@ -317,9 +317,10 @@ def test_selftest_catches_and_names_new_kinds(tmp_path):
     st.teach([make_strip(seed=i, shift=(i, 0)) for i in range(6)])
     assert st.profile is not None
     r = st.self_test(make_strip(seed=12), rng_seed=5)
-    assert r["skipped"] == [] and r["passed"], r
+    drilled = [k for k in NEW3 if k != "double_tablet"]  # a painted double is not a fair drill (bench 3 Nov)
+    assert r["skipped"] == [k for k in NEW3 if k == "double_tablet"] and r["passed"], r
     got = {x["kind"]: x for x in r["results"]}
-    assert set(NEW3) <= set(got) and all(got[k]["caught"] and got[k]["named_right"] for k in NEW3), r
+    assert set(drilled) <= set(got) and all(got[k]["caught"] and got[k]["named_right"] for k in drilled), r
 
 
 def test_selftest_lists_skipped_kinds_without_profile(station):
@@ -345,9 +346,8 @@ def test_station_strip_cut_named(tmp_path):
     v = st._judge(cut, None, None)
     want = {"rule": 2, "check": "strip_cut"}
     assert v.status == "REJECT" and any(want.items() <= x.items() for x in v.reasons), v.reasons
-    assert st.self_test(make_strip(seed=12), rng_seed=5)["skipped"] == []
-    r = st.self_test(make_strip(seed=12), rng_seed=5)
-    assert [x["kind"] for x in r["results"]].count("strip_cut") == 1 and r["passed"], r
+    r = st.self_test(make_strip(seed=12), rng_seed=5)  # a cut strip is still named at inspection (above);
+    assert r["skipped"] == ["strip_cut"] and r["passed"], r  # the painted cut is no longer a self-test (it sliced tablets)
 
 
 def test_full_checks_strip_cut_and_empty_pocket(tmp_path):
@@ -372,7 +372,7 @@ def test_full_checks_selftest_catches_and_names_every_kind(tmp_path):
     st.teach([make_strip(seed=i, shift=(i, 0)) for i in range(6)])
     for seed in range(6):
         r = st.self_test(make_strip(seed=12), rng_seed=seed, record=False)
-        assert r["skipped"] == ["foil_damage"] and {x["kind"] for x in r["results"]} == set(CHECKS) - {"foil_damage"}, (seed, r)
+        assert r["skipped"] == [k for k in CHECKS if k in ("foil_damage", "strip_cut", "double_tablet")]             and {x["kind"] for x in r["results"]} == set(CHECKS) - {"foil_damage", "strip_cut", "double_tablet"}, (seed, r)
         assert r["passed"], (seed, r)
 
 
@@ -434,6 +434,30 @@ def test_turned_and_moved_strip_passes_and_an_empty_pocket_is_still_caught(sam_s
         assert v.status == "PASS", (turn, v.reasons, [round(s, 3) for s in v.pocket_scores])
         v = st.inspect(make_strip(seed=13, shift=(10, 6), turn=turn, missing=(6,)))
         assert v.status == "REJECT" and any(r["check"] == "empty_pocket" and r["pocket"] == 7 for r in v.reasons),             (turn, v.reasons)
+
+
+class MissOneSam(ImageSam):
+    """SAM 3.1 outlining every tablet but the one in pocket k (bench 3 Nov: 14 pills of 15)."""
+
+    def __init__(self, k):
+        super().__init__()
+        self.k = k
+
+    def sam_image(self, image, prompt):
+        objs = super().sam_image(image, prompt)
+        if prompt == "blister strip":
+            return objs
+        x0, y0, x1, y1 = pocket_box(self.k, strip=_strip_by_contour(image))
+        return [o for o in objs if not (x0 <= (o.box[0] + o.box[2]) / 2 <= x1 and y0 <= (o.box[1] + o.box[3]) / 2 <= y1)]
+
+
+def test_pocket_with_no_tablet_outlined_is_held_not_passed(sam_taught, tmp_path):
+    base, judge = sam_taught
+    shutil.copytree(base, tmp_path / "p")
+    st = Station(tmp_path / "p", client=MissOneSam(4), judge=judge, clock=lambda: T0)
+    v = st.inspect(make_strip(seed=15))
+    assert v.status == "HOLD", (v.reasons, [round(s, 3) for s in v.pocket_scores])
+    assert any(r["text"] == "Pocket 5: no tablet outlined — check by hand" for r in v.reasons), v.reasons
 
 
 class DomeSam(ImageSam):
@@ -498,6 +522,14 @@ def test_real_empty_dome_is_named_empty_once_an_empty_challenge_strip_is_registe
         x0, y0, x1, y1 = pocket_box(3, strip=_strip_by_contour(img))
         cv2.circle(img, ((x0 + x1) // 2, (y0 + y1) // 2), 30, bgr, -1)
         assert [(r["check"], r["pocket"]) for r in st._judge(img, None, None).reasons] == [("wrong_tablet", 4)], name
+    # a tablet of the taught colour is never named a different tablet by the nearest example alone
+    white = make_strip(seed=22)
+    lay = st._layout(white)
+    i = next(k for k, m in enumerate(lay.in_pocket) if len(m) == 1)
+    assert st._name(white, lay, i, {"empty_pocket": 0.5, "broken_tablet": 0.6, "wrong_tablet": 0.7}) == "broken_tablet"
+    st.judge.pocket_threshold = 9.0  # the judge passes every pocket: the colour check alone fails pocket 4
+    emb, where = st.failing_pocket(img)
+    assert where == "pocket 4" and emb is not None and st.last_failing[1] == 4
 
 
 ODD_COLOURS = {"tan": (140, 165, 190), "peach": (150, 180, 235), "orange": (40, 140, 240), "brown": (60, 90, 130),

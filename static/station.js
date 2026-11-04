@@ -1,6 +1,6 @@
 const $=id=>document.getElementById(id);
 const BAND={READY:["READY","ink"],PASS:["PASSED","pass"],REJECT:["REJECTED","reject"],HOLD:["HELD","hold"],
-  LOCKED:["LOCKED","reject"],"NO STRIP":["NO STRIP","grey"],"NOT RELEASED":["NOT RELEASED","hold"]};
+  LOCKED:["NOT READY","hold"],"NO STRIP":["NO STRIP","grey"],"NOT RELEASED":["NOT RELEASED","hold"]};
 const SENT={PASS:"Pass counted",REJECT:"Reject signal",HOLD:"Hold signal",LOCKED:"Lock signal",NO_STRIP:"Nothing sent"};
 const WAIT=["Waiting: run it on the Setup screen, step 4","Waiting: Check print (foil side up), below","Waiting for the QA signature"];
 const REL=["Self-test for this batch","Start-up print check","QA signature on the start-up specimen"];
@@ -24,7 +24,9 @@ const show=(o,own)=>{const m=own||box(),t=typeof o==="string"?o:(o.error||o.mess
   if(own&&m===ticking&&tickText!==null&&m.textContent!==tickText){if(t)m.textContent+="\n"+t;return refresh()}  // another message (e.g. Line held) took the long action's card: it stays and the answer goes below; a later message replaces it
   document.querySelectorAll("main .msg").forEach(x=>{if(x!==m&&x!==ticking){x.textContent="";x.className="msg";x.style.cssText=""}});  // only the latest message stays
   m.className="msg";m.style.cssText="";
-  m.textContent=t;if(o&&o.error)m.classList.add("err");refresh()};
+  m.textContent=t;if(o&&o.error)m.classList.add("err");
+  if(t)STEP={text:t.split("\n")[0],at:new Date()};refresh()};
+let STEP=null;  // the latest action's answer: the Run tab's Last verdict shows it until a strip is judged after it
 const red=(vs,m=box())=>{if(vs.some(v=>(v.reasons||[]).some(r=>r.severity==="critical")))m.classList.add("crit")};
 window.addEventListener("unhandledrejection",e=>show({error:"Could not finish: "+((e.reason&&e.reason.message)||e.reason)}));
 async function j(url,body){const r=await fetch(url,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body||{})});return r.json()}
@@ -38,6 +40,10 @@ async function busy(fn,b=clicked){if(running)return;running=true;const m=ticking
 async function post(url,b,ok,m){const r=await j(url,b);show(r.error?r:typeof ok==="function"?ok(r):ok||r,m)}  // sent at once, always
 const long=(url,b,ok,btn)=>busy(m=>post(url,b,ok,m),btn);
 const taught=r=>r.taught?"Taught from "+r.taught+" photos."+(r.skipped.length?" Unreadable, skipped: "+r.skipped.join(", "):""):"Saved "+r.saved+" of "+r.need+" photos.";
+let stRun=false;  // a self-test started on this screen and not answered yet
+// the previous self-test leaves the screen when a new one starts; only the new result is shown (the request body is {})
+const stFresh=()=>{stRun=true;$("stresults").replaceChildren();$("sth").hidden=true;return {}};
+const stShown=r=>{stRun=false;return selftestSaid(r)};
 const selftestSaid=r=>r.not_run||(r.passed?"Self-test passed.":"Self-test missed: "+r.failed.join(", "));
 const uncovered=s=>(s.selftest_skipped||[]).length?"Self-test did not cover: "+s.selftest_skipped.map(k=>k.replace(/_/g," ")).join(", "):"";
 const reasonText=r=>r.text+(r.severity?" ["+r.severity+"]":"");
@@ -45,11 +51,19 @@ const reasonText=r=>r.text+(r.severity?" ["+r.severity+"]":"");
 const inspectNow=btn=>busy(async m=>{const v=await (await fetch("/inspect",{method:"POST"})).json();
   if(v.error)return show(v,m);
   if(v.status==="NO_CHECKLIST")return show(v.reasons[0].text,m);
-  show(v.reasons.length>1?"All reasons: "+v.reasons.map(reasonText).join("; "):"",m);red([v],m)},btn);
+  show(v.reasons.length>1?"All reasons: "+v.reasons.map(reasonText).join("; "):"",m);red([v],m);STEP=null;refresh()},btn);  // the strip's own verdict shows
 const printNow=()=>busy(async m=>{const r=await j("/print");
   if(r.error)return show(r,m);const mine=m.textContent===tickText;  // no other message took this card meanwhile
   show((r.status==="PRINT_OK"?"PRINT OK":r.by_eye?"HOLD — Check the print by eye":"HOLD")+(r.reasons.length?"\n"+r.reasons.join("\n"):""),m);
-  if(mine){m.classList.add("print");m.style.background=r.status==="PRINT_OK"?"var(--pass)":"var(--hold)"}});
+  if(mine){m.classList.add("print");m.style.background=r.status==="PRINT_OK"?"var(--pass)":"var(--hold)"};
+  if(r.read&&STEP)STEP.more=[["Batch no.","batch"],["MFG","mfg"],["EXP","exp"],["MRP","mrp"]].map(([n,k])=>  // the Run tab shows what was read
+    n+" "+(r.read[k]??"not read")+(r.reasons.some(x=>x.startsWith(n))?" ✗":" ✓")).join("  ·  ");
+  if(r.read&&r.record){  // what Muse Spark read on the foil next to the batch record, field by field
+    const F=[["Batch no.","batch"],["MFG","mfg"],["EXP","exp"],["MRP","mrp"],["Product name","product"],["Strength","strength"]],t=mk("table","","ptab"),
+      row=(c,cells)=>{const tr=document.createElement("tr");cells.forEach(v=>tr.append(mk(c,v)));return tr};
+    t.append(row("th",["","Field","On the strip (read by Muse Spark)","Batch record"]),
+      ...F.filter(([,k])=>r.record[k]).map(([l,k])=>row("td",[r.reasons.some(x=>x.startsWith(l))?"✗":"✓",l,r.read[k]||"–",r.record[k]])));
+    m.append(t)}});
 const trayNow=()=>busy(async m=>{const r=await j("/tray");
   show(r.verdicts?r.verdicts.map(v=>"Strip "+(v.strip_id??"-")+": "+v.status+" "+v.reasons.map(reasonText).join("; ")).join("\n"):r,m);if(r.verdicts)red(r.verdicts,m)});
 const clearance=()=>busy(async m=>{const r=await form("/clearance");
@@ -104,7 +118,7 @@ function creditCard(s){  // unreadable spend file: "?" everywhere, paid calls ar
   $("creditbar").style.width=known?Math.min(sp/lim*100,100)+"%":"0";
 }
 function roles(u){
-  const w=$("who");w.replaceChildren();if(u)w.append("User ",mk("b",u.name),u.role==="qa"?", level QA":", level Operator");
+  const w=$("who");w.replaceChildren();if(u)w.append("User ",mk("b",u.name),u.role==="qa"?", Quality Assurance (QA)":", Operator");
   $("loginbox").hidden=!!u;$("logoutbtn").hidden=!u;
   document.querySelectorAll("nav button[data-role]").forEach(b=>b.hidden=!(u&&(b.dataset.role==="user"||u.role==="qa")));
   if(document.querySelector('nav button[data-tab="'+tab+'"]').hidden)go("run");  // a hidden tab is not security: the server checks QA
@@ -136,7 +150,13 @@ function runTab(s){
   $("why").textContent=why;$("why").classList.toggle("crit",crit);
   const rule=r&&r.rule&&(s.rules||[]).find(x=>x.startsWith("Rule "+r.rule+" ")||x.startsWith("Rule "+r.rule+":"));
   $("vrule").textContent=tag+(rule?": "+rule.replace(/^Rule \d+(?: \(\w+\))?: /,""):"");
-  const notes=[];
+  if(C.pending){const p=C.pending,w2=p.caught?"REJECTED":"MISSED";  // a challenge strip's result shows here too (a test strip, never counted)
+    $("label").className="label reject";$("band").textContent=w2;$("band").classList.toggle("long",w2.length>8);$("frame").className="pic reject";
+    $("why").textContent="Challenge strip "+p.label+": "+p.kind.replace(/_/g," ")+(p.caught?"":" — "+p.why)+" (test strip, not counted)";
+    $("vrule").textContent=p.caught?"Rule "+(p.rules||[]).join(", "):"Expected Rule "+p.expected_rule}
+  const notes=[],step=STEP&&!s.held&&!C.pending&&!(own&&new Date(v.at)>STEP.at);
+  if(step){$("why").textContent=STEP.text;$("why").classList.remove("crit");
+    $("vrule").textContent="Last step · "+STEP.at.toTimeString().slice(0,8);if(STEP.more)notes.push(STEP.more);if(!own&&s.text)notes.push(s.text)}
   if(own&&v.reasons.length>1)notes.push("Also: "+v.reasons.slice(1).map(x=>x.text).join("; "));
   if(own&&(v.skipped||[]).length)notes.push("Not checked: "+v.skipped.join(", "));
   if(s.held&&s.hold_reason)notes.push(s.text);
@@ -148,36 +168,45 @@ function runTab(s){
   $("vtime").textContent=v?String(v.at).slice(11,19):"None yet";
   $("sent").textContent=s.machine_link==null?"No machine link":s.held?"Hold signal":v?SENT[v.status]||"Nothing sent":"Nothing sent";
   $("photo").textContent=v&&(s.last_rejects||[]).some(x=>x.at===v.at)?"Yes, record":"No";
-  [["c-pass","passed"],["c-rej","rejected"],["c-held","held"],["c-all","inspected"]].forEach(([id,k])=>$(id).textContent=t?t[k]:0);
+  
   $("cbatch").textContent=s.batch?"Batch "+s.batch.batch:"No batch open";
   $("yield").textContent=s.yield==null?"None yet":s.yield.toFixed(1)+"%";$("ybar").style.width=(s.yield||0)+"%";
+  // challenge strips get their own line: they are test strips, never in the production counts
+  const ch=[...(C.results||[]),...(C.pending?[C.pending]:[])],shown=ch.length?ch:(C.last&&s.batch&&C.last.batch===s.batch.batch&&C.last.results)||[];  // only this batch's test strips
+  // the tiles include the test strips (Sai, 3 Nov); the batch record and reconciliation count production only
+  const tn=st=>shown.filter(x=>!st||x.status===st).length;  // a test strip counts under Rejected (or Held) and Total, never Good
+  const cn=[["c-pass","passed","NONE"],["c-rej","rejected","REJECT"],["c-held","held","HOLD"]].map(([id,k,st])=>{const n=(t?t[k]:0)+tn(st);$(id).textContent=n;return n});
+  $("c-all").textContent=cn[0]+cn[1]+cn[2];  // Total = Good + Rejected + Held ("no strip found" presses are not strips)
+  $("cnote").textContent=shown.length?"Incl. "+shown.length+" test strip"+(shown.length>1?"s":"")+" ("+shown.map(x=>x.label+((x.caught??x.passed)?" rejected ✓":" missed ✗")).join(", ")+"), not in the batch record":"";
   const l20=s.last20||[];
   $("last20").replaceChildren(...l20.map(x=>{const i=mk("i","",LAST[x.status]||"");i.title=x.status.replace("_"," ")+" "+String(x.at).slice(11,19);return i}));
   $("last20n").textContent=l20.length?l20.filter(x=>x.status==="PASS").length+" good, "+l20.filter(x=>x.status in LAST&&x.status!=="PASS").length+" bad":"No strips yet";
-  light("st-self",s.locked?"bad":"ok","Self-test",s.locked?"Station locked":"Passed "+hhmm(s.selftest&&s.selftest.at));
+  light("st-self",s.locked?"bad":"ok","Self-test",s.locked?"Not ready":"Passed "+hhmm(s.selftest&&s.selftest.at));
   $("st-self").title=uncovered(s);
   light("st-clear",s.batch?"ok":"","Line clearance",s.batch?hhmm(s.batch.clearance_at):"No batch");
   light("st-due",s.due.length?"due":s.batch?"ok":"",s.due.length?s.due.map(x=>x.replace(/ due$/,"")).join(", "):"Hourly checks",
     s.due.length?"Due":s.batch?"None due":"No batch");
   light("st-link",s.machine_link?"ok":s.machine_link===false?"due":"","Reject gate",
     s.machine_link?"Connected":s.machine_link===false?"Not connected":"No link");
-  const cam=$("cam");$("camres").textContent=cam.naturalWidth?cam.naturalWidth+" × "+cam.naturalHeight:"";
+  const cam=$("cam"),res=cam.naturalWidth?cam.naturalWidth+" × "+cam.naturalHeight:"";$("camres").textContent=res;
+  document.querySelectorAll(".camres").forEach(e=>e.textContent=res);  // the Setup previews show the same camera
   const n=v&&(v.pocket_scores||[]).length;
   $("camcap").textContent=n?n+" pockets located by SAM 3.1, judged offline by DINOv2":"Live camera";
   // checks on the last strip: Rule 1 is the pocket count, Rule k+2 the k-th check of the approved checklist
-  const cl=s.checklist,tb=$("chk"),ran=v&&["PASS","REJECT","HOLD"].includes(v.status)&&!v.reasons.some(x=>["finder","locked","line_held"].includes(x.check));
-  const failed=new Set(ran?v.reasons.map(x=>x.rule):[]);
-  $("chkstrip").textContent=v?no:"Last strip";tb.replaceChildren();
+  const cl=s.checklist,tb=$("chk"),cp=C.pending,ran=cp?true:v&&["PASS","REJECT","HOLD"].includes(v.status)&&!v.reasons.some(x=>["finder","locked","line_held"].includes(x.check));
+  const failed=new Set(cp?cp.rules||[]:ran?v.reasons.map(x=>x.rule):[]);  // a challenge strip under the camera: its own result
+  $("chkstrip").textContent=cp?"Challenge "+cp.label:v?no:"Last strip";tb.replaceChildren();
   if(!cl){const tr=mk("tr","");tr.append(mk("td","No checklist yet"),mk("td",""),mk("td",""));tb.append(tr)}
   else[["Pocket count ("+cl.count+")",1],...cl.reject_if.map((k,i)=>[CHECK[k]||cap(k.replace(/_/g," ")),i+2])].forEach(([name,k])=>{
     const ng=failed.has(k),tr=mk("tr","",ng?"ng":""),chip=mk("td","");
-    if(v)chip.append(mk("span",ran?ng?"NG":"OK":"Not run","chip "+(ran?ng?"ng":"ok":"")));
-    tr.append(mk("td",name),chip,mk("td",(s.per_rule||{})[k]||0));tb.append(tr)});
+    if(v||cp)chip.append(mk("span",ran?ng?"NG":"OK":"Not run","chip "+(ran?ng?"ng":"ok":"")));
+    tr.append(mk("td",name),chip,mk("td",((s.per_rule||{})[k]||0)+shown.filter(x=>(x.rules||[]).includes(k)).length));tb.append(tr)});
 }
 // header: the line state from what the page already knows, and the station clock (this computer's)
-function linePill(s){const[t,c]=s.locked?["LOCKED","p-stop"]:s.held?["HELD","p-held"]:!s.batch?["NO BATCH",""]:s.blockers.length?["NOT RELEASED","p-held"]:["RUNNING","p-run"];
+function linePill(s){const[t,c]=s.locked?["NOT READY","p-held"]:s.held?["HELD","p-held"]:!s.batch?["NO BATCH",""]:s.blockers.length?["NOT RELEASED","p-held"]:["RUNNING","p-run"];
   $("linepill").textContent=t;$("linepill").className="pill "+c}
-const tickClock=()=>{const d=new Date();$("clock").textContent=d.toLocaleDateString("en-GB",{day:"2-digit",month:"short",year:"numeric"})+"  "+d.toTimeString().slice(0,8)};
+const tickClock=()=>{const d=new Date();$("clock").textContent=d.toLocaleDateString("en-GB",{day:"2-digit",month:"short",year:"numeric"})+"  "+d.toTimeString().slice(0,8);
+  document.querySelectorAll(".camclock").forEach(e=>e.textContent=d.toTimeString().slice(0,8))};
 tickClock();setInterval(tickClock,1000);
 // the alarm line: the most serious thing that needs a person; Acknowledge only hides it on this screen
 let acked=new Set(),seen={},alarmKey="";
@@ -185,8 +214,9 @@ function alarmLine(s){
   const v=s.last_verdict,now=new Date().toTimeString().slice(0,8),list=[];
   const add=(sev,key,text,at)=>{seen[key]=seen[key]||at||now;list.push({sev,key,text,at:seen[key]})};
   const vat=v&&String(v.at).slice(11,19);
-  if(s.state==="LOCKED")add("bad","L"+s.text,"Locked: "+s.text);
-  if(s.state==="REJECT"&&v)add("bad","V"+v.at,"Reject: "+$("why").textContent+($("vrule").textContent?" ("+$("vrule").textContent.split(":")[0]+")":"")+
+  if(s.state==="LOCKED")add("warn","L"+s.text,"Not ready: "+s.text);
+  const r0=v&&v.reasons[0];  // the strip's own reason, never the last action's text
+  if(s.state==="REJECT"&&v)add("bad","V"+v.at,"Reject: "+(r0?cap(r0.text.replace(/^Rule \d+ failed: /,""))+(r0.rule?" (Rule "+r0.rule+")":""):"")+
     (s.machine_link?". Reject signal sent to the machine.":""),vat);
   if(s.state==="HOLD"&&s.held)add("warn","H"+s.text+s.hold_reason,s.text+(s.hold_reason?" "+cap(s.hold_reason):""));
   else if(s.state==="HOLD"&&v)add("warn","V"+v.at,"Held: "+s.text,vat);
@@ -215,7 +245,8 @@ document.querySelectorAll("#steps button").forEach(b=>b.onclick=()=>{stepShown=+
 function setupTab(s){
   const done=[!!(s.pending||s.checklist),!!s.checklist&&!s.pending,!!s.checklist&&s.taught,!s.locked,false];
   const now=done.indexOf(false)+1;
-  if(now!==stepWas)stepWas=stepShown=now;  // follow the work, unless QA picked another step since
+  // follow the work, unless QA picked another step since; a self-test that just passed stays on screen with its results
+  if(now!==stepWas){stepShown=stepWas===4&&now===5?4:now;stepWas=now}
   document.querySelectorAll("#steps button").forEach((b,i)=>{b.className=done[i]?"done":i+1===now?"now":"";
     if(i+1===stepShown&&i+1!==now)b.classList.add("shown");
     b.setAttribute("aria-current",i+1===now?"step":"false")});
@@ -236,12 +267,15 @@ function setupTab(s){
       if(k<n){const im=document.createElement("img");im.src="/good/"+k+"?n="+n;im.alt="Saved photo "+(k+1);d.append(im,mk("b","Photo "+(k+1)))}
       else{d.className="slot empty"+(k===n?" next":"");d.textContent="Photo "+(k+1)}
       sl.append(d)}}
-  const t=s.selftest,ul=$("stresults");ul.replaceChildren();$("sth").hidden=!t;
+  const running=stRun||/^Self-test/.test(s.step||""),t=running?null:s.selftest,ul=$("stresults");ul.replaceChildren();$("sth").hidden=!t;
   if(t){$("sth").textContent=(t.challenge?"Physical challenge "+t.challenge+" missed":t.passed?"Last self-test passed":"Last self-test missed")+" at "+hhmm(t.at);
     const row=(ok,text)=>{const li=mk("li","",ok?"":"bad");li.append(mk("span",ok?"✓":"✗"),mk("div",text));ul.append(li)};
-    t.results.forEach(x=>row(x.caught&&x.named_right,cap(x.kind.replace(/_/g," "))+(x.pocket?", pocket "+x.pocket:"")+
-      (x.caught?(x.named_right?": caught and named":": caught, named wrong"):": missed")));
-    if(!t.challenge)row(t.good_passed,t.good_passed?"Good strip passed":"Good strip not passed")}
+    if(t.challenge){t.results.forEach(x=>row(x.caught&&x.named_right,cap(x.kind.replace(/_/g," "))+(x.caught?(x.named_right?": caught and named":": caught, named wrong"):": missed")))}
+    else{  // the strip under the camera first; the built-in drill (defects hidden in a copy of its photo) as one line
+      row(t.good_passed,t.good_passed?"Good strip under the camera: passed":"Good strip under the camera: not passed");
+      const ok=t.results.filter(x=>x.caught&&x.named_right),bad=t.results.filter(x=>!(x.caught&&x.named_right));
+      row(!bad.length,"Built-in defect drill: "+ok.length+" of "+t.results.length+" found ("+t.results.map(x=>x.kind.replace(/_/g," ")).join(", ")+")");
+      bad.forEach(x=>row(false,"Drill missed: "+x.kind.replace(/_/g," ")+(x.caught?" (named wrong)":"")))}}
   $("uncovered").textContent=uncovered(s);
 }
 function qaTab(s){
@@ -269,7 +303,9 @@ function qaTab(s){
   const startup=!!b&&s.blockers.includes(REL[1]),home=startup?$("w-print"):$("inbatch");$("w-print").hidden=!startup;
   if($("printbox").parentNode!==home)home.prepend($("printbox"));
   $("due").hidden=!s.due.length;$("due").textContent=s.due.join(". ")+".";
-  $("heldh").textContent=s.held?"Line held":"Line running";$("linecard").className="card line "+(s.held?"held":"running");
+  const [lh,lc,ln]=s.held?["Line held","held",""]:s.locked?["Not ready","idle","Not ready: "+s.text]:!s.batch?["No batch open","idle","Start a batch to run the line."]
+    :s.blockers.length?["Batch not released","idle","Waiting for: "+s.blockers.join(", ")+"."]:["Line running","running","Nothing is holding the line."];
+  $("heldh").textContent=lh;$("linecard").className="card line "+lc;$("runningnote").textContent=ln;
   $("heldbox").hidden=$("resumebox").hidden=!s.held;$("runningnote").hidden=s.held;
   $("heldby").textContent=s.text;$("heldwhy").textContent=s.hold_reason;$("heldbox").classList.toggle("crit",/^Critical/.test(s.hold_reason));
   const t=s.totals,tb=$("recon");tb.replaceChildren();
@@ -307,10 +343,14 @@ async function quarantine(n,err){
   const q=await (await fetch("/quarantine")).json(),ul=$("qlist");ul.replaceChildren();
   (q.strips||[]).slice(-10).forEach(v=>ul.appendChild(mk("li",(v.at||"")+" "+v.status)));
 }
+const JOBS={transcribe:"Speech to text (rule or voice command)","spark_json:checklist":"Rules from QA's sentence",
+  "spark_json:print":"Read the foil print (batch, MFG, EXP, MRP)","spark_json:answer":"Answer a question about the records",
+  "spark_json:summary":"Draft the shift-record summary",sam_image:"Find the strip, pockets and tablets",sam_video:"Tray clip: every strip in a video",
+  spark_count:"Count pockets (cross-check)",chat_tools:"Shift Supervisor agent step",judge:"Judge every pocket (offline)",teach:"Learn the good strip (offline)"};
 async function traceRows(){
   const rows=await (await fetch("/trace")).json(),tb=$("trace");tb.replaceChildren();
-  rows.slice(-12).reverse().forEach(e=>{const tr=document.createElement("tr");
-    [e.model+" — "+e.platform,e.job+(e.ok?"":" (failed)"),e.ms,(e.usd||0).toFixed(4)].forEach(x=>tr.appendChild(mk("td",x)));tb.appendChild(tr)});
+  rows.slice(-8).reverse().forEach(e=>{const tr=document.createElement("tr");
+    [e.model+" — "+e.platform,(JOBS[e.job]||e.job)+(e.ok?"":" (failed)"),e.ms].forEach(x=>tr.appendChild(mk("td",x)));tb.appendChild(tr)});
 }
 let reqSig="",qId="",reqN=0;  // reqN: supervisor requests waiting for QA
 // a tool result in words: "brightness 184.2, drift no, status (REJECT: 3)"; no raw JSON on screen
@@ -381,7 +421,8 @@ async function chalRefresh(){
   if(!set.length){const li=mk("li","","off");li.append(mk("span","!"),mk("div","No physical challenge set registered"));ul.append(li)}
   const k=$("ck"),cl=S.checklist;
   if(cl&&k.dataset.v!==String(cl.version)){k.dataset.v=cl.version;  // the checklist's kinds; Rule = position + 2
-    k.replaceChildren(...cl.reject_if.map((x,i)=>{const o=mk("option",x.replace(/_/g," "));o.value=x;o.dataset.rule=i+2;return o}));
+    const auto=mk("option","Detect automatically");auto.value="";auto.dataset.rule="";  // the station finds the defect
+    k.replaceChildren(auto,...cl.reject_if.map((x,i)=>{const o=mk("option",x.replace(/_/g," "));o.value=x;o.dataset.rule=i+2;return o}));
     k.onchange=()=>$("cr").value=k.selectedOptions[0]?k.selectedOptions[0].dataset.rule:"";k.onchange()}
   $("chal").hidden=!c.set;if(!c.set)return;
   const p=c.pending,lab=p?p.label:c.strip&&c.strip.label;

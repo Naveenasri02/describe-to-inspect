@@ -316,3 +316,13 @@ def test_qa_closes_a_failed_challenge_of_an_ended_batch_with_a_note(tmp_path):
     assert "error" in c.post("/challenge/close", json=body).json()  # nothing left to close
     assert not any(i["kind"] == "challenge_failed" for i in c.get("/line").json()["waiting"])
     assert _sign(c).get("signed_by") == "qa1"
+
+
+def test_register_detects_the_defect_and_the_label_when_left_blank(tmp_path):
+    c, p = bench(tmp_path)
+    _judge_queue(c, ("REJECT", ["broken_tablet"]), ("PASS", []))
+    login(c, "qa1", "pw-qa")
+    out = _register(c, "", "")
+    assert out["strips"] == [dict(out["strips"][0], label="C1", kind="broken_tablet", rule=3)]
+    assert "Detected: broken tablet, pocket 1, Rule 3" in out["message"]
+    assert "No defect found" in _register(c, "", "")["error"]  # a strip that passes cannot be a challenge strip

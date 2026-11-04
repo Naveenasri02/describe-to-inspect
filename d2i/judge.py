@@ -16,7 +16,8 @@ MEAN = np.array([0.485, 0.456, 0.406], np.float32)
 STD = np.array([0.229, 0.224, 0.225], np.float32)
 POCKET_SIZE, BORDER_SIZE = 224, 448
 WORST = 0.02     # score = mean of the worst 2% of patch distances
-MARGIN = 1.3     # threshold = worst leave-one-photo-out score x 1.3
+MARGIN = 1.5     # threshold = worst leave-one-photo-out score x 1.5 (1.3 flagged dome shine on a third strip: 0.383 vs 0.382, bench 3 Nov; real defects 0.52+)
+BORDER_MARGIN = 2.5  # the foil border differs from strip to strip as much as a small tear (bench 2-3 Nov: a good third strip scored 0.38 vs 0.30 at x1.5)
 OUTLIER, OUTLIER_MIN = 2.0, 0.25  # a teach photo whose worst pocket is > 2x the others' median and > 0.25 is refused
 BLANK = 128      # grey used to hide pockets when judging the border
 # a strip turned more than this is turned upright before its border is judged; below it the edge stays in the outer
@@ -125,7 +126,7 @@ class Judge:
                 raise ValueError(f"photo {p + 1} does not look like the others (a different strip, a hand or glare "
                                  f"in view?) — retake it")
         self.pocket_bank, self.border_bank = pockets, borders
-        self.pocket_threshold, self.border_threshold = max(worsts) * MARGIN, worst_border * MARGIN
+        self.pocket_threshold, self.border_threshold = max(worsts) * MARGIN, worst_border * BORDER_MARGIN
         return {"pocket_threshold": self.pocket_threshold, "border_threshold": self.border_threshold,
                 "photos": len(images)}
 
