@@ -173,7 +173,7 @@ function runTab(s){
   $("yield").textContent=s.yield==null?"None yet":s.yield.toFixed(1)+"%";$("ybar").style.width=(s.yield||0)+"%";
   // challenge strips get their own line: they are test strips, never in the production counts
   const ch=[...(C.results||[]),...(C.pending?[C.pending]:[])],shown=ch.length?ch:(C.last&&s.batch&&C.last.batch===s.batch.batch&&C.last.results)||[];  // only this batch's test strips
-  // the tiles include the test strips (Sai, 3 Nov); the batch record and reconciliation count production only
+  // the tiles include the test strips; the batch record and reconciliation count production only
   const tn=st=>shown.filter(x=>!st||x.status===st).length;  // a test strip counts under Rejected (or Held) and Total, never Good
   const cn=[["c-pass","passed","NONE"],["c-rej","rejected","REJECT"],["c-held","held","HOLD"]].map(([id,k,st])=>{const n=(t?t[k]:0)+tn(st);$(id).textContent=n;return n});
   $("c-all").textContent=cn[0]+cn[1]+cn[2];  // Total = Good + Rejected + Held ("no strip found" presses are not strips)

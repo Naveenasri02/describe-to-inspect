@@ -163,11 +163,11 @@ def lab_bgr(L, a, b):
     return tuple(int(round(v * 255)) for v in cv2.cvtColor(np.float32([[[L, a, b]]]), cv2.COLOR_LAB2BGR)[0, 0])
 
 
-PINK, SILVER = lab_bgr(91.1, 7.6, -1.8), lab_bgr(75.7, -1.0, -10.0)  # rehearsal web17: taught tablet, foil ring
+PINK, SILVER = lab_bgr(91.1, 7.6, -1.8), lab_bgr(75.7, -1.0, -10.0)  # test photo web17: taught tablet, foil ring
 
 
 def test_foil_coloured_pill_is_an_empty_pocket():
-    """Rehearsal p17 pocket 8: SAM outlined the painted empty pocket as a pill of Lab (75.4, -1.2, -9.5), 19.6 from
+    """Test photo p17, pocket 8: SAM outlined the painted empty pocket as a pill of Lab (75.4, -1.2, -9.5), 19.6 from
     the taught tablet and 0.6 from the foil around it, and the station named it a different tablet (Rule 5)."""
     layouts, images = [], []
     for _ in range(6):
@@ -216,7 +216,7 @@ def test_teach_photo_with_an_outlined_empty_dome_is_found():
 
 
 def test_an_empty_dome_that_only_differs_in_colour_is_empty_when_the_judge_is_sure():
-    """Bench 3 Nov: a corner dome showed the table through the plastic, 16 dE from the tablet and 25 from the foil.
+    """Real strip: a corner dome showed the table through the plastic, 16 dE from the tablet and 25 from the foil.
     Same size and shape as a pocket, so with the judge sure it is empty, it is empty, not a different tablet."""
     img = foil()
     box = disc(img, 70, 70, 30, (205, 200, 225))  # pocket-sized, off the tablet's colour, far from the foil too
@@ -227,7 +227,7 @@ def test_an_empty_dome_that_only_differs_in_colour_is_empty_when_the_judge_is_su
 
 
 def test_a_tablet_coloured_like_the_foil_ring_is_not_empty_when_the_judge_passed_it():
-    # a lamp made the silver foil read nearer the tablet than the taught tablet does (bench 3 Nov: 2.2 vs 4.8 dE)
+    # a lamp made the silver foil read nearer the tablet than the taught tablet does (real strip: 2.2 vs 4.8 dE)
     img = np.full((140, 140, 3), 222, np.uint8)  # foil, lit to near the tablet's colour
     box = disc(img, 70, 70, 30, (224, 224, 224))  # the taught tablet is (235, 235, 235): about 4 dE away
     p = profile()

@@ -76,10 +76,10 @@ def test_paint_strip_cut_changes_end_only():
 
 @pytest.mark.parametrize("pocket", [0, 2, 4])  # the strip's left end, its middle and its right end
 def test_double_tablet_shows_past_a_pocket_box_that_hugs_the_tablet(pocket):
-    """Rehearsal p17 pocket 5: the pocket box is SAM's pill box, which hugs one tablet; the copy clipped to it was a
+    """Test photo p17, pocket 5: the pocket box is SAM's pill box, which hugs one tablet; the copy clipped to it was a
     tablet with a straight cut edge, SAM saw one normal pill and the station named it broken. Two tablets in one
     pocket overlap past that box; the copy stays on the strip and in the pocket's rows, toward the strip's middle
-    (bench 2 Nov: an end pocket's copy cut at the strip edge read as one odd tablet)."""
+    (real strip: an end pocket's copy cut at the strip edge read as one odd tablet)."""
     img = make_strip()
     cx, cy = 128 + 96 * pocket, 125  # make_strip tablet centre, radius 30
     x0, y0, x1, y1 = box = (cx - 39, cy - 39, cx + 39, cy + 39)  # an ImageSam / SAM pill box

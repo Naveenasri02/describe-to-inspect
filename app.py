@@ -50,7 +50,7 @@ ANSWER_WAIT = 120  # seconds the agent waits for the operator
 INSPECT_ERROR = "inspection error — check by hand"
 TRAY_SECONDS = 4  # 60 frames at 15 fps: one SAM 3.1 video call
 # Chrome cuts an MJPEG stream at any byte match of "--" + BOUNDARY, even inside a JPEG: the old "f" matched camera
-# frames every ~2 s and the camera pane went black (2 Nov bench). A long random one never occurs in image data.
+# frames every ~2 s and the camera pane went black. A long random one never occurs in image data.
 BOUNDARY = "blistrue-frame-5c1e9a7d3b"
 
 
@@ -76,7 +76,7 @@ class FrameSource:
 
     def steady(self):
         """Per-pixel median of the last 5 frames (about 0.2 s): a mains-lit lamp rolls dark bands across single frames
-        (bench 3 Nov: good tablets read as spotted), the median removes them. The latest frame if sizes differ."""
+        (good tablets read as spotted), the median removes them. The latest frame if sizes differ."""
         with self.lock:
             fs = list(self.recent)
         if len(fs) < 3 or any(f.shape != fs[-1].shape for f in fs):
@@ -104,7 +104,7 @@ class FrameSource:
                 self.stop.wait(1)
                 continue
             self._set(f)  # a black frame is shown as black, never replaced by an older strip
-            # a webcam can stall on all-black frames (Logi C615 on DirectShow, bench 2 Nov); reopening brings it back
+            # a webcam can stall on all-black frames (Logi C615 on DirectShow); reopening brings it back
             if self.source.isdigit() and not f.any():
                 black_since = black_since or time.time()
                 if time.time() - black_since > self.BLACK_S:
@@ -984,7 +984,7 @@ def create_app(product_dir: Path, source, client=None, plc=None, clock=time.time
                 draw_pockets(f, lay.pockets if lay else [], bad)  # no status word on the picture: the verdict tag shows it
                 ok, buf = cv2.imencode(".jpg", f)
                 if ok:
-                    # Content-Length: recorders such as ffmpeg read the frame by size instead of hunting for the boundary
+                    # Content-Length: stream clients such as ffmpeg read the frame by size instead of hunting for the boundary
                     yield (f"--{BOUNDARY}\r\nContent-Type: image/jpeg\r\nContent-Length: {buf.size}\r\n\r\n".encode()
                            + buf.tobytes() + b"\r\n")
             time.sleep(0.1)

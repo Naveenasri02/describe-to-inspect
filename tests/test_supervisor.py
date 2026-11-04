@@ -289,7 +289,7 @@ def test_agent_self_test_without_strip_records_nothing(bench):
 
 
 def test_agent_self_test_waits_for_the_operator_to_confirm_a_good_strip(bench):
-    """Rehearsal: the agent ran the self-test on the defective strip in view; the failed run locked the station and
+    """Found in testing: the agent ran the self-test on the defective strip in view; the failed run locked the station and
     opened quarantine. It runs only after the operator said yes, in this investigation, to a good strip in view."""
     st = bench.st
     assert st.self_test(make_strip(seed=12), rng_seed=5)["passed"]
@@ -333,7 +333,7 @@ def test_self_test_gate_needs_a_plain_yes_to_a_good_strip_under_the_camera(bench
 
 
 def test_supervisor_sees_the_strip_the_last_inspection_found(bench, monkeypatch):
-    """Rehearsal: with a strip in view the offline finder answered "no strip" (camera_shift dx -640,
+    """Found in testing: with a strip in view the offline finder answered "no strip" (camera_shift dx -640,
     compare_to_last_good an error). The tools use the layout of the station's most recent inspection; no paid call."""
     st = bench.st
     st.self_test(make_strip(seed=12), rng_seed=5)

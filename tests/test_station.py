@@ -317,7 +317,7 @@ def test_selftest_catches_and_names_new_kinds(tmp_path):
     st.teach([make_strip(seed=i, shift=(i, 0)) for i in range(6)])
     assert st.profile is not None
     r = st.self_test(make_strip(seed=12), rng_seed=5)
-    drilled = [k for k in NEW3 if k != "double_tablet"]  # a painted double is not a fair drill (bench 3 Nov)
+    drilled = [k for k in NEW3 if k != "double_tablet"]  # a painted double is not a fair drill
     assert r["skipped"] == [k for k in NEW3 if k == "double_tablet"] and r["passed"], r
     got = {x["kind"]: x for x in r["results"]}
     assert set(drilled) <= set(got) and all(got[k]["caught"] and got[k]["named_right"] for k in drilled), r
@@ -437,7 +437,7 @@ def test_turned_and_moved_strip_passes_and_an_empty_pocket_is_still_caught(sam_s
 
 
 class MissOneSam(ImageSam):
-    """SAM 3.1 outlining every tablet but the one in pocket k (bench 3 Nov: 14 pills of 15)."""
+    """SAM 3.1 outlining every tablet but the one in pocket k (real strip: 14 pills of 15)."""
 
     def __init__(self, k):
         super().__init__()
@@ -461,7 +461,7 @@ def test_pocket_with_no_tablet_outlined_is_held_not_passed(sam_taught, tmp_path)
 
 
 class DomeSam(ImageSam):
-    """Like SAM 3.1 in the rehearsal: the clear dome of an empty pocket is outlined as a pill too."""
+    """Like SAM 3.1 on real photos: the clear dome of an empty pocket is outlined as a pill too."""
 
     def sam_image(self, image, prompt):
         objs = super().sam_image(image, prompt)
@@ -477,7 +477,7 @@ class DomeSam(ImageSam):
 
 
 def test_empty_pocket_outlined_by_sam_is_named_empty(tmp_path):
-    """Rehearsal: SAM outlined the painted empty pocket, so it was measured as a different tablet and every self-test
+    """Found in testing: SAM outlined the painted empty pocket, so it was measured as a different tablet and every self-test
     said "empty_pocket: caught, named wrong". A real empty pocket (bare foil under the dome) is named empty too."""
     approve(CHECKLIST, "Priya", tmp_path / "checklists.jsonl")
     st = Station(tmp_path, client=DomeSam(), clock=lambda: T0)
@@ -572,7 +572,7 @@ WA5 = PHOTOS / "real_wa" / "wa5.jpg"
 @pytest.mark.skipif(not WA5.exists(), reason="the real photos are not in the repo (set D2I_PHOTOS)")
 def test_real_photo_empty_domes_named_empty_after_one_is_registered():
     """wa5.jpg: three white tablets, three empty domes, silver foil. The painted prototypes (taught on its three
-    tablets, as teach paints them) named every real dome broken (29 Oct, flat foil and dome paintings alike); one dome
+    tablets, as teach paints them) named every real dome broken (flat foil and dome paintings alike); one dome
     as a registered challenge strip names the other two empty, and a painted broken tablet stays broken."""
     img = cv2.imread(str(WA5))
     strip = (195, 390, 575, 905)
@@ -619,7 +619,7 @@ def test_teach_refuses_a_photo_with_an_outlined_empty_pocket(tmp_path):
 
 
 class CutSam(ImageSam):
-    """Rehearsal p17_strip_cut: SAM's strip box ended where the cut end began, the taught pockets no longer fitted
+    """Test photo p17_strip_cut: SAM's strip box ended where the cut end began, the taught pockets no longer fitted
     the tablets and one of them read as outside the pocket pattern."""
 
     def sam_image(self, image, prompt):
@@ -773,7 +773,7 @@ def test_self_test_does_not_run_without_its_finder(sam_station):
 
 
 def test_self_test_judges_the_painted_strips_together_with_the_same_results(sam_station, monkeypatch):
-    """Rehearsal: a self-test took about 4 minutes, one painted strip after another. They are judged together now
+    """Found in testing: a self-test took about 4 minutes, one painted strip after another. They are judged together now
     (bounded pool); the results are the same, in the same order."""
     import d2i.station as station_mod
     st = sam_station
@@ -804,7 +804,7 @@ class SlowSam(ImageSam):
 
 
 def test_trace_times_dinov2_alone(sam_station):
-    """Rehearsal: the "dinov2-small judge" row said 22-26 s, because it timed the SAM 3.1 calls too."""
+    """Found in testing: the "dinov2-small judge" row said 22-26 s, because it timed the SAM 3.1 calls too."""
     from d2i import trace
     st = sam_station
     st.client = SlowSam()

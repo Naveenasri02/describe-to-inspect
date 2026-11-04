@@ -300,7 +300,7 @@ def test_chat_tools_sends_tools_and_returns_message(tmp_path):
 
 
 def test_sam_image_sends_a_smaller_copy_and_maps_the_boxes_back(tmp_path):
-    """Rehearsal photos are 1280 x 3487 (a 1.45 MB JPEG): one pill call took 13.3 s sent whole, 4.4 s at 1024 px, and
+    """Test photos are 1280 x 3487 (a 1.45 MB JPEG): one pill call took 13.3 s sent whole, 4.4 s at 1024 px, and
     five sent together took 27-29 s each (the upload is shared). SAM 3.1 gets a copy at most SAM_SIDE pixels long;
     its boxes are mapped back onto the full image."""
     import base64

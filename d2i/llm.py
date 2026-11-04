@@ -9,7 +9,7 @@ from d2i.meta_api import MetaClient
 
 BASETEN_URL = "https://inference.baseten.co/v1/chat/completions"
 BASETEN_MODEL = "meta-models/muse-spark-open-1026"
-BASETEN_KEY_FILE = Path.home() / ".secrets" / "baseten_meta_hackathon_key.txt"
+BASETEN_KEY_FILE = Path.home() / ".secrets" / "baseten_api_key.txt"
 BASETEN = "Baseten (open weights)"
 OPEN_IN, OPEN_OUT = 1.25e-6, 4.25e-6  # USD per token; shown in the trace only, Baseten credit has no card behind it
 

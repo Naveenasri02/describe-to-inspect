@@ -87,7 +87,7 @@ def test_prompt_never_contains_expected_values():
 
 
 def test_real_misreads_are_differences_for_a_check_by_eye():
-    """Real foils (29 Oct): Spark read B.No 26F1206IS as 26F12061S (I as 1, S as 5) and Zivast's 04/2026, 03/2028 as
+    """Real foils: Spark read B.No 26F1206IS as 26F12061S (I as 1, S as 5) and Zivast's 04/2026, 03/2028 as
     04.2024, 03.2026. Each is a difference that QA checks by eye; the module docstring says the model only flags."""
     for read in ("26F12061S", "26F1206I5"):
         r = check_print(dict(GOOD, batch=read), dict(BATCH, batch="26F1206IS"), TODAY)

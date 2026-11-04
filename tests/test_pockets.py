@@ -133,7 +133,7 @@ def test_second_strip_prompt_used_when_first_empty():
 
 
 def test_blister_is_the_last_strip_fallback():
-    """Real photos (29 Oct): "blister" found strips the chain missed (wa0, wa3, wa7, 2626, 2640), but alone it missed
+    """Real photos: "blister" found strips the chain missed (wa0, wa3, wa7, 2626, 2640), but alone it missed
     4/25 tablet-side photos, so it is asked last, and only when "pill pack" found nothing either."""
     assert STRIP_PROMPTS[-1] == "blister" and STRIP_PROMPTS[:3] == ("blister strip", "blister pack", "pill pack")
     sam = FakeSam([], _pills(range(10)))
@@ -180,7 +180,7 @@ def test_white_pill_used_when_pill_finds_nothing():
 
 
 def test_layout_asks_every_prompt_at_once_and_each_call_is_paid_and_traced(tmp_path):
-    """Rehearsal: strip prompts then pill prompts one after another, 7.3 s each, about 30 s per inspect. They go out
+    """Found in testing: strip prompts then pill prompts one after another, 7.3 s each, about 30 s per inspect. They go out
     together now (none gets past the barrier until all four are in flight; "pill pack" is not needed here); the answers
     are taken in the same order as before; every call reserves and settles its price; each trace row shows its own."""
     import threading

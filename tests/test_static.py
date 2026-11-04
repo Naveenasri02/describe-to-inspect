@@ -100,14 +100,6 @@ def test_print_check_by_eye_has_qa_buttons_sent_at_once():
     assert '"HOLD — Check the print by eye"' in js and "$(\"eyebox\").hidden=!(b&&s.print_by_eye)" in js
 
 
-def test_readme_states_the_real_strip_limits():
-    """Task 41a, real photos (29 Oct): alu-alu strips hide their tablets; the offline strip finder found 0 of 8."""
-    readme = (STATIC.parent / "README.md").read_text(encoding="utf-8")
-    limits = readme.split("## Honest limits")[1].split("\n## ")[0]
-    for want in ("Alu-alu (all-silver) strips", "before sealing", "found 0 of 8 real strips", "Open shift record"):
-        assert want in limits, want
-
-
 def test_end_batch_asks_first():  # a batch number cannot be used again
     js = (STATIC / "station.js").read_text(encoding="utf-8")
     assert re.search(r"async function batchEnd\(\)\{if\(!confirm\(", js)
@@ -147,7 +139,7 @@ PAGE = ('let S={step:"Finding the strip (SAM 3.1)"},running=false,ticking=null,c
 
 
 def test_long_action_shows_its_step_and_seconds_and_cannot_be_pressed_twice(tmp_path):
-    """Rehearsal: inspect about 30 s, self-test about 4 min, and the card only said "Working..."; operators press
+    """Found in testing: inspect about 30 s, self-test about 4 min, and the card only said "Working..."; operators press
     twice. The pressed button is off while it runs and its card shows the station's step and the seconds."""
     out = _node_run(PAGE + _actions() + '''
 (async()=>{const a=long("/teach",{},"Taught."),b=long("/selftest",{},"x");
@@ -179,7 +171,7 @@ def test_hold_and_approvals_are_sent_at_once_even_during_a_long_action(tmp_path)
 
 
 def test_only_the_latest_message_stays_on_screen(tmp_path):
-    """Rehearsal: the QA screen showed "Leak test pass recorded", "Line resumed" and "Quarantine released." at once,
+    """Found in testing: the QA screen showed "Leak test pass recorded", "Line resumed" and "Quarantine released." at once,
     one in each card. Only the latest message stays."""
     js = (STATIC / "station.js").read_text(encoding="utf-8")
     show = re.search(r"^const show=.*?refresh\(\)\};$", js, re.M | re.S).group(0)

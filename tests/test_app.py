@@ -1069,7 +1069,7 @@ def test_reject_saves_photo_and_logs_name(tmp_path):
 
 
 def test_reject_photo_draws_the_layout_the_strip_was_judged_on(tmp_path):
-    """Rehearsal: the reject photo ran the offline finder again, which saw no strip on the close-up, so the photo had
+    """Found in testing: the reject photo ran the offline finder again, which saw no strip on the close-up, so the photo had
     no outline and no red box. It now draws the verdict's own layout (no second search)."""
     c, p = bench(tmp_path)
     st = c.app.state.station
@@ -1781,8 +1781,8 @@ def test_camera_reopens_after_all_black_frames(monkeypatch):
 
 
 def test_stream_boundary_never_inside_a_camera_jpeg():
-    # Chrome splits the MJPEG stream at the first boundary match; "--f" turned up inside camera JPEGs every ~2 s on the
-    # 2 Nov bench and the camera pane went black. A noisy full-HD frame is the worst case.
+    # Chrome splits the MJPEG stream at the first boundary match; "--f" turned up inside camera JPEGs every ~2 s and the
+    # camera pane went black. A noisy full-HD frame is the worst case.
     rng = np.random.default_rng(0)
     jpg = cv2.imencode(".jpg", rng.integers(0, 256, (1080, 1920, 3), dtype=np.uint8))[1].tobytes()
     assert ("--" + app_mod.BOUNDARY).encode() not in jpg

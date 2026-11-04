@@ -1,155 +1,173 @@
 # Blistrue
 
-**Every strip, proven true.**
+**Blister-strip inspection station: a webcam, a laptop and five Meta models.**
 
-A webcam + laptop packaging-line QA bench for tablet blister strips. One spoken or typed sentence sets up the rules ("describe to inspect"), the bench checks every pocket and names the rule that broke, runs an automatic self-test every shift, on top of the physical challenge strip, signals the machine and drafts the shift record (draft record — QA signs it).
+Blistrue checks every pocket of a tablet blister strip, names the rule that failed, signals the packing machine and keeps the batch record for QA to sign. QA sets the rules with one spoken or typed sentence. A frozen vision model and plain code make the pass/fail decision; no language model does.
 
-Built for the Meta AI Developer Hackathon (Indie track).
+![Run screen: a broken tablet rejected under Rule 3, pocket 8 marked on the live camera](docs/images/run-screen.jpg)
 
-Pre-existing work: the idea and a private prototype made on 25–26 Oct 2026 before kickoff; none of its code is in this repo — everything here was written during the event (from the 26 Oct kickoff to 4 Nov).
+## Features
 
-## The problem
+- **Rules from one sentence.** Muse Voice Transcribe hears the rule, Muse Spark 1.3 turns it into a numbered checklist, and QA approves it. Every approved checklist is versioned.
+- **Per-pocket inspection.** SAM 3.1 outlines the strip, each pocket and each tablet; a frozen DINOv2 judge, taught from five photos of a good strip, scores every pocket. It finds empty pockets, broken tablets, two tablets in one pocket, a different tablet, spots, foil damage, a wrongly cut strip and a wrong pocket count.
+- **Foil print check.** Muse Spark reads batch, MFG, EXP, MRP, product name and strength; code compares them with the batch record. A difference holds the strip for QA to decide.
+- **Proves itself before every batch.** A self-test paints defects onto a good strip and must catch and name each one. Physical challenge strips must be rejected for the right rule. A miss locks the station.
+- **Line control.** Reject, hold and lock signals go out over Modbus TCP. Three rejects in a row, or any critical finding, holds the line until QA resumes it.
+- **Shift Supervisor agent.** Muse Spark Open investigates a rise in rejects or a failed self-test with measuring tools. It can hold the line and draft a deviation note. It can only *request* a resume, re-teach, re-check or quarantine release, and QA approves each request with a password.
+- **Batch record and audit trail.** Line clearance, release gate, hourly checks, reconciliation and an e-signature with meaning and time zone. Every human and agent action goes into a hash-chained, tamper-evident audit log.
+- **Fail-safe.** When the network or a model is unavailable, nothing passes unchecked: every strip is held for a hand check.
 
-On a packaging line, QA runs a physical challenge test: a strip with known defects is put through the line to show the inspection catches it, and the result is written into the shift record by hand. The check and the paperwork both depend on someone remembering to do them, every shift. This bench is designed to support that work; it does not replace your QA.
+## How it works
 
-## What it does
-
-1. **Teach by sentence.** Say or type the rule in English or Tamil (for example "6 tablets in 2 rows of 3, reject empty pockets"). Muse Spark 1.3 turns it into a numbered checklist (`d2i/checklist.py`); a logged-in QA user approves it, and each approved checklist is versioned. Describing the strip, approving the checklist and teaching are QA-only.
-2. **Find the pockets.** SAM 3.1 outlines the strip and each pocket (`d2i/pockets.py`), with prompt fallbacks; a product taught offline (no key) uses the checklist grid instead. A strip placed by hand, a little turned or shifted, is followed: each pocket takes the tablet SAM 3.1 finds nearest to it, and a pocket with no tablet keeps its taught box (that is how an empty pocket is seen). A frozen, offline DINOv2 judge learns what a good pocket looks like from good strips (`d2i/judge.py`); a teach photo that does not look like the others, or whose pockets SAM did not find, is refused by number. Two Meta models can cross-count the pockets: SAM 3.1 outlines them and Muse Spark points at them (`Station.crosscheck`); teaching with the cross-count on refuses a photo where the counts differ. It is a paid call, so it never runs inside an inspection, and it is a code option today (the station screen does not switch it on).
-3. **Self-test every shift, and a physical challenge run.** The bench paints fake defects onto a known-good strip (always an empty pocket, plus every listed check) and must catch and name all of them before it is allowed to inspect (`d2i/defects.py`, `d2i/station.py`). If it misses any, the station LOCKS. On top of that, QA registers the physical challenge set (`d2i/challenge.py`): real known-bad strips, each with a label, its defect kind, the rule it must fail and a photo from the camera. An empty-pocket or broken-tablet strip also shows the judge what a real one of this product looks like: the photo's failing pocket is kept (`challenge/<label>.npy`, one SAM 3.1 call when online), and a failing pocket is named by the nearest painted or real example. Register a real empty-pocket strip, or a real empty dome may be named a broken or different tablet. When a set is registered, every batch needs a passed challenge run before release: each strip goes under the live camera (an uploaded photo is refused), the station must REJECT it for its expected rule, and the operator ticks "Ejected". A miss, a wrong rule or a strip left on the line locks the station and opens quarantine, as a failed self-test does. Challenge strips never count toward the batch. Self-test and challenge need a login; the self-test is QA-only.
-4. **Inspect and reject.** Each strip gets one verdict that names the rule, for example "Rule 2 failed: pocket 7 is empty". Inspect, tray clip and the voice "inspect" need a login, and every verdict row carries the logged-in user. The reject, hold and lock signals go out as Modbus TCP (`d2i/plc.py`); `/lamp` on a phone works as a red/green stack light. Anyone at the bench can press "Hold line"; the hold reaches the machine at once, even while a tray clip, a teach or a self-test runs (the screen, the board and the audit log show it when that action ends). An inspection error is a HOLD that reaches the machine even if the log cannot be written. The "Tray clip" button records a short clip and judges it in one SAM 3.1 video call, one verdict per strip (`d2i/tray.py`).
-5. **Draft the record and hold the line.** Human actions and the Shift Supervisor agent's steps go into a hash-chained, tamper-evident audit log with QA roles (`d2i/audit.py`). A failed self-test or a missed challenge strip quarantines every strip inspected since the last passed self-test; a later passing self-test unlocks the station, but only a QA release (password and reason) closes the quarantine. Verdicts, self-tests and line states are kept in `log.jsonl`, `selftests.jsonl` and `states.jsonl`; the shift record (`d2i/record.py`) is a draft until QA signs it (see Sign-off below). The Shift Supervisor agent (`d2i/supervisor.py`) investigates a failed self-test or a rise in rejects using measuring tools (image health, camera shift, reject stats, per-pocket scores), may hold the line, can write a draft deviation note for QA (`deviations/*.md`, headed "DRAFT — needs QA review", with each step it took), and can only request a re-teach, resume, quarantine release or re-check; a logged-in QA user approves each request ("Approve (QA)") or declines it with a reason ("Decline (QA)"), with a password re-entry. Both are audited. Requests waiting for QA are kept in `requests.json`, so a restart or a re-teach does not drop them. Built with Muse Spark Open.
-6. **Show what each model did.** The System tab's "What each model did" lists each model call: model and platform, job, time in ms and cost (`d2i/trace.py`, kept in `trace.jsonl`). The record's Configuration block holds the model SHA-256, the checklist version and its SHA-256, the pocket and border thresholds, the camera source and the app version.
-
-The frozen vision model decides pass or fail. Muse Spark 1.3 drafts the checklist, reads the foil print and drafts the shift-record summary, and answers questions about the records; Muse Spark Open runs the Shift Supervisor agent. Neither language model decides pass or fail.
-
-## What it checks
-
-Each strip gets one verdict. Every reason carries a severity: critical, major or minor. A critical reject holds the line.
-
-| Condition | Side of the strip | Severity | What decides it | Works offline |
-|---|---|---|---|---|
-| Empty pocket | Tablet side | major | DINOv2 judge (frozen) against good pockets | Yes |
-| Broken tablet | Tablet side | major | DINOv2 judge (frozen) against good pockets | Yes |
-| Two tablets in one pocket | Tablet side | major | SAM 3.1 outlines the tablets, then plain measurement against the taught tablet | No (needs SAM 3.1) |
-| Wrong tablet (shape or colour) | Tablet side | critical | SAM 3.1 outlines, then measurement against the taught tablet | No (needs SAM 3.1); offline, a different tablet is rejected by the judge as broken/empty (major) and does not hold the line |
-| Spot on a tablet | Tablet side | minor | SAM 3.1 outlines, then measurement against the taught tablet | No (needs SAM 3.1) |
-| Foil damage at the strip border | Foil or tablet side | major | DINOv2 judge (frozen) on the strip border | Yes |
-| Strip cut wrong or wrong size | Tablet side | major | SAM 3.1 strip outline, then measurement against the taught strip | No (needs SAM 3.1) |
-| Pocket count differs from the checklist | Tablet side | HOLD | SAM 3.1 pockets counted against the rule | No (needs SAM 3.1; the offline checklist grid always has the checklist count) |
-| Foil print: batch, MFG, EXP, MRP, product name, strength | Foil side | HOLD; critical only after QA's "Wrong print" | Muse Spark reads the six fields; plain code compares them with the batch record; QA decides any flagged read by eye (strength by number and unit, so "500mg" matches "500 mg"; the product name is the brand name printed largest, not the ingredient line, and it matches when every word QA typed is printed in that order, case and punctuation ignored, so "Paracetamol" matches "Paracetamol Tablets I.P."; spaces and hyphens are ignored too, so "Dolo 650" matches "DOLO-650" (whole words: "Dolo 65" does not); a name cut off by the strip edge, such as "Rapeed-" for "Rapeed-20", is "not readable — check by hand", not a difference) | No (needs the network) |
-
-Notes:
-
-- A finding the checklist does not list is not rejected; it is held for QA ("... looks unusual — check by hand").
-- Muse Spark is a generative model, so it only flags the print; a person decides (draft EU GMP Annex 22: such a model must not make a critical GMP decision alone). Any difference between its read and the batch record (a look-alike character such as I/1, O/0, S/5 or B/8, a digit slip, a date read wrong) holds the strip "Check the print by eye", never the line. QA looks at the strip and presses "Print matches" (QA password and a note: PRINT OK, audited, and it counts for the start-up print check and release) or "Wrong print" (QA password: a critical wrong print that holds the line). "Print matches" is refused on a strip past expiry. A print, a field that cannot be read or a name cut off holds the strip the same way ("... not readable — check by hand"): QA reads it on the strip and decides, so no second paid read is needed.
-- A strip cut short skips the pocket checks; the screen says "Not checked: pocket checks (strip cut)". Checks that cannot run are always listed on the strip's verdict and in the shift record.
-- **Wi-Fi off: nothing passes unchecked.** A product taught with SAM 3.1 holds every strip for a hand check when SAM 3.1 does not answer (after one retry): "Pocket finder (SAM 3.1) did not answer — check this strip by hand". It is never judged with a different pocket finder, and its self-test does not run ("Self-test could not run: the pocket finder (SAM 3.1) did not answer — try again"; nothing is recorded). The line board shows SUSPENDED meanwhile.
-- "Works offline" in the table means a product taught offline (no key) inspecting a batch that is already released; starting or releasing a batch needs the network (see Run it).
-- Every strip REJECT or HOLD saves an annotated photo (clip-level tray holds have no single strip image, and a good strip held only because the line is held saves none) in `data/<product>/rejects/` (strip outline blue, each failing pocket red with its rule number, the strip outline red for a strip-level reason), drawn on the layout the strip was judged on. The batch record shows the latest 12 as thumbnails with their reasons.
-
-## Not checked by this bench
-
-Not checked by this bench: seal pinholes, leak integrity (logged from the person's test), QR/2D codes, artwork wording, cartons and leaflets, serialization. Machine temperatures stay in your batch record. Validation and calibration are done on site by your QA.
-
-Also:
-
-- Small nicks at the very edge of the foil may be missed by the border check (being measured on real strips).
-- Leak test: done by a person; the bench logs the result (pass or fail, samples, a note), and a fail holds the line.
-- Tablet size in millimetres: it compares with the taught tablet, in pixels.
-- Line speed: it is a bench, one strip at a time.
-
-## Line process
-
-The batch is the unit of work. All of this is logged and printed in the shift record.
-
-1. **Line clearance.** Before a batch starts, the station looks for tablets or strips left on the line and records who confirmed it. A batch cannot start until the last clearance is clear, no more than 30 minutes old and made for that batch.
-2. **Batch start.** QA enters batch, MFG, EXP, MRP, product name and strength. These are the values the foil print is compared with. An EXP that is already past, or not after MFG, is refused. Strength is left blank when the strip prints none; it is then not compared, and the record says "strength: not printed". A combination is compared part by part, in order, whatever joins the parts ("12.5 mg & 50 mg", "400 mg, 325 mg", "Ibuprofen 400 mg & Paracetamol 325 mg").
-3. **Release gate.** Inspection is refused until the batch has a passed self-test run after the batch started, a passed physical challenge run for this batch (when a challenge set is registered), a start-up print check that matches the batch record (PRINT OK, or QA's "Print matches" after a check by eye), and QA's signature on that start-up specimen.
-4. **Hourly checks.** A leak test and a print check are due every hour (the leak test is done by a person and its result entered); the QA screen shows what is due. A missed hour is listed in the record and needs a QA review note (password re-entry) before that batch's record can be signed, also after the next batch has started. The QA screen's "Missed hourly checks: QA review note" lists the missed hours of the current batch, or of an earlier batch typed in its batch field; the record shows each note with who wrote it and when.
-5. **Foil change.** "Foil roll changed" starts the hourly print clock again; the next print check is due after it.
-6. **Drift rule.** Three rejects in a row hold the line, and so does any critical reject, a wrong print (QA's "Wrong print") or a failed leak test (a failed leak test also stays due until one passes). QA resumes the line with the QA password and a reason.
-7. **Re-check window.** A critical hold (wrong tablet, wrong print) lists the strips passed since the last good check (batch release, the last passed print check or the last QA resume) as a re-check (`d2i/recheck.py`). While it is open, each "Inspect strip" re-checks one of them and links its new verdict; the line resumes only when the re-check is done or QA gives a waiver reason. The Shift Supervisor can request a re-check; QA approves it.
-8. **Reconciliation.** "End batch" takes counts typed at the bench: strips received, good tray, reject box, samples taken, unused strips, and foil issued, used, returned and destroyed (in metres), plus an after-batch clearance tick. Each line is compared with the verdict log against limits QA sets (site policy). Outside a limit, the batch ends only with the QA password and an investigation reason; the record shows each line against its limit, and who investigated and why.
-9. **Line board (read-only).** `/board` is the stack light with reasons, for a screen beside the line: the PackML-style state (IDLE, STARTING, RUNNING, HELD, SUSPENDED, STOPPED, COMPLETE), why, since when, what waits for a person and who must act, what is due next, the batch counts, rejects by rule and today's timeline. It refreshes every second, needs no login and has no buttons: every action stays on the station behind a personal login. Each state change is appended to `data/<product>/states.jsonl` (time, from, to, cause, by, rule, strip). It is also linked from the System tab.
-10. **Sign-off.** QA signs the shift record with the password and a meaning, "Reviewed" or "Approved". Signing is refused while anything still waits for a person (a held line, open quarantine or re-check, an agent request, a reconciliation outside its limit with no reason, a missed check with no review note in the current batch or in the record's own batch, a failed challenge); the refusal names the first five and how many more. A failed challenge of a batch that has ended is closed by QA with the password and a reason ("Close failed challenge of an ended batch (QA)", audited); in the open batch a passing run closes it. A record opened for an older batch shows that batch's own sections, and a batch number that was never started is refused. The check and the signature are one step under the station lock, so a signature waits while an inspection or a self-test runs. The signature manifest keeps the name, the local time with its time zone and the meaning; the signed audit entry pins `log.jsonl`, `selftests.jsonl` and `states.jsonl` by SHA-256. A re-opened record shows "Signed by ..." only while its content is unchanged; otherwise it says it changed since signing and needs a new signature.
-
-## Run it
-
-Python 3.12 (numpy 1.26.4 has no wheel for 3.13).
-
+```mermaid
+flowchart LR
+    subgraph Setup
+        S1[QA sentence] --> S2[Muse Voice Transcribe] --> S3[Muse Spark 1.3<br/>numbered rules] --> S4[QA approves]
+        T1[5 photos of a good strip] --> T2[DINOv2 learns<br/>good pockets]
+    end
+    subgraph Inspection
+        C[Camera frame] --> P[SAM 3.1<br/>strip, pockets, tablets]
+        P --> J[DINOv2 judge<br/>score per pocket]
+        P --> M[Measurements<br/>size, shape, colour]
+        J --> R[Rules in code]
+        M --> R
+        R --> V{Verdict}
+    end
+    V -->|PASS / REJECT / HOLD| PLC[Modbus TCP]
+    V --> REC[Batch record + audit log]
+    V -->|rejects rise| AG[Shift Supervisor<br/>Muse Spark Open] -->|request| QA[QA approves]
 ```
+
+A failing pocket is named by its nearest example: defects the station paints itself at teach time, plus every real challenge strip QA registers.
+
+## Models
+
+| Model | Job | Where it runs |
+|---|---|---|
+| SAM 3.1 | Outlines the strip, pockets and tablets; line clearance; tray-clip video | Meta Model API |
+| DINOv2 (`facebook/dinov2-small`) | Pass/fail score for each pocket and the strip border | Locally, frozen, on CPU |
+| Muse Spark 1.3 | Checklist from a sentence, foil print reading, record summary, questions about the records | Meta Model API |
+| Muse Voice Transcribe | Spoken rule and hands-free commands ("inspect") | Meta Model API |
+| Muse Spark Open (`meta-models/muse-spark-open-1026`) | Shift Supervisor agent | Open weights, served on Baseten |
+
+Every model call is listed on the System screen with model, job, time and cost.
+
+## Requirements
+
+- Python 3.12 (numpy 1.26.4 has no wheel for 3.13)
+- Windows, macOS or Linux; no GPU needed
+- A USB webcam fixed above the strip (tested with a 1080p Logitech C615) and steady lighting
+- A Meta Model API key (SAM 3.1, Muse Spark 1.3, Muse Voice Transcribe)
+- A Baseten API key for the Shift Supervisor agent (optional: without it the agent runs on Muse Spark 1.3)
+- Optional: a PLC or Modbus TCP client; Node.js (used by a few screen-script tests)
+
+## Quick start
+
+```bash
+git clone https://github.com/Naveenasri02/describe-to-inspect.git
+cd describe-to-inspect
+python -m venv .venv
+.venv\Scripts\activate            # macOS / Linux: source .venv/bin/activate
 pip install -r requirements.txt
-python app.py --add-user qa1 --role qa          # asks for a password; repeat with --role operator
-python app.py --source 0 --product blister --port 8000
 ```
 
-Steps on a new machine, in order (the screens are the tabs Run / Setup / QA / Record / System; Setup, QA and System show after a QA login):
+Set the API keys, either as environment variables or as files:
 
-1. Put the Meta Model API key in `MODEL_API_KEY` or `~/.secrets/meta_model_api_key.txt`. It is needed to make a checklist, to find pockets with SAM 3.1 and to read the foil print. With no key, no network or the $50 stop reached, no batch can be started or released (line clearance needs SAM 3.1, the start-up print check needs Muse Spark). A product taught with SAM 3.1 needs SAM 3.1 to inspect: when SAM does not answer (after one retry), each strip is HELD for a hand check, never judged with a different pocket finder. A product taught offline (no key) inspects offline with the checklist grid.
-2. Start the app. DINOv2 (`facebook/dinov2-small`) downloads on the initial start.
-3. Open http://localhost:8000 and log in as the QA user in the header.
-4. Setup, step 1: describe the good strip (type it and press "Make checklist", or "Speak rule"). Step 2: check the rules and press "Approve".
-5. Step 3: put a good strip under the camera and press "Save this strip" five times, moving the strip a little each time. The fifth press teaches the station.
-6. Optional, QA screen, "Physical challenge set": put each known-bad strip under the camera, give it a label (for example C1), pick its defect kind (the expected rule fills in) and press "Register challenge strip (photo from the camera)". Once a set is registered, every batch needs a passed challenge run.
-7. QA screen: press "Line clearance" (the station looks for anything left on the line), enter the batch number, MFG, EXP, MRP, product name and strength (for example 500 mg; blank if the strip prints none) and press "Start batch".
-8. Run the self-test after Start batch (a self-test from before the batch started does not release it): Setup, step 4, press "Run self-test" with a good strip under the camera. The station unlocks only when it passes.
-9. If a challenge set is registered: Run screen, "Challenge run": place each strip as the card says, press "Inspect", take the rejected strip out, tick "Ejected" and press "Record result".
-10. Release the batch (the ticks under "Batch release"): the self-test from step 8, the challenge run from step 9 (when a set is registered), "Check print (foil side up)" on a start-up strip (if it says "HOLD — Check the print by eye", QA looks at the strip and presses "Print matches" with the QA password and a note, or "Wrong print"), and "Sign start-up specimen (QA)" with the QA password. Strips cannot be inspected until all are done; the Run screen says "NOT RELEASED" until then.
-11. Run screen: press "Inspect strip".
+| Key | Environment variable | Or file |
+|---|---|---|
+| Meta Model API | `MODEL_API_KEY` | `~/.secrets/meta_model_api_key.txt` |
+| Baseten | `BASETEN_API_KEY` | `~/.secrets/baseten_api_key.txt` |
 
-`--source` is a camera index, a video path or a photo folder (a folder cycles one photo every 2 s; the tray clip needs a camera or video, and the challenge run needs the live source). Product data is kept in `data/<product>/`. The app listens on 127.0.0.1; add `--host 0.0.0.0` to open http://<laptop-ip>:8000/lamp (the stack-light page) or http://<laptop-ip>:8000/board (the line board) from a phone or a second screen on the same network.
+Create the users (each command asks for a password):
 
-Keys: the Meta Model API key as above; the Baseten key from `BASETEN_API_KEY` or `~/.secrets/baseten_meta_hackathon_key.txt`. The only paid-call limit is a hard $50.00 spend stop built into the Meta client (there is no date stop): the app and the tools all count spend in one file, `meta_spend.json` at the repo root. If that file cannot be read, or the $50 stop is reached, paid calls are refused: no new batch can be started or released, and a product taught with SAM 3.1 holds each strip for a hand check (a product taught offline keeps inspecting with the checklist grid). A busy or unreachable Meta API (429, 5xx, timeout, no connection) is tried once more after 1 s; each try is counted against the stop.
+```bash
+python app.py --add-user qa1 --role qa
+python app.py --add-user op1 --role operator
+```
+
+Start the station:
+
+```bash
+python app.py --source 0 --product levosiz --port 8000
+```
+
+Open http://localhost:8000 and log in. DINOv2 downloads on the first start.
+
+### First batch, in short
+
+1. **Setup:** describe the good strip ("Speak rule" or type it, then "Make checklist") and press **Approve**.
+2. **Setup:** place a good strip and press **Save this strip** five times, moving it a little each time.
+3. **Quality (QA):** optionally register physical challenge strips (known-bad strips).
+4. **Quality (QA):** **Line clearance**, then enter batch, MFG, EXP, MRP, product and strength and press **Start batch**.
+5. **Setup:** **Run self-test** with a good strip under the camera.
+6. **Run:** challenge run, if challenge strips are registered.
+7. **Quality (QA):** **Check print (foil side up)** on a start-up strip, then **Sign start-up specimen (QA)**.
+8. **Run:** **Inspect strip** (F1) for each strip.
+
+The [User Guide](docs/USER_GUIDE.md) explains every step and screen.
+
+## Command-line options
+
+| Option | Default | Meaning |
+|---|---|---|
+| `--source` | `0` | Camera index, video file or photo folder (a folder shows one photo every 2 s) |
+| `--product` | `blister` | Product name; its data is kept in `data/<product>/` |
+| `--port` | `8000` | Web port |
+| `--host` | `127.0.0.1` | `0.0.0.0` opens `/board` (line board) and `/lamp` (stack light) to other devices on the network |
+| `--add-user NAME` | | Create a user and exit (asks for the password) |
+| `--role` | `operator` | `qa` or `operator`, with `--add-user` |
+
+The Modbus TCP server listens on port 5020. See the [Developer Guide](docs/DEVELOPER_GUIDE.md#plc-signals-modbus-tcp) for the signal map.
+
+## Project structure
+
+```
+app.py              Web server, camera reader, screens' API, command line
+d2i/                Inspection library
+  station.py          Inspect, self-test, lock; names the failed rule
+  pockets.py          Strip and pocket finder (SAM 3.1, or the checklist grid offline)
+  judge.py            Frozen DINOv2 judge for pockets and the strip border
+  measure.py          Tablet size, shape and colour against the taught tablet
+  defects.py          Painted defects for the self-test
+  challenge.py        Physical challenge strips
+  checklist.py        Sentence to numbered rules; approved versions
+  printcheck.py       Foil print read and compare
+  batch.py            Line clearance, batch start and end, leak test
+  ipqc.py, recheck.py Drift rule and re-check window
+  supervisor.py       Shift Supervisor agent and its tools
+  record.py           Batch record and sign-off
+  audit.py            Hash-chained audit log and user logins
+  linestate.py        Line board state (PackML style)
+  plc.py              Modbus TCP outputs
+  meta_api.py, llm.py Model clients, spend limit
+static/             Station screens, line board, stack light
+tests/              564 automated tests
+docs/               User Guide, Developer Guide
+```
 
 ## Tests
 
-568 tests (count them with `python -m pytest --collect-only -q`). None makes a paid call: the model calls go to fakes, and the test strips are drawn in code (`tests/conftest.py`). Two tests also judge a real photo (`photos/real_wa/wa5.jpg`, not in the repo); they are skipped unless `photos/` is there or `D2I_PHOTOS` points to it. Run them all with:
-
-```
-python -m pytest -q -p no:warnings
+```bash
+python -m pytest -q
 ```
 
-They cover the verdict path, the self-test and challenge locks, quarantine, the release gate, hourly checks, reconciliation limits, the re-check window, the print compare, the line-board states and `states.jsonl`, the sign gate and signature manifest, the audit chain, the agent's tools and approvals, the spend stop, and the screens' scripts (these parse checks need Node.js and are skipped without it).
+564 tests cover the verdict path, self-test and challenge locks, quarantine, the release gate, hourly checks, reconciliation, the re-check window, the print compare, the line board, sign-off, the audit chain, the agent's tools and approvals, and the spend limit. No test makes a paid call: model calls go to fakes and test strips are drawn in code. Two tests that judge a real photo are skipped unless `photos/` is present.
 
-## Models and licences
+## Operating conditions
 
-| Model | Used for | How |
-|---|---|---|
-| DINOv2 (`facebook/dinov2-small`) | Pass/fail judge per pocket and strip border | Runs locally, frozen, offline |
-| SAM 3.1 | Strip, pocket and tablet outlines; line clearance; tray clip video | Meta Model API |
-| Muse Spark 1.3 | Checklist from a sentence, foil print read, shift-record summary, answers about the records, the pocket count for the cross-count; fallback for the agent | Meta Model API |
-| Muse Voice Transcribe | Spoken setup and hands-free commands | Meta Model API |
-| Muse Spark Open (`meta-models/muse-spark-open-1026`) | Shift Supervisor agent and its draft deviation notes | Open weights, served on Baseten |
+- Built for bench inspection, one strip at a time, about 12 s per strip (most of it SAM 3.1 calls).
+- Teach and run under the same steady lighting; after a lighting change, run the self-test or teach again.
+- Place strips the same way round and in the same spot as at teaching.
+- For each new product, register one real empty-pocket strip as a challenge strip so empty pockets are named exactly.
+- The station checks the tablet side and the printed foil fields; seal integrity is covered by the logged leak test.
 
-Built with Muse Spark Open. The API models are used under the Meta Model API terms.
+## Documentation
 
-## Results
-
-No accuracy figures are claimed in this README. The only source of numbers is the two eval scripts, which run on real strips; their output is saved to `EVAL.md` and `EVAL_AGENT.md`:
-
-```
-python tools/eval_strips.py photos/good photos/bad --sam --rows 2 --per-row 3 > EVAL.md
-python tools/eval_agent.py data/blister --bad photos/bad --runs 3 --yes-live
-```
-
-`eval_strips.py` prints its results (the `>` saves them as `EVAL.md`; `--sam` makes paid SAM calls). `eval_agent.py` calls the paid model, refuses to run without `--yes-live`, and writes `EVAL_AGENT.md`. Both count their spend in `meta_spend.json`. Numbers measured on painted defects are never quoted.
-
-## Honest limits
-
-- This is a bench, not a line: it works at bench speed, not line speed. One inspection takes about 12 s per strip, measured on a home connection (most of it is the SAM 3.1 calls). A 60-frame SAM video call takes about 2 minutes.
-- The self-test is a per-shift functional check that runs on top of the physical challenge strip. It adds to the physical challenge test; it does not replace it.
-- The shift record is a draft ("DRAFT — needs QA signature"). Your own QA decides whether to use this.
-- The SAM / Muse Spark cross-count is a code option: the station screen does not switch it on.
-- The tray clip opens the camera again while the stream is running; if the camera driver allows only one user, the clip fails with an error and nothing is judged.
-- The SAM prompt words were measured on real photos and may need tuning per product.
-- Strips turned more than about 7° may get false "no tablet" pockets — place the strip as taught.
-- Line clearance cannot see a strip lying foil side up — clear the line by eye too.
-- Alu-alu (all-silver) strips: once sealed, the tablets cannot be seen from the top, so this bench cannot teach or check their tablets (SAM 3.1 finds no tablets and teaching refuses the photos). Tablet checks for these strips belong before sealing, on the open pockets; on the sealed strip this bench checks only the foil print.
-- The offline strip finder (a product taught without a key) found 0 of 8 real strips in a photo test on 29 Oct 2026: a silver strip on a light table is about as bright as the table. "Works offline" in the table above is not yet shown on real strips.
-- A Muse Spark text call that hangs waits up to 180 s and is retried once, so on a lossy link one call can take about 6 minutes before it gives up (with the network off it fails at once). "Open shift record" makes one such call for the summary, so on a bad link the record is slow to open; it then says "Summary not available".
-- With `--host 0.0.0.0` anyone on the network can call the paid endpoints that need no login (`/command`, `/ask`, `/investigate`); keep the default 127.0.0.1 for a bench.
+- [User Guide](docs/USER_GUIDE.md): screens, roles, setting up a product, running a batch, holds, sign-off
+- [Developer Guide](docs/DEVELOPER_GUIDE.md): architecture, decision logic, data files, HTTP API, PLC signals, testing
 
 ## Licence
 
-PolyForm Noncommercial License 1.0.0 (see `LICENSE`). You are free to read, run and change this code for non-commercial use; commercial use needs permission from the owner.
+[PolyForm Noncommercial 1.0.0](LICENSE). Free to read, run and change for non-commercial use; commercial use needs the owner's permission.
+
+Built during the Meta Global AI Developer Hackathon, 26 October to 4 November 2026.

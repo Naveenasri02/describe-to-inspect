@@ -5,5 +5,4 @@ photos/
 *.wav
 __pycache__/
 .pytest_cache/
-.superpowers/
 *.tmp

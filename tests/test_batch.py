@@ -105,7 +105,7 @@ def test_clearance_nothing_found_clear():
 
 
 def test_clearance_asks_the_whole_strip_chain_and_every_tablet_prompt():
-    """Real photos (29 Oct): clearance said CLEAR with a strip in view on 18/33; "pill pack" (2632) and "blister" (wa0,
+    """Real photos: clearance said CLEAR with a strip in view on 18/33; "pill pack" (2632) and "blister" (wa0,
     wa3, wa7, 2626, 2640) found strips "blister pack" missed, "white pill" the white tablets of wa5."""
     from d2i.pockets import POCKET_PROMPTS, STRIP_PROMPTS
     from d2i.batch import CLEARANCE_PROMPTS
@@ -191,7 +191,7 @@ def test_start_refuses_bad_product_or_strength(tmp_path):
 
 
 def test_strength_is_optional_and_takes_real_combination_forms(tmp_path):
-    """Real foils (29 Oct): Havglo prints no strength (could not start a batch); CTD-L prints "12.5 mg & 50 mg";
+    """Real foils: Havglo prints no strength (could not start a batch); CTD-L prints "12.5 mg & 50 mg";
     Combiflam's strength names its ingredients."""
     row = clear_batches(tmp_path / "h").start("B1", "01/2026", "01/2028", "45", "qa1", 1060.0, product="Havglo", strength=" ")
     assert row["strength"] == ""

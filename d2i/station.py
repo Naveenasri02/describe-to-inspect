@@ -222,7 +222,7 @@ class Station:
         strip_box = tuple(float(v) for v in np.median([l.strip_box for l in layouts], axis=0))  # SAM's, when online
         protos = painted_prototypes(self.judge, images, layouts)
         # tablets measured on the taught slots, as inspect measures them: on its own pill box every tablet reads 1.0 with
-        # no spread, and good strips then read up to +12% at inspection (bench, 1 Nov) against a 12% tolerance
+        # no spread, and good strips then read up to +12% at inspection against a 12% tolerance
         on_slots = [replace(l, pockets=_on_turned(l.strip_box, template, l.angle) if l.angle
                             else _from_template(l.strip_box, template)) for l in layouts]
         profile, strip_profile = teach_profile(images, on_slots), teach_strip(layouts)
@@ -259,7 +259,7 @@ class Station:
         scores = self.judge.score_pockets(image, lay)
         i = int(np.argmax(scores))  # shortcut: the worst pocket is taken as the defect; QA registers one defect a strip
         if scores[i] <= self.judge.pocket_threshold:
-            # the measurements may fail a pocket the judge passes (bench 3 Nov: a yellow tablet of the taught shape)
+            # the measurements may fail a pocket the judge passes (a yellow tablet of the taught shape)
             v = self._judge_one(image, lay, Verdict("PASS", at=self._now()))
             hit = next((r["pocket"] for r in v.reasons if r.get("pocket")), None)
             if hit is None:
@@ -290,7 +290,7 @@ class Station:
 
     def _name(self, image, lay, i, sims):
         """The nearest kind; "different tablet" only when the tablet's colour differs from the taught one: a crushed
-        white tablet sat as near a learned yellow tablet as a broken one (bench 3 Nov, lamp: 0.67 vs 0.69)."""
+        white tablet sat as near a learned yellow tablet as a broken one (under a lamp: 0.67 vs 0.69)."""
         kind = max(sims, key=sims.get)
         mine = lay.in_pocket[i] if lay.pills and self.profile else []
         if kind == "wrong_tablet" and len(mine) == 1 and len(sims) > 1:
@@ -357,8 +357,8 @@ class Station:
             if i not in measured:
                 self._find(named[i], listed, unlisted, i)
         if lay.pills and self.profile:
-            # fail-safe: SAM 3.1 saw no tablet in a pocket the judge passed (a same-shape tablet of another colour, bench
-            # 3 Nov: 14 pills of 15, judge 0.34 < 0.43) - never passed, held for a hand check
+            # fail-safe: SAM 3.1 saw no tablet in a pocket the judge passed (a same-shape tablet of another
+            # colour: 14 pills of 15, judge 0.34 < 0.43) - never passed, held for a hand check
             for i, mine in enumerate(lay.in_pocket):
                 if not mine and i not in failing and i not in measured:
                     unlisted.append(dict(self._unlisted(i), text=f"Pocket {i + 1}: no tablet outlined — check by hand"))
@@ -443,8 +443,8 @@ class Station:
                     if i // per in (0, cl["rows"] - 1) or i % per in (0, per - 1)]
             measuring = bool(lay.pills and self.profile)
             for kind in cl["reject_if"] + ([] if "empty_pocket" in cl["reject_if"] else ["empty_pocket"]):  # Rule 1
-                if kind in ("foil_damage", "strip_cut", "double_tablet"):  # listed as not covered, never painted: a painted cut slices tablets, a painted copy merges with the tablet or lands between pockets (bench 3 Nov); real strips prove these
-                    # shortcut: good strips' borders differ about as much as a painted tear (bench 2 Nov: tears up to
+                if kind in ("foil_damage", "strip_cut", "double_tablet"):  # listed as not covered, never painted: a painted cut slices tablets, a painted copy merges with the tablet or lands between pockets; real strips prove these
+                    # shortcut: good strips' borders differ about as much as a painted tear (tears up to
                     # 1.5 tablets deep caught 17 of 24), so a tear test fails by chance. Upgrade: a sharper border check.
                     skipped.append(kind)
                     continue
