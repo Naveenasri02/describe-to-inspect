@@ -4,7 +4,7 @@
 
 Blistrue checks every pocket of a tablet blister strip, names the rule that failed, signals the packing machine and keeps the batch record for QA to sign. QA sets the rules with one spoken or typed sentence. A frozen vision model and plain code make the pass/fail decision; no language model does.
 
-**Demo video (3 min):** https://www.youtube.com/watch?v=n9GZ3uQREwk — one full shift on a bench with real strips, recorded live.
+**Demo video (3 min):** https://www.youtube.com/watch?v=l2UNVx0E-kA — one full shift on a bench with real strips, recorded live. Narration in the video: AI voice (text-to-speech); it is not part of the station.
 
 ![Run screen: a broken tablet rejected under Rule 3, pocket 8 marked on the live camera](docs/images/run-screen.jpg)
 
